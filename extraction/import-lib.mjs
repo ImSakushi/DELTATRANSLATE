@@ -172,6 +172,7 @@ export function scanCatalog(codeDir, log = () => {}) {
   let scanned = 0;
   for (const file of files) {
     const text = fs.readFileSync(path.join(codeDir, file), "utf8");
+    let fileLines = null;
     CALL_RE.lastIndex = 0;
     let m;
     while ((m = CALL_RE.exec(text))) {
@@ -190,9 +191,15 @@ export function scanCatalog(codeDir, log = () => {}) {
         line: text.slice(0, m.index).split("\n").length,
       };
       if (SUBLOC_CALLS.has(m[1])) {
-        entry.substitutions = parsed.args
-          .slice(spec.textArg + 1, -1)
-          .map((arg) => resolveStaticSubstitution(arg));
+        const argSpecs = parsed.args.slice(spec.textArg + 1, -1);
+        entry.substitutions = argSpecs.map((arg) => resolveStaticSubstitution(arg));
+        const samples = argSpecs.map((arg, i) => {
+          if (entry.substitutions[i] != null) return null;
+          fileLines ??= text.split(/\r?\n/);
+          const emotion = new RegExp(`\\\\E~${i + 1}\\b`).test(entry.english);
+          return sampleSubstitution(arg, fileLines, entry.line - 1, emotion);
+        });
+        if (samples.some((s) => s != null)) entry.substitutionSamples = samples;
       }
       entries.push(entry);
     }
@@ -374,11 +381,21 @@ function findSmallFace(lines, lineIdx, id) {
 // d'où une fenêtre de scan large. Le plus proche match gagne.
 function findFace(lines, lineIdx) {
   const from = Math.max(0, lineIdx - 120);
+  let pendingFe = null; // dernier global.fe rencontré en remontant
   for (let i = lineIdx; i >= from; i--) {
     const l = lines[i];
 
+    // Cutscenes qui règlent le writer directement : global.fc = 2 / global.fe = 1
+    let m = l.match(/global\.fe\s*=\s*(\d+)/);
+    if (m && i !== lineIdx && pendingFe == null) pendingFe = Number(m[1]);
+    m = l.match(/global\.fc\s*=\s*(\d+)/);
+    if (m && i !== lineIdx) {
+      const fc = Number(m[1]);
+      return fc === 0 ? null : withFaceVariant(lines, lineIdx, { fc, fe: pendingFe ?? 0 });
+    }
+
     // c_facenext("susie", "C") / c_face / c_msgface — le plus courant en cutscene
-    let m = l.match(/c_(?:facenext|face|msgface)\(\s*"([\w ]+)"\s*,\s*([^,)]+)/);
+    m = l.match(/c_(?:facenext|face|msgface)\(\s*"([\w ]+)"\s*,\s*([^,)]+)/);
     if (m) {
       const fc = SPEAKER_FC[m[1].toLowerCase()];
       if (fc !== undefined)
@@ -714,6 +731,7 @@ export function buildReference(codeDir, log = () => {}) {
     );
     if (previewMode) entry.previewMode = previewMode;
     if (e.substitutions?.length) entry.substitutions = e.substitutions;
+    if (e.substitutionSamples?.length) entry.substitutionSamples = e.substitutionSamples;
     if (lines) {
       const typer = findTyper(lines, e.line - 1);
       if (typer != null) entry.typer = typer;
@@ -757,7 +775,13 @@ export function buildReference(codeDir, log = () => {}) {
         if (trigger) linkedSmallFaceCount++;
       }
     }
-    if (e.channel !== "string") {
+    // Les strings requalifiées en dialogue (global.msg[]…) ont un visage actif
+    // au même titre que les canaux message.
+    const isDialogue =
+      e.channel !== "string" ||
+      entry.previewMode === "darkbox" ||
+      entry.previewMode === "battletext";
+    if (isDialogue) {
       if (lines) {
         const face = findFace(lines, e.line - 1);
         if (face) {

@@ -672,7 +672,11 @@ async function runPreview() {
   const e = entriesByKey.get(selectedKey);
   const showEn = $("chk-en-preview").checked;
   const sourceText = showEn ? (e.en ?? "") : $("fr-input").value;
-  const substitution = substituteArgs(sourceText, reference[selectedKey]?.substitutions);
+  const substitution = substituteArgs(
+    sourceText,
+    reference[selectedKey]?.substitutions,
+    reference[selectedKey]?.substitutionSamples
+  );
   const mode = effectiveMode();
   const state = inheritedState();
   state.sceneContext = selectedSceneContext();
@@ -693,10 +697,17 @@ async function runPreview() {
       : dialogueKey && lang[dialogueKey] != null
         ? lang[dialogueKey]
         : dialogueRef?.en ?? "";
-    const dialogueSubstitution = substituteArgs(dialogueSource, dialogueRef?.substitutions);
+    const dialogueSubstitution = substituteArgs(
+      dialogueSource,
+      dialogueRef?.substitutions,
+      dialogueRef?.substitutionSamples
+    );
     state.fc = dialogueRef?.face?.fc ?? 0;
     state.fe = dialogueRef?.face?.fe ?? 0;
     state.faceVariant = dialogueRef?.face?.variant ?? null;
+    state.typer = dialogueRef?.typer ?? state.typer;
+    state.miniFaceBank = dialogueRef?.miniFaceBank ?? state.miniFaceBank;
+    state.speakerOverlay = dialogueRef?.speakerOverlay ?? state.speakerOverlay;
     state.smallFace = {
       ...smallFace,
       text: substitution.text,
@@ -714,9 +725,14 @@ async function runPreview() {
 
   const warnEl = $("preview-warnings");
   warnEl.innerHTML = "";
-  const substitutionWarnings = substitution.unresolved.map(
-    (id) => `~${id} : valeur dynamique inconnue hors du jeu`
-  );
+  const substitutionWarnings = [
+    ...substitution.sampled.map(
+      ({ index, value }) => `~${index} → « ${value} » (exemple — valeur dynamique en jeu)`
+    ),
+    ...substitution.unresolved.map(
+      (id) => `~${id} : valeur dynamique inconnue hors du jeu`
+    ),
+  ];
   for (const w of [...substitutionWarnings, ...(res.warnings ?? [])]) {
     const d = document.createElement("div");
     d.className = "warn";

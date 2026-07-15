@@ -5,18 +5,29 @@ import { TYPERS, T_TAG, C_TAG, F_TAG, decodeFe, resolveTyper } from "./typers.js
 
 // substringargs.gml : remplace ~1, ~2, ... dans l'ordre, avant la création du
 // writer. Les valeurs nulles correspondent aux arguments dépendant de l'état
-// de la partie, impossibles à déterminer depuis le seul data.win.
-export function substituteArgs(input, substitutions = []) {
+// de la partie, impossibles à déterminer depuis le seul data.win ; `samples`
+// fournit alors une valeur d'exemple extraite du GML (voir sampleSubstitution
+// dans extraction/import-lib.mjs), signalée dans `sampled`.
+export function substituteArgs(input, substitutions = [], samples = []) {
   let text = input;
   for (let index = 0; index < substitutions.length; index++) {
     const value = substitutions[index];
     if (typeof value === "string") text = text.replaceAll(`~${index + 1}`, value);
   }
 
+  const sampled = [];
+  for (let index = 0; index < samples.length; index++) {
+    const value = samples[index];
+    if (typeof value === "string" && text.includes(`~${index + 1}`)) {
+      text = text.replaceAll(`~${index + 1}`, value);
+      sampled.push({ index: index + 1, value });
+    }
+  }
+
   const unresolved = [
     ...new Set([...text.matchAll(/~(\d+)/g)].map((match) => Number(match[1]))),
   ].sort((a, b) => a - b);
-  return { text, unresolved };
+  return { text, unresolved, sampled };
 }
 
 // ---------------------------------------------------------------------------
@@ -243,8 +254,20 @@ export function layoutText(formattedText, opts) {
             color: mycolor,
           });
         }
+      } else if (nextchar === "C") {
+        // obj_writer Draw_0 : \C1..\C4 créent obj_choicer (menu de choix)
+        warnings.push(`\\C${nextchar2} : menu de choix du jeu (non simulé en preview)`);
+      } else if (nextchar === "I") {
+        // obj_writer Draw_0 : draw_sprite(global.writerimg[n], 0, wx, wy + 4)
+        warnings.push(`\\I${nextchar2} : icône inline du jeu (non rendue en preview)`);
+      } else if (nextchar === "O") {
+        // obj_writer Draw_0 : instance_create(global.writerobj[n]) — objet animé
+        warnings.push(`\\O${nextchar2} : objet animé du jeu (non rendu en preview)`);
+      } else if (nextchar === "*") {
+        // obj_writer Draw_0 : scr_getbuttonsprite — bouton manette/console
+        warnings.push(`\\*${nextchar2} : bouton manette (non rendu en preview)`);
       } else if (
-        !["s", "M", "v", "V", "S", "I", "O", "*", "f", "C", "z", "u", "d", "D", "x", "X", "H", "p", "P", "w", "W", "Y", "e", "b", "R", "t", "G", "g", "q", "_", "+", "-"].includes(
+        !["s", "M", "v", "V", "S", "f", "z", "u", "d", "D", "x", "X", "H", "p", "P", "w", "W", "Y", "e", "b", "R", "t", "G", "g", "q", "_", "+", "-"].includes(
           nextchar
         )
       ) {
@@ -294,7 +317,7 @@ export function layoutText(formattedText, opts) {
     hspace: cur.hspace,
     vspace: cur.vspace,
     font: cur.font,
-    warnings,
+    warnings: [...new Set(warnings)],
   };
 }
 
