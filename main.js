@@ -10,8 +10,8 @@ const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
 const windowsAllowedToClose = new WeakSet();
 const TITLE_BAR_HEIGHT = 32;
 const TITLE_BAR_THEMES = {
-  dark: { color: "#121219", symbolColor: "#e8e8f0", height: TITLE_BAR_HEIGHT },
-  light: { color: "#e6e8ed", symbolColor: "#202633", height: TITLE_BAR_HEIGHT },
+  dark: { color: "#000000", symbolColor: "#ffffff", height: TITLE_BAR_HEIGHT },
+  light: { color: "#fffdf4", symbolColor: "#101010", height: TITLE_BAR_HEIGHT },
 };
 const DEFAULT_CONFIG = {
   langFrPath: null,
@@ -190,7 +190,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1500,
     height: 950,
-    backgroundColor: "#16161c",
+    backgroundColor: "#000000",
     icon: APP_ICON_PATH,
     ...(process.platform === "win32" && {
       titleBarStyle: "hidden",
