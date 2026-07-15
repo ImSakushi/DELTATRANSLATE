@@ -1,0 +1,17 @@
+{
+  "name": "deltatranslate",
+  "productName": "DELTATRANSLATE",
+  "version": "1.0.0",
+  "description": "Éditeur de traduction pour tous les chapitres de DELTARUNE avec preview fidèle au jeu",
+  "main": "main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^43.1.0"
+  },
+  "dependencies": {
+    "extract-zip": "^2.0.1"
+  }
+}

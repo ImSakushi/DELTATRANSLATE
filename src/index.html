@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>DELTATRANSLATE</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="window-titlebar">
+    <img src="assets/deltatranslate-icon.png" alt="" />
+    <span>DELTATRANSLATE</span>
+  </div>
+  <header id="topbar">
+    <div class="brand">
+      <img class="brand-icon" src="assets/deltatranslate-icon.png" alt="" />
+      <img class="brand-logo" src="assets/deltatranslate-wordmark.png" alt="DELTATRANSLATE" />
+    </div>
+    <div id="progress-wrap">
+      <div id="progress-bar"><div id="progress-fill"></div></div>
+      <span id="progress-label">…</span>
+    </div>
+    <div class="top-actions">
+      <button id="btn-theme" class="theme-toggle" type="button" data-tooltip="Passer au thème clair" aria-label="Passer au thème clair">
+        <span class="theme-icon theme-icon-sun" aria-hidden="true">☀</span>
+        <span class="theme-icon theme-icon-moon" aria-hidden="true">☾</span>
+      </button>
+      <button id="btn-import" data-tooltip="Importer un data.win DELTARUNE (n'importe quel chapitre)">⚙ data.win</button>
+      <button id="btn-backups" data-tooltip="Ouvrir le dossier des backups">🗁 Backups</button>
+      <button id="btn-reload" data-tooltip="Recharger le fichier du jeu (écrase les modifs non sauvées)">⟳ Recharger</button>
+      <button id="btn-save" data-tooltip="Toutes les modifications sont sauvegardées" disabled>✓ Sauvegardé</button>
+    </div>
+  </header>
+
+  <!-- ==================== Modal import data.win ==================== -->
+  <div id="import-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="import-title">Configurer DELTATRANSLATE</h2>
+      <section id="current-chapter">
+        <h3>Chapitre chargé</h3>
+        <div class="import-paths">
+        <div><b>data.win :</b> <span id="cur-datawin">—</span></div>
+          <div><b>Traductions :</b> <span id="cur-langfr">—</span></div>
+          <div><b>Extraction locale :</b> <span id="cur-extracted">—</span></div>
+        </div>
+      </section>
+
+      <section id="utmt-setup-section">
+        <h3>1. UndertaleModTool CLI</h3>
+        <div id="utmt-status" class="setup-status">Vérification…</div>
+        <p class="modal-hint">
+          Lie une installation existante d'UTMT CLI, ou laisse l'outil télécharger et
+          extraire automatiquement la dernière release officielle adaptée à ton système.
+        </p>
+        <div class="modal-actions">
+          <button id="btn-pick-utmt">📂 Lier mon dossier UTMT…</button>
+          <button id="btn-install-utmt" class="primary">↓ Installer UTMT</button>
+        </div>
+        <div id="utmt-progress" class="install-progress hidden">
+          <div><span id="utmt-progress-fill"></span></div>
+          <small id="utmt-progress-label"></small>
+        </div>
+      </section>
+
+      <h3 id="datawin-step-title">2. Importer un chapitre</h3>
+      <p class="modal-hint">
+        Glisse le <code>data.win</code> du chapitre ici, ou ouvre-le manuellement. Les strings,
+        fonts et portraits sont extraits localement : aucun asset du jeu n'est fourni par GitHub.
+        Si <code>lang/lang_fr.json</code> existe, il est édité directement. Sinon, l'outil garde
+        une copie anglaise originale et applique les traductions à la vraie source du chapitre.
+      </p>
+      <div id="datawin-dropzone" class="dropzone" role="button" tabindex="0">
+        <strong>Dépose data.win ici</strong>
+        <span>ou clique pour parcourir les fichiers</span>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-pick-datawin">📂 Choisir un data.win…</button>
+        <button id="btn-close-import">Fermer</button>
+      </div>
+      <pre id="import-log" class="hidden"></pre>
+    </div>
+  </div>
+
+  <div id="layout">
+    <!-- ==================== Colonne gauche : liste ==================== -->
+    <aside id="sidebar">
+      <input id="search" type="text" placeholder="Rechercher (texte EN/FR ou clé)…" />
+      <div id="filters">
+        <button class="filter active" data-filter="all">Tout</button>
+        <button class="filter" data-filter="todo">À traduire</button>
+        <button class="filter" data-filter="dialogue">Dialogues</button>
+        <button class="filter" data-filter="string">Menus</button>
+        <button class="filter" data-filter="noref">Sans réf</button>
+      </div>
+      <div id="list-container">
+        <div id="list-spacer"></div>
+        <div id="list-items"></div>
+      </div>
+      <div id="list-status"></div>
+    </aside>
+
+    <!-- ==================== Zone centrale : éditeur ==================== -->
+    <main id="editor-pane">
+      <div id="key-context">
+        <div id="key-name">—</div>
+        <div id="key-meta"></div>
+        <button id="btn-validate" data-tooltip="Marquer cette ligne comme volontairement identique à l'anglais (Ctrl+D)">✓ OK tel quel</button>
+      </div>
+
+      <div id="sequence-bar" data-tooltip="Lignes voisines dans le même fichier (séquence de dialogue)"></div>
+
+      <section class="text-block">
+        <label>🇬🇧 Anglais (original)</label>
+        <div id="en-display" class="tagged-text"></div>
+      </section>
+
+      <section class="text-block grow">
+        <label>🇫🇷 Français
+          <span class="editor-meta">
+            <span id="enter-hint"><kbd>Entrée</kbd> → <code>&amp;</code> · <kbd>Maj+Entrée</kbd> → vraie ligne</span>
+            <span id="line-lens"></span>
+          </span>
+        </label>
+        <div id="editor-wrap">
+          <div id="fr-highlight" class="tagged-text" aria-hidden="true"></div>
+          <textarea id="fr-input" spellcheck="false" placeholder="Traduction française…"></textarea>
+        </div>
+      </section>
+
+      <div id="tagbar">
+        <div class="tag-group">
+          <label>Visage</label>
+          <select id="sel-face"></select>
+          <select id="sel-expr"></select>
+          <button id="btn-insert-face" data-tooltip="Insérer \Fx\Ex au curseur">Insérer</button>
+        </div>
+        <div class="tag-group">
+          <label>Couleur</label>
+          <span id="color-swatches"></span>
+        </div>
+        <div class="tag-group">
+          <label>Pause</label>
+          <button class="ins" data-ins="^1">^1</button>
+          <button class="ins" data-ins="^3">^3</button>
+          <button class="ins" data-ins="^6">^6</button>
+          <button class="ins" data-ins="^9">^9</button>
+        </div>
+        <div class="tag-group">
+          <label>Flux</label>
+          <button class="ins" data-ins="&amp;" data-tooltip="Saut de ligne">&amp;</button>
+          <button class="ins" data-ins="/" data-tooltip="Attendre confirmation">/</button>
+          <button class="ins" data-ins="%" data-tooltip="Message suivant">%</button>
+          <button class="ins" data-ins="/%" data-tooltip="Fin de séquence">/%</button>
+          <button class="ins" data-ins="\c0" data-tooltip="Réinitialiser la couleur">\c0</button>
+        </div>
+        <div class="tag-group">
+          <button id="btn-copy-en" data-tooltip="Copier le texte anglais dans l'éditeur">EN → FR</button>
+          <button id="btn-copy-tags" data-tooltip="Recopier uniquement les tags de début/fin du texte anglais">Tags EN</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- ==================== Colonne droite : preview ==================== -->
+    <aside id="preview-pane">
+      <div id="preview-controls">
+        <select id="sel-mode">
+          <option value="auto">Mode : Auto</option>
+          <option value="darkbox">Boîte — Monde Sombre</option>
+          <option value="lightbox">Boîte — Monde Clair</option>
+          <option value="bubble">Bulle de combat</option>
+          <option value="battletext">Texte de combat</option>
+          <option value="plain">Texte libre</option>
+        </select>
+        <button id="btn-side" data-tooltip="Côté de la bulle">↔</button>
+        <label class="chk"><input type="checkbox" id="chk-en-preview" /> EN</label>
+      </div>
+      <div id="preview-face-controls">
+        <label>Visage :</label>
+        <select id="sel-preview-face"></select>
+        <input id="inp-preview-fe" type="number" min="0" max="61" value="0" data-tooltip="Expression (\E)" />
+      </div>
+      <div id="canvas-wrap">
+        <canvas id="preview-canvas" width="640" height="480"></canvas>
+      </div>
+      <div id="preview-warnings"></div>
+      <div id="preview-info"></div>
+      <div id="help-tags">
+        <b>Codes :</b> <code>&amp;</code> saut de ligne · <code>^1-9</code> pause ·
+        <code>~1</code> substitution ·
+        <code>/</code> attend ✚ · <code>%</code> msg suivant · <code>/%</code> fin ·
+        <code>\E?</code> expression · <code>\F?</code> visage · <code>\c?</code> couleur ·
+        <code>\T?</code> voix/style · <code>|</code> espace fine · <code>`</code> échappe
+      </div>
+    </aside>
+  </div>
+
+  <footer id="statusbar">
+    <span id="save-state">Aucune modification</span>
+    <span id="hint">Alt : roue des tags · Ctrl+S : sauvegarder · Ctrl+↓/↑ : ligne suivante/précédente à traduire</span>
+  </footer>
+
+  <div id="tag-wheel" aria-hidden="true">
+    <div id="tag-wheel-ring" role="menu" aria-label="Insertion rapide d’un tag"></div>
+    <div id="tag-wheel-center" aria-hidden="true">
+      <span id="tag-wheel-value">ALT</span>
+      <small id="tag-wheel-label">Glisser</small>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

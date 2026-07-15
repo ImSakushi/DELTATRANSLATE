@@ -1,0 +1,7 @@
+node_modules/
+extracted/
+extracted-imports/
+backups/
+config.json
+prefs.json
+AGENTS.md
