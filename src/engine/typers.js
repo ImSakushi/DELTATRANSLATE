@@ -45,6 +45,7 @@ export const TYPERS = {
   75: { font: "dotumche", color: "#000000", hspace: 9, vspace: 20 },
   76: { font: "dotumche", color: "#000000", hspace: 9, vspace: 20 },
   77: { font: "mainbig", color: "#FFFFFF", hspace: 16, vspace: 28 },
+  78: { font: "mainbig", color: "#FFFFFF", hspace: 16, vspace: 36 },
   83: { font: "mainbig", color: "#FFFFFF", hspace: 16, vspace: 36 },
   84: { font: "mainbig", color: "#FFFFFF", hspace: 16, vspace: 36 },
   86: { font: "mainbig", color: "#FFFFFF", hspace: 16, vspace: 36 },
@@ -181,8 +182,8 @@ export const FC_NAMES = {
   20: "King",
   21: "Queen",
   22: "Carol",
-  23: "Flowey",
-  24: "Flowey (dark)",
+  23: "Flowery",
+  24: "Flowery (dark)",
   25: "Bleu (papillon)",
 };
 

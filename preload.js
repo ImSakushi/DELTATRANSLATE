@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("api", {
   setTitleBarTheme: (theme) => ipcRenderer.invoke("set-title-bar-theme", theme),
   loadData: () => ipcRenderer.invoke("load-data"),
   saveLang: (langObj) => ipcRenderer.invoke("save-lang", langObj),
+  backupLang: (langObj) => ipcRenderer.invoke("backup-lang", langObj),
   savePrefs: (prefs) => ipcRenderer.invoke("save-prefs", prefs),
   confirmClose: (unsavedCount) => ipcRenderer.invoke("confirm-close", unsavedCount),
   closeWindow: () => ipcRenderer.invoke("close-window"),

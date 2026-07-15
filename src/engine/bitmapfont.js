@@ -62,6 +62,25 @@ export class BitmapFont {
     );
   }
 
+  // draw_text de GameMaker utilise l'avance propre à chaque glyphe, à la
+  // différence du writer principal qui force hspace.
+  drawText(ctx, text, x, y, color, scale = 1, lineHeight = 16) {
+    const startX = x;
+    let dx = x;
+    let dy = y;
+    for (const ch of String(text).replaceAll("#", "\n")) {
+      if (ch === "\r") continue;
+      if (ch === "\n") {
+        dx = startX;
+        dy += lineHeight * scale;
+        continue;
+      }
+      const glyph = this.glyphs.get(ch.codePointAt(0));
+      this.drawChar(ctx, ch, dx, dy, color, scale);
+      dx += (glyph?.shift ?? 0) * scale;
+    }
+  }
+
   hasChar(ch) {
     return this.glyphs.has(ch.codePointAt(0));
   }

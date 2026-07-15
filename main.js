@@ -6,6 +6,7 @@ const { findUtmtCli, installLatestUtmt } = require("./utmt-manager.js");
 
 const ROOT = __dirname;
 const APP_ICON_PATH = path.join(ROOT, "src", "assets", "deltatranslate-icon.png");
+const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
 const windowsAllowedToClose = new WeakSet();
 const TITLE_BAR_HEIGHT = 32;
 const TITLE_BAR_THEMES = {
@@ -112,19 +113,39 @@ function serializeLanguage(langObj) {
   return lines.join("\n");
 }
 
-function backupFile(file) {
+function backupContent(file, content) {
   if (!file || !fs.existsSync(file)) return null;
   const directory = runtimeDirectory("backups");
   const stem = path.basename(file).replace(/[^\w.-]+/g, "_");
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const destination = path.join(directory, `${stem}_${stamp}.bak`);
-  fs.copyFileSync(file, destination);
   const backups = fs
     .readdirSync(directory)
     .filter((name) => name.startsWith(`${stem}_`) && name.endsWith(".bak"))
-    .sort();
-  while (backups.length > 40) fs.unlinkSync(path.join(directory, backups.shift()));
+    .map((name) => ({ name, modifiedAt: fs.statSync(path.join(directory, name)).mtimeMs }))
+    .sort((a, b) => a.modifiedAt - b.modifiedAt);
+  const latest = backups.at(-1);
+  if (latest && Date.now() - latest.modifiedAt < BACKUP_INTERVAL_MS) return null;
+  if (
+    latest &&
+    fs.readFileSync(path.join(directory, latest.name), "utf8") === content
+  ) {
+    return null;
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const destination = path.join(directory, `${stem}_${stamp}.bak`);
+  fs.writeFileSync(destination, content, "utf8");
+  backups.push({ name: path.basename(destination), modifiedAt: Date.now() });
+  while (backups.length > 40) {
+    fs.unlinkSync(path.join(directory, backups.shift().name));
+  }
   return destination;
+}
+
+function backupFile(file, nextContent) {
+  if (!file || !fs.existsSync(file)) return null;
+  const currentContent = fs.readFileSync(file, "utf8");
+  if (currentContent === nextContent) return null;
+  return backupContent(file, currentContent);
 }
 
 function runNodeScript(script, args, onLine = () => {}) {
@@ -293,6 +314,21 @@ ipcMain.handle("load-data", () => {
   };
   const spritesDir = path.join(config.extractedDir, "sprites");
   result.spriteFiles = fs.existsSync(spritesDir) ? fs.readdirSync(spritesDir) : [];
+  result.spriteMeta = {};
+  const spriteListPath = path.join(config.extractedDir, "sprites_list.txt");
+  if (fs.existsSync(spriteListPath)) {
+    for (const line of fs.readFileSync(spriteListPath, "utf8").split(/\r?\n/)) {
+      const [name, frames, width, height, originX = "0", originY = "0"] = line.split(";");
+      if (!name) continue;
+      result.spriteMeta[name] = {
+        frames: Number(frames) || 0,
+        width: Number(width) || 0,
+        height: Number(height) || 0,
+        originX: Number(originX) || 0,
+        originY: Number(originY) || 0,
+      };
+    }
+  }
   const fontsDir = path.join(config.extractedDir, "fonts");
   if (fs.existsSync(fontsDir)) {
     for (const file of fs.readdirSync(fontsDir)) {
@@ -314,9 +350,14 @@ ipcMain.handle("save-lang", async (event, langObj) => {
   let dataWinTemp = null;
   try {
     if (config.storageMode !== "datawin") {
-      backupFile(config.langFrPath);
+      const backup = backupFile(config.langFrPath, serialized);
       fs.writeFileSync(config.langFrPath, serialized, "utf8");
-      return { ok: true, savedAt: new Date().toISOString(), mode: "lang-json" };
+      return {
+        ok: true,
+        savedAt: new Date().toISOString(),
+        mode: "lang-json",
+        backupCreated: Boolean(backup),
+      };
     }
 
     const utmt = getUtmtStatus();
@@ -329,7 +370,7 @@ ipcMain.handle("save-lang", async (event, langObj) => {
     ];
     if (required.some((item) => !item)) throw new Error("Configuration data.win incomplète.");
 
-    backupFile(config.langFrPath);
+    const backup = backupFile(config.langFrPath, serialized);
     translationTemp = `${config.langFrPath}.tmp-${process.pid}`;
     dataWinTemp = `${config.dataWinPath}.deltatranslate-tmp-${process.pid}`;
     fs.writeFileSync(translationTemp, serialized, "utf8");
@@ -363,13 +404,35 @@ ipcMain.handle("save-lang", async (event, langObj) => {
     replaceDataWinSafely(dataWinTemp, config.dataWinPath);
     fs.writeFileSync(config.langFrPath, serialized, "utf8");
     fs.rmSync(translationTemp, { force: true });
-    return { ok: true, savedAt: new Date().toISOString(), mode: "datawin" };
+    return {
+      ok: true,
+      savedAt: new Date().toISOString(),
+      mode: "datawin",
+      backupCreated: Boolean(backup),
+    };
   } catch (error) {
     return { ok: false, error: error.message };
   } finally {
     if (translationTemp) fs.rmSync(translationTemp, { force: true });
     if (dataWinTemp) fs.rmSync(dataWinTemp, { force: true });
     saveRunning = false;
+  }
+});
+
+ipcMain.handle("backup-lang", (_event, langObj) => {
+  try {
+    const config = getConfig();
+    const serialized = serializeLanguage(langObj);
+    if (!config.langFrPath || !fs.existsSync(config.langFrPath)) {
+      throw new Error("Le fichier de langue est introuvable.");
+    }
+    if (fs.readFileSync(config.langFrPath, "utf8") === serialized) {
+      return { ok: true, backupCreated: false };
+    }
+    const backup = backupContent(config.langFrPath, serialized);
+    return { ok: true, backupCreated: Boolean(backup) };
+  } catch (error) {
+    return { ok: false, error: error.message };
   }
 });
 

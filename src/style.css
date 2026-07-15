@@ -155,7 +155,18 @@ select { cursor: pointer; }
 }
 #progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #46b46e, var(--green)); }
 #progress-label { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
-.top-actions { display: flex; gap: 8px; }
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.top-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  line-height: 1;
+}
 #btn-save.dirty { border-color: var(--yellow); color: var(--yellow); }
 #btn-save:disabled {
   color: var(--fg-dim);
@@ -492,6 +503,14 @@ select { cursor: pointer; }
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 6px;
+}
+#btn-validate { display: flex; align-items: center; gap: 8px; }
+#btn-validate kbd {
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.7;
+  font: 10px var(--mono);
 }
 #btn-validate.validated { border-color: var(--green); color: var(--green); }
 .chk { font-size: 12px; color: var(--fg-dim); display: flex; align-items: center; gap: 3px; }

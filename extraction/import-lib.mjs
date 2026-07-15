@@ -225,6 +225,72 @@ function decodeEmotion(raw) {
   return null; // expression dynamique
 }
 
+// Certaines scènes remplacent la banque de portraits sans changer fc/fe.
+// obj_face Draw_0 : Noelle utilise spr_face_n_matome_extended quand
+// global.tempflag[63] vaut 1 ; obj_ch5_LW20 alimente ce flag via face_extended.
+function findFaceVariant(lines, lineIdx, fc) {
+  if (fc !== 3) return null;
+  for (let i = lineIdx; i >= 0; i--) {
+    const m = lines[i].match(
+      /c_var_instance\(\s*id\s*,\s*["']face_extended["']\s*,\s*([01])\s*\)/
+    );
+    if (m) return m[1] === "1" ? "noelle-extended" : null;
+  }
+  return null;
+}
+
+function withFaceVariant(lines, lineIdx, face) {
+  const variant = findFaceVariant(lines, lineIdx, face.fc);
+  return variant ? { ...face, variant } : face;
+}
+
+function staticSmallFaceArg(arg) {
+  if (!arg) return null;
+  if (arg.string != null) return arg.string;
+  const raw = arg.raw.trim();
+  return /^-?\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : null;
+}
+
+// scr_smallface prépare un portrait secondaire qui sera créé plus tard par un
+// tag \f0…\f9 du writer. La chaîne localisée peut être passée directement ou
+// stockée dans une variable juste avant l'appel.
+function findSmallFace(lines, lineIdx, id) {
+  const localizedLine = lines[lineIdx] ?? "";
+  const assignment = localizedLine.match(
+    /(?:\bvar\s+)?([A-Za-z_]\w*)\s*=\s*(?:stringsetloc|stringsetsubloc)\s*\(/
+  );
+  const variable = assignment?.[1] ?? null;
+
+  for (let i = lineIdx; i <= Math.min(lines.length - 1, lineIdx + 8); i++) {
+    const line = lines[i];
+    let from = 0;
+    while (from < line.length) {
+      const call = line.indexOf("scr_smallface(", from);
+      if (call < 0) break;
+      const parsed = parseArgs(line, call + "scr_smallface(".length);
+      from = call + "scr_smallface(".length;
+      if (!parsed || parsed.args.length < 6) continue;
+
+      const textArg = parsed.args[5];
+      const usesLocalizedText =
+        (i === lineIdx && line.includes(`"${id}"`)) ||
+        (variable && textArg.raw.trim() === variable);
+      if (!usesLocalizedText) continue;
+
+      const [slotArg, speakerArg, expressionArg, xArg, yArg] = parsed.args;
+      const slot = staticSmallFaceArg(slotArg);
+      const speaker = staticSmallFaceArg(speakerArg);
+      const expression = staticSmallFaceArg(expressionArg);
+      const x = staticSmallFaceArg(xArg);
+      const y = staticSmallFaceArg(yArg);
+      if (slot == null || speaker == null || expression == null || x == null || y == null)
+        return null;
+      return { slot, speaker, expression, x, y, callLine: i + 1 };
+    }
+  }
+  return null;
+}
+
 // Cherche le visage actif pour la ligne `lineIdx` (0-based) en remontant.
 // Le visage persiste de message en message jusqu'à changement explicite,
 // d'où une fenêtre de scan large. Le plus proche match gagne.
@@ -237,31 +303,43 @@ function findFace(lines, lineIdx) {
     let m = l.match(/c_(?:facenext|face|msgface)\(\s*"([\w ]+)"\s*,\s*([^,)]+)/);
     if (m) {
       const fc = SPEAKER_FC[m[1].toLowerCase()];
-      if (fc !== undefined) return fc === 0 ? null : { fc, fe: decodeEmotion(m[2]) ?? 0 };
+      if (fc !== undefined)
+        return fc === 0
+          ? null
+          : withFaceVariant(lines, lineIdx, { fc, fe: decodeEmotion(m[2]) ?? 0 });
     }
     // scr_anyface_next("susie", emotion)
     m = l.match(/scr_anyface_next\(\s*"([\w ]+)"\s*,\s*([^,)]+)\s*\)/);
     if (m) {
       const fc = SPEAKER_FC[m[1].toLowerCase()];
-      if (fc !== undefined) return fc === 0 ? null : { fc, fe: decodeEmotion(m[2]) ?? 0 };
+      if (fc !== undefined)
+        return fc === 0
+          ? null
+          : withFaceVariant(lines, lineIdx, { fc, fe: decodeEmotion(m[2]) ?? 0 });
     }
     // scr_anyface("susie", msgno, emotion)
     m = l.match(/scr_anyface\(\s*"([\w ]+)"\s*,\s*[^,]+,\s*([^,)]+)\s*\)/);
     if (m) {
       const fc = SPEAKER_FC[m[1].toLowerCase()];
-      if (fc !== undefined) return fc === 0 ? null : { fc, fe: decodeEmotion(m[2]) ?? 0 };
+      if (fc !== undefined)
+        return fc === 0
+          ? null
+          : withFaceVariant(lines, lineIdx, { fc, fe: decodeEmotion(m[2]) ?? 0 });
     }
     // scr_susface(msgno, emotion) et variantes dédiées
     m = l.match(/(scr_\w*face)\(\s*[^,)]+(?:,\s*([^,)]+))?\)/);
     if (m && FACE_FN_FC[m[1]]) {
-      return { fc: FACE_FN_FC[m[1]], fe: decodeEmotion(m[2]) ?? 0 };
+      return withFaceVariant(lines, lineIdx, {
+        fc: FACE_FN_FC[m[1]],
+        fe: decodeEmotion(m[2]) ?? 0,
+      });
     }
     // c_speaker("susie") / scr_speaker : remet fc à 0 puis pose le visage du
     // personnage (scr_speaker : susie→1, ralsei→2, noelle→3, queen→21, etc.)
     m = l.match(/(?:c_speaker|scr_speaker)\(\s*"([\w ]+)"/);
     if (m && i !== lineIdx) {
       const fc = SPEAKER_FC[m[1].toLowerCase()];
-      return fc ? { fc, fe: 0 } : null;
+      return fc ? withFaceVariant(lines, lineIdx, { fc, fe: 0 }) : null;
     }
     // tags \Fx inline dans un texte au-dessus (le dernier de la ligne gagne)
     if (i !== lineIdx) {
@@ -275,10 +353,53 @@ function findFace(lines, lineIdx) {
           const fe = eTags.length
             ? decodeEmotion(eTags[eTags.length - 1][1]) ?? 0
             : 0;
-          return { fc, fe };
+          return withFaceVariant(lines, lineIdx, { fc, fe });
         }
       }
     }
+  }
+  return null;
+}
+
+function codeOwner(file) {
+  return file
+    .replace(/\.gml$/, "")
+    .replace(/_(?:Create|Step|Draw|Other|Alarm|Destroy|CleanUp|PreCreate)_\d+$/, "");
+}
+
+function startsWithWriterAsterisk(text) {
+  return String(text).replace(/^(?:\\..|\^[0-9]|[|&]|\s)*/, "").startsWith("*");
+}
+
+function isLargeShopDialogue(file, text) {
+  const source = String(text);
+  return (
+    /gml_Object_obj_shop\w*_(?:Create|Draw|Other)_\d+/.test(file) &&
+    /(?:\/%|[/%])$/.test(source) &&
+    startsWithWriterAsterisk(source)
+  );
+}
+
+// Un texte peut être déclaré dans Create et envoyé à scr_battletext depuis
+// Step. On raisonne donc par propriétaire d'objet, tous événements confondus.
+function findBattleTextOwners(codeDir) {
+  const owners = new Set();
+  for (const file of fs.readdirSync(codeDir).filter((name) => name.endsWith(".gml"))) {
+    const source = fs.readFileSync(path.join(codeDir, file), "utf8");
+    if (/\bscr_battletext(?:_default)?\s*\(/.test(source)) owners.add(codeOwner(file));
+  }
+  return owners;
+}
+
+function inferPreviewMode(file, text, battleTextOwners) {
+  const cleanFile = file.replace(/\.gml$/, "");
+  if (isLargeShopDialogue(cleanFile, text)) return "shop";
+  if (
+    startsWithWriterAsterisk(text) &&
+    (battleTextOwners.has(codeOwner(cleanFile)) ||
+      /scr_encountersetup|obj_battlecontroller/.test(cleanFile))
+  ) {
+    return "battletext";
   }
   return null;
 }
@@ -288,7 +409,13 @@ function findFace(lines, lineIdx) {
 // ---------------------------------------------------------------------------
 export function buildReference(codeDir, log = () => {}) {
   const entries = scanCatalog(codeDir, log);
+  const battleTextOwners = findBattleTextOwners(codeDir);
   log(`  ${entries.length} appels localisés trouvés`);
+  const entriesByFile = new Map();
+  for (const entry of entries) {
+    if (!entriesByFile.has(entry.file)) entriesByFile.set(entry.file, []);
+    entriesByFile.get(entry.file).push(entry);
+  }
   const fileCache = new Map();
   const getLines = (file) => {
     if (!fileCache.has(file)) {
@@ -306,6 +433,8 @@ export function buildReference(codeDir, log = () => {}) {
 
   const ref = {};
   let faceCount = 0;
+  let smallFaceCount = 0;
+  let linkedSmallFaceCount = 0;
   for (const e of entries) {
     if (ref[e.id]) continue;
     const entry = {
@@ -315,9 +444,34 @@ export function buildReference(codeDir, log = () => {}) {
       file: e.file.replace(/\.gml$/, ""),
       line: e.line,
     };
+    const previewMode = inferPreviewMode(e.file, e.english, battleTextOwners);
+    if (previewMode) entry.previewMode = previewMode;
     if (e.substitutions?.length) entry.substitutions = e.substitutions;
+    const lines = getLines(e.file);
+    if (lines) {
+      const smallFace = findSmallFace(lines, e.line - 1, e.id);
+      if (smallFace) {
+        const triggerTag = `\\f${smallFace.slot}`;
+        const trigger = (entriesByFile.get(e.file) ?? []).find(
+          (candidate) =>
+            candidate.line >= smallFace.callLine &&
+            candidate.line <= smallFace.callLine + 80 &&
+            candidate.channel !== "string" &&
+            candidate.english.includes(triggerTag)
+        );
+        entry.smallFace = {
+          slot: smallFace.slot,
+          speaker: smallFace.speaker,
+          expression: smallFace.expression,
+          x: smallFace.x,
+          y: smallFace.y,
+          ...(trigger ? { dialogueKey: trigger.id } : {}),
+        };
+        smallFaceCount++;
+        if (trigger) linkedSmallFaceCount++;
+      }
+    }
     if (e.channel !== "string") {
-      const lines = getLines(e.file);
       if (lines) {
         const face = findFace(lines, e.line - 1);
         if (face) {
@@ -328,7 +482,10 @@ export function buildReference(codeDir, log = () => {}) {
     }
     ref[e.id] = entry;
   }
-  log(`  ${Object.keys(ref).length} ids uniques, ${faceCount} visages détectés`);
+  log(
+    `  ${Object.keys(ref).length} ids uniques, ${faceCount} visages détectés, ` +
+      `${smallFaceCount} textes secondaires (${linkedSmallFaceCount} reliés)`
+  );
   return ref;
 }
 
@@ -341,6 +498,7 @@ export function buildReference(codeDir, log = () => {}) {
 export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
   const ids = new Set(Object.keys(enJson).filter((k) => k !== "date"));
   const files = fs.readdirSync(codeDir).filter((f) => f.endsWith(".gml"));
+  const battleTextOwners = findBattleTextOwners(codeDir);
   const sites = new Map(); // id → {file, line, context}
   const STR_RE = /"((?:[^"\\]|\\.)+)"/g;
   let scanned = 0;
@@ -381,6 +539,8 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
     if (site) {
       entry.file = site.file.replace(/\.gml$/, "");
       entry.line = site.line;
+      const previewMode = inferPreviewMode(site.file, entry.en, battleTextOwners);
+      if (previewMode) entry.previewMode = previewMode;
       const lines = getLines(site.file);
       const ctx = lines ? lines[site.line - 1] ?? "" : "";
       if (/global\.msg\[|msgset|msgnext/.test(ctx)) entry.channel = "message";
@@ -432,7 +592,7 @@ using (StreamWriter sw = new(Path.Combine(outRoot, "sprites_list.txt")))
     foreach (var spr in Data.Sprites)
     {
         if (spr is null) continue;
-        sw.WriteLine($"{spr.Name.Content};{spr.Textures.Count};{spr.Width};{spr.Height}");
+        sw.WriteLine($"{spr.Name.Content};{spr.Textures.Count};{spr.Width};{spr.Height};{spr.OriginX};{spr.OriginY}");
     }
 }
 ScriptMessage("SPRITELIST_OK");
@@ -457,7 +617,17 @@ ScriptMessage("FONTS_OK");
 
 string[] prefixes = new string[] {
     "spr_face_", "spr_face", "spr_textbox_", "spr_pxwhite", "spr_battleblcon", "spr_blcon",
-    "button_", "spr_smallface", "spr_darkface", "spr_alphysface"
+    "button_", "spr_smallface", "spr_darkface", "spr_alphysface", "spr_seam_",
+    "spr_head", "spr_bname", "spr_tensionbar"
+};
+string[] previewNames = new string[] {
+    "bg_seam_shop_ch2", "bg_battleback1", "spr_npc_trashy",
+    "spr_npc_nubert_super_burrow", "spr_ballperson_battle",
+    "spr_ballperson_battle_wig", "spr_bullet_trash", "spr_trashy_hoop",
+    "spr_krisb_act", "spr_krisb_idle", "spr_susieb_idle", "spr_ralseib_act",
+    "spr_ralseib_idle", "spr_ralsei_act", "spr_ralsei_idle",
+    "spr_hpslash", "spr_hpname", "spr_numbersfontsmall", "spr_tplogo",
+    "spr_tensionbar_cutout", "spr_tensionmarker"
 };
 int exported = 0;
 using (TextureWorker worker = new())
@@ -466,7 +636,7 @@ using (TextureWorker worker = new())
     {
         if (spr is null) continue;
         string name = spr.Name.Content;
-        if (!prefixes.Any(p => name.StartsWith(p))) continue;
+        if (!prefixes.Any(p => name.StartsWith(p)) && !previewNames.Contains(name)) continue;
         for (int i = 0; i < spr.Textures.Count; i++)
         {
             if (spr.Textures[i]?.Texture is null) continue;

@@ -7,7 +7,7 @@ import { substituteArgs } from "./engine/writer.js";
 // État global
 // ---------------------------------------------------------------------------
 let lang = {}; // objet complet du lang_fr.json (ordre des clés préservé)
-let reference = {}; // id -> {en, call, channel, file, line, face, substitutions}
+let reference = {}; // id -> {en, call, channel, file, line, face, substitutions, smallFace}
 let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme }
 let entries = []; // index pour la liste
 let entriesByKey = new Map();
@@ -23,10 +23,13 @@ let sequences = new Map(); // key -> [keys de la même séquence]
 const editHistories = new Map(); // historique indépendant pour chaque clé
 let pendingEdit = null;
 let applyingHistory = false;
+let backupPromise = null;
 
 const $ = (id) => document.getElementById(id);
 
 const ROW_H = 65;
+const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
+const BACKUP_CHECK_MS = 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Infobulles
@@ -125,7 +128,13 @@ async function init() {
   reference = data.reference;
 
   const fonts = await loadFonts(data.extractedDir, parseFontCsvs(data.fonts));
-  preview = new Preview($("preview-canvas"), data.extractedDir, fonts, data.spriteFiles);
+  preview = new Preview(
+    $("preview-canvas"),
+    data.extractedDir,
+    fonts,
+    data.spriteFiles,
+    data.spriteMeta
+  );
 
   buildIndex();
   savedTranslations = new Map(entries.map((entry) => [entry.key, entry.fr]));
@@ -356,12 +365,14 @@ function updateValidateButton() {
   if (!applicable) return;
   const validated = !!prefs.validated[selectedKey];
   btn.classList.toggle("validated", validated);
-  btn.textContent = validated ? "✔ Marquée OK (identique voulu)" : "✓ OK tel quel";
+  $("validate-label").textContent = validated
+    ? "✔ Marquée OK (identique voulu)"
+    : "✓ OK tel quel";
 }
 
 function toggleValidated() {
   const e = entriesByKey.get(selectedKey);
-  if (!e || e.en == null) return;
+  if (!e || e.en == null || e.fr !== e.en) return;
   if (prefs.validated[selectedKey]) delete prefs.validated[selectedKey];
   else prefs.validated[selectedKey] = true;
   window.api.savePrefs(prefs);
@@ -462,7 +473,8 @@ function updateLineLens(text) {
   const hasFace = /\\F[^0]/.test(text) || inheritedState().fc !== 0;
   let charline = 33;
   if (mode === "battletext") charline = hasFace ? 29 : 37;
-  else if (mode === "darkbox" || mode === "lightbox") charline = hasFace ? 26 : 33;
+  else if (mode === "darkbox" || mode === "lightbox" || mode === "shop")
+    charline = hasFace ? 26 : 33;
   else charline = 999;
 
   const lines = visualLines(text);
@@ -502,15 +514,32 @@ function schedulePreview() {
   previewTimer = setTimeout(runPreview, 120);
 }
 
+// Les écrans de shop alternent entre deux petites colonnes (menus) et une
+// grande boîte plein écran (menu == 4). Les dialogues de cette dernière sont
+// les messages étoilés terminés par / ou %, y compris dans les vieux shops où
+// ils sont stockés avec stringsetloc avant d'être copiés dans global.msg.
+function isLargeShopDialogue(e) {
+  const file = (e?.file || "").toLowerCase();
+  if (!/gml_object_obj_shop\w*_(?:create|draw|other)_0/.test(file)) return false;
+  const source = e.en ?? e.fr ?? "";
+  if (!/(?:\/%|[/%])$/.test(source)) return false;
+  const visibleStart = source.replace(/^(?:\\..|\^[0-9]|[|&]|\s)*/, "");
+  return visibleStart.startsWith("*");
+}
+
 function autoMode(e) {
   if (!e || e.noref) return "darkbox";
-  if (e.channel === "string") return "plain";
+  if (reference[e.key]?.smallFace?.dialogueKey) return "darkbox";
+  const detectedMode = reference[e.key]?.previewMode;
+  if (detectedMode) return detectedMode;
   const f = (e.file || "").toLowerCase();
-  if (/enemy|battle|blcon|_attack|encounter|boss/.test(f) && e.channel.startsWith("message")) {
+  if (isLargeShopDialogue(e)) return "shop";
+  if (/enemy|battle|blcon|_attack|encounter|boss|trashy_trio/.test(f)) {
     // texte à astérisque = boîte de combat en bas ; sinon = bulle de l'ennemi
     const t = (e.en ?? e.fr ?? "").replace(/^(\\..|\^[0-9]|[|&/%])*/, "");
     return t.startsWith("*") ? "battletext" : "bubble";
   }
+  if (e.channel === "string") return "plain";
   return "darkbox";
 }
 
@@ -524,11 +553,12 @@ function effectiveMode() {
 
 // Hérite fc/fe du contexte GML (précalculé) puis des lignes précédentes de la séquence
 function inheritedState() {
-  const state = { fc: 0, fe: 0, typer: null };
+  const state = { fc: 0, fe: 0, faceVariant: null, typer: null };
   const ref = reference[selectedKey];
   if (ref?.face) {
     state.fc = ref.face.fc;
     state.fe = ref.face.fe ?? 0;
+    state.faceVariant = ref.face.variant ?? null;
   }
   const seq = sequences.get(selectedKey);
   if (!seq) return state;
@@ -563,7 +593,33 @@ async function runPreview() {
   const substitution = substituteArgs(sourceText, reference[selectedKey]?.substitutions);
   const mode = effectiveMode();
   const state = inheritedState();
+  const sourceFile = reference[selectedKey]?.file ?? e.file ?? "";
+  if (/obj_shop1(?:_|$)/i.test(sourceFile)) state.scene = "shop-seam";
+  if (/obj_trashy_trio(?:_|$)/i.test(sourceFile)) state.scene = "trashy-trio";
+  if (/obj_shop_music(?:_|$)/i.test(sourceFile)) {
+    state.typer = 78;
+    state.shopCharline = 36;
+  }
   state.bubbleSide = prefs.bubbleSides[selectedKey] ?? 1;
+  const smallFace = reference[selectedKey]?.smallFace;
+  if (smallFace?.dialogueKey) {
+    const dialogueKey = smallFace.dialogueKey;
+    const dialogueRef = dialogueKey ? reference[dialogueKey] : null;
+    const dialogueSource = showEn
+      ? dialogueRef?.en ?? ""
+      : dialogueKey && lang[dialogueKey] != null
+        ? lang[dialogueKey]
+        : dialogueRef?.en ?? "";
+    const dialogueSubstitution = substituteArgs(dialogueSource, dialogueRef?.substitutions);
+    state.fc = dialogueRef?.face?.fc ?? 0;
+    state.fe = dialogueRef?.face?.fe ?? 0;
+    state.faceVariant = dialogueRef?.face?.variant ?? null;
+    state.smallFace = {
+      ...smallFace,
+      text: substitution.text,
+      dialogueText: dialogueSubstitution.text,
+    };
+  }
   // forçage manuel du visage pour la preview
   const fo = prefs.faceOverrides[selectedKey];
   if (fo) {
@@ -921,8 +977,9 @@ function save() {
       if (!dirty) {
         const st = $("save-state");
         st.className = "saved";
-        st.textContent = `✔ Sauvegardé à ${new Date(r.savedAt).toLocaleTimeString()}` +
-          " (backup créé)";
+        st.textContent =
+          `✔ Sauvegardé à ${new Date(r.savedAt).toLocaleTimeString()}` +
+          (r.backupCreated ? " (backup créé)" : "");
       }
       updateProgress();
       renderList();
@@ -936,6 +993,24 @@ function save() {
   })();
   return savePromise;
 }
+
+function backupIfModified() {
+  if (!dirty || backupPromise) return;
+  backupPromise = window.api
+    .backupLang({ ...lang })
+    .then((result) => {
+      if (!result.ok) console.error(`Backup automatique impossible : ${result.error}`);
+    })
+    .catch((error) => console.error("Backup automatique impossible :", error))
+    .finally(() => {
+      backupPromise = null;
+    });
+}
+
+setTimeout(() => {
+  backupIfModified();
+  setInterval(backupIfModified, BACKUP_CHECK_MS);
+}, BACKUP_INTERVAL_MS);
 
 async function handleCloseRequest() {
   if (closePromptOpen) return;
@@ -1006,7 +1081,10 @@ function bindEvents() {
   ta.addEventListener("input", () => onEdit());
   ta.addEventListener("keydown", (ev) => {
     const shortcut = ev.ctrlKey || ev.metaKey;
-    if (shortcut && ev.key.toLowerCase() === "z") {
+    if (ev.ctrlKey && ev.key === "Enter") {
+      ev.preventDefault();
+      toggleValidated();
+    } else if (shortcut && ev.key.toLowerCase() === "z") {
       ev.preventDefault();
       applyEditHistory(ev.shiftKey ? "redo" : "undo");
     } else if (shortcut && ev.key.toLowerCase() === "y") {
@@ -1073,7 +1151,12 @@ function bindEvents() {
   };
 
   window.addEventListener("keydown", (ev) => {
-    if (ev.ctrlKey && (ev.key === "d" || ev.key === "D")) {
+    if (ev.ctrlKey && ev.key === "Enter") {
+      if (!ev.defaultPrevented) {
+        ev.preventDefault();
+        toggleValidated();
+      }
+    } else if (ev.ctrlKey && (ev.key === "d" || ev.key === "D")) {
       ev.preventDefault();
       toggleValidated();
     } else if (ev.ctrlKey && ev.key === "ArrowDown") {

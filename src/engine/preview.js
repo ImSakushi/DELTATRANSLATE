@@ -30,11 +30,13 @@ const FACE_TABLE = {
   },
   3: {
     ox: -12, oy: -10,
-    resolve: (fe) => [
-      { name: "spr_face_n_matome", frame: fe },
-      { name: "spr_face_n_matome_extended", frame: fe },
-      { name: `spr_face_n${feSuffix(fe)}`, frame: 0 }, // anciens chapitres
-    ],
+    resolve: (fe, _dark, variant) =>
+      variant === "noelle-extended"
+        ? [{ name: "spr_face_n_matome_extended", frame: fe }]
+        : [
+            { name: "spr_face_n_matome", frame: fe },
+            { name: `spr_face_n${feSuffix(fe)}`, frame: 0 }, // anciens chapitres
+          ],
   },
   4: {
     ox: 0, oy: 0,
@@ -96,15 +98,32 @@ const FACE_TABLE = {
   },
 };
 
+// scr_smallface : banque de sprites utilisée par les portraits secondaires.
+const SMALL_FACE_SPRITES = {
+  susie: "spr_face_susie_alt",
+  ralsei: "spr_face_r_nohat",
+  lancer: "spr_face_l0",
+  noelle: "spr_face_n_matome",
+  noelle_cropped: "spr_face_n_matome_cropped",
+  queen: "spr_face_queen",
+  rouxls: "spr_face_rurus",
+  berdly: "spr_face_berdly_dark",
+  rudy: "spr_face_rudy",
+  flowery: "spr_face_flowery",
+  toriel: "spr_face_t0",
+  opuppet: "spr_miniface_orange",
+};
+
 const SPRITE_CACHE = new Map();
 
 export class Preview {
-  constructor(canvas, extractedDir, fonts, spriteFiles) {
+  constructor(canvas, extractedDir, fonts, spriteFiles, spriteMeta = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.extractedDir = extractedDir;
     this.fonts = fonts;
     this.spriteFiles = new Set(spriteFiles);
+    this.spriteMeta = spriteMeta;
     this.jewelTimer = 0;
   }
 
@@ -129,18 +148,23 @@ export class Preview {
   }
 
   // -------------------------------------------------------------------------
-  // Rendu principal. mode: darkbox | lightbox | bubble | battletext | plain
+  // Rendu principal. mode: darkbox | lightbox | shop | bubble | battletext | plain
   // state: { fc, fe, typer, bubbleSide } hérité de la séquence
   // -------------------------------------------------------------------------
   async render(text, mode, state = {}) {
     this.jewelTimer++;
+    if (state.smallFace) {
+      return this.renderDialogue(state.smallFace.dialogueText, state, { dark: true });
+    }
     switch (mode) {
+      case "shop":
+        return this.renderShop(text, state);
       case "lightbox":
         return this.renderDialogue(text, state, { dark: false });
       case "bubble":
         return this.renderBubble(text, state);
       case "battletext":
-        return this.renderDialogue(text, state, { dark: true, fight: true });
+        return this.renderBattleText(text, state);
       case "plain":
         return this.renderPlain(text, state);
       case "darkbox":
@@ -177,6 +201,279 @@ export class Preview {
       }
       font.drawChar(ctx, op.ch, ox + op.x * scale, oy + op.y * scale, color, scale);
     }
+  }
+
+  // draw_sprite_ext : la position GameMaker correspond à l'origine du sprite,
+  // pas à son coin supérieur gauche.
+  async drawGameSprite(
+    ctx,
+    name,
+    frame,
+    x,
+    y,
+    xscale = 1,
+    yscale = xscale,
+    angle = 0,
+    { exact = false, alpha = 1, filter = "none" } = {}
+  ) {
+    const img = await this.sprite(name, frame, exact);
+    if (!img) return false;
+    const meta = this.spriteMeta[name] ?? {};
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.filter = filter;
+    ctx.translate(Math.round(x), Math.round(y));
+    ctx.rotate((angle * Math.PI) / 180);
+    ctx.scale(xscale, yscale);
+    ctx.drawImage(img, -(meta.originX ?? 0), -(meta.originY ?? 0));
+    ctx.restore();
+    return true;
+  }
+
+  async tileSprite(ctx, name, offsetX, offsetY, width, height, alpha = 1) {
+    const img = await this.sprite(name, 0, true);
+    if (!img) return;
+    const startX = ((offsetX % img.width) + img.width) % img.width - img.width;
+    const startY = ((offsetY % img.height) + img.height) % img.height - img.height;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    for (let y = startY; y < height; y += img.height) {
+      for (let x = startX; x < width; x += img.width) ctx.drawImage(img, x, y);
+    }
+    ctx.restore();
+  }
+
+  // obj_shop1 Draw_0 : décor Seam ×2, vendeur à (160,34), puis la grande
+  // boîte scr_darkbox_black(0,240,640,480) et writer à (30,270).
+  async renderShop(text, state = {}) {
+    const fmt = formatText(text, {
+      charline: state.shopCharline ?? 33,
+      initialFc: 0,
+    });
+    const lay = layoutText(fmt.text, {
+      typer: state.typer ?? 6,
+      dark: true,
+      writingx: 30,
+      writingy: 270,
+      initialFc: 0,
+    });
+    const ctx = this.clear(640, 480);
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, 640, 480);
+    // Le décor est une couche optionnelle : la géométrie du mode shop ne
+    // dépend jamais de la présence d'un vendeur particulier.
+    if (state.scene === "shop-seam") {
+      await this.drawGameSprite(ctx, "bg_seam_shop_ch2", 0, 0, 0, 2);
+      const seamSprites = [
+        "spr_seam_talk",
+        "spr_seam_oh",
+        "spr_seam_laugh",
+        "spr_seam_impatient",
+      ];
+      await this.drawGameSprite(
+        ctx,
+        seamSprites[lay.fe] ?? "spr_seam_talk",
+        Math.floor(this.jewelTimer / 8) % 2,
+        160,
+        34,
+        2
+      );
+    }
+    await this.drawDarkBox(ctx, 0, 240, 640, 480);
+    this.drawOps(ctx, lay.ops, 0, 0, 1);
+
+    const warnings = [...lay.warnings];
+    if (lay.maxX > 632) warnings.push("⚠ Le texte déborde à droite de la boîte");
+    if (lay.maxY + lay.vspace > 472) warnings.push("⚠ Trop de lignes pour la boîte du shop");
+    return { warnings, lines: lay.lines, fc: 0, fe: lay.fe, mode: "shop" };
+  }
+
+  async drawTrashyBallperson(ctx, timer = 0) {
+    const rad = (degrees) => (degrees * Math.PI) / 180;
+    const ldx = (length, degrees) => Math.cos(rad(degrees)) * length;
+    const ldy = (length, degrees) => -Math.sin(rad(degrees)) * length;
+    const center = [120, 124 + Math.sin(timer * 0.1) * 2];
+    const footLeft = [120 + ldx(90, 255), 120 + ldy(90, 255)];
+    const footRight = [120 + ldx(90, 285), 120 + ldy(90, 285)];
+    const assRight = [center[0] + 10, center[1]];
+    const assLeft = [center[0] - 10, center[1]];
+    const torso = [
+      center[0] + Math.cos(timer * 0.05) * 6,
+      center[1] - 25 + Math.sin(timer * 0.1) * 2,
+    ];
+    const shoulderAngle = Math.sin(timer * 0.05) * 6;
+    const shoulderRight = [
+      torso[0] + ldx(25, -10 - shoulderAngle),
+      torso[1] + ldy(25, -10 - shoulderAngle),
+    ];
+    const shoulderLeft = [
+      torso[0] + ldx(25, 190 + shoulderAngle),
+      torso[1] + ldy(25, 190 + shoulderAngle),
+    ];
+    const handRight = [
+      shoulderRight[0] + ldx(25, -40 - shoulderAngle),
+      shoulderRight[1] + ldy(25, -40 - shoulderAngle),
+    ];
+    const handLeft = [
+      shoulderLeft[0] + ldx(25, 220 + shoulderAngle),
+      shoulderLeft[1] + ldy(25, 220 + shoulderAngle),
+    ];
+    const headAngle = 110 + Math.sin(timer * 0.05) * 10;
+    const head = [torso[0] + ldx(30, headAngle), torso[1] + ldy(30, headAngle)];
+    // Les pieds sont à 90 px du bassin et les deux segments font 45 px :
+    // dans le GML, les genoux sont donc exactement à mi-chemin.
+    const kneeLeft = [(center[0] + footLeft[0]) / 2, (center[1] + footLeft[1]) / 2];
+    const kneeRight = [(center[0] + footRight[0]) / 2, (center[1] + footRight[1]) / 2];
+
+    const surfaceX = 516 - 120;
+    const surfaceY = 167 - 120;
+    const xoff = surfaceX - 22;
+    const yoff = surfaceY - 18;
+    const mix = (a, b, amountA) => a * amountA + b * (1 - amountA);
+    const part = (point, name = "spr_ballperson_battle") =>
+      this.drawGameSprite(ctx, name, 0, point[0] + xoff, point[1] + yoff, 2);
+
+    await part(handLeft);
+    await part(shoulderLeft);
+    await part([mix(footLeft[0], kneeLeft[0], 0.75), mix(footLeft[1], kneeLeft[1], 0.75)]);
+    await part([mix(footLeft[0], kneeLeft[0], 0.25), mix(footLeft[1], kneeLeft[1], 0.25)]);
+    await part([mix(kneeLeft[0], assLeft[0], 0.75), mix(kneeLeft[1], assLeft[1], 0.75)]);
+    await part([mix(kneeLeft[0], assLeft[0], 0.25), mix(kneeLeft[1], assLeft[1], 0.25)]);
+    await part([center[0], center[1] - 5]);
+    await part(torso);
+    await part(head, "spr_ballperson_battle_wig");
+    await part([mix(assRight[0], kneeRight[0], 0.75), mix(assRight[1], kneeRight[1], 0.75)]);
+    await part([mix(assRight[0], kneeRight[0], 0.25), mix(assRight[1], kneeRight[1], 0.25)]);
+    await part([mix(kneeRight[0], footRight[0], 0.75), mix(kneeRight[1], footRight[1], 0.75)]);
+    await part([mix(kneeRight[0], footRight[0], 0.25), mix(kneeRight[1], footRight[1], 0.25)]);
+    await part(shoulderRight);
+    await part(handRight);
+  }
+
+  async drawSmallNumber(ctx, text, rightX, y) {
+    const chars = "0123456789-+";
+    const value = String(text);
+    let x = rightX - value.length * 8;
+    for (const ch of value) {
+      const frame = chars.indexOf(ch);
+      if (frame >= 0) await this.drawGameSprite(ctx, "spr_numbersfontsmall", frame, x, y);
+      x += 8;
+    }
+  }
+
+  async drawBattleHud(ctx) {
+    const boundary = "#351435";
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 325, 640, 155);
+    ctx.fillStyle = boundary;
+    ctx.fillRect(0, 325, 640, 3);
+    ctx.fillRect(0, 362, 640, 3);
+
+    const party = [
+      { chunk: 0, head: "spr_headkris", headFrame: 6, name: "spr_bnamekris", hp: 111, max: 240, color: "#00FFFF" },
+      { chunk: 213, head: "spr_headsusie", headFrame: 6, name: "spr_bnamesusie", hp: 238, max: 290, color: "#FF00FF" },
+      { chunk: 426, head: "spr_headralsei", headFrame: 0, name: "spr_bnameralsei", hp: 210, max: 210, color: "#00FF00" },
+    ];
+    for (const member of party) {
+      const x = member.chunk;
+      await this.drawGameSprite(ctx, member.head, member.headFrame, x + 13, 336);
+      await this.drawGameSprite(ctx, member.name, 0, x + 51, 339);
+      await this.drawGameSprite(ctx, "spr_hpname", 0, x + 109, 347);
+      await this.drawSmallNumber(ctx, member.hp, x + 160, 334);
+      await this.drawGameSprite(ctx, "spr_hpslash", 0, x + 159, 332);
+      await this.drawSmallNumber(ctx, member.max, x + 205, 334);
+      ctx.fillStyle = "#800000";
+      ctx.fillRect(x + 128, 347, 75, 8);
+      ctx.fillStyle = member.color;
+      ctx.fillRect(x + 128, 347, Math.ceil((member.hp / member.max) * 75), 8);
+    }
+  }
+
+  async drawTensionBar(ctx) {
+    const x = 52;
+    const y = 40;
+    await this.drawGameSprite(ctx, "spr_tensionbar", 1, x, y);
+    ctx.fillStyle = "#FF9933";
+    ctx.fillRect(x + 3, y + 196 - 196 * 0.6, 21, 196 * 0.6 - 1);
+    await this.drawGameSprite(ctx, "spr_tensionbar", 0, x, y);
+    await this.drawGameSprite(ctx, "spr_tensionbar_cutout", 0, x, y);
+    await this.drawGameSprite(ctx, "spr_tplogo", 0, x - 30, y + 30);
+    this.fonts.mainbig?.drawText(ctx, "60", x - 30, y + 70, "#FFFFFF", 1, 28);
+    this.fonts.mainbig?.drawText(ctx, "%", x - 25, y + 95, "#FFFFFF", 1, 28);
+  }
+
+  // Coque générale de scr_battletext_default : décor de combat, jauge TP, HUD
+  // à bp=152 et writer à (30,376). Une rencontre connue peut ajouter sa scène,
+  // mais le panneau de texte ne dépend jamais de cette décoration.
+  async renderBattleText(text, state = {}) {
+    const ctx = this.clear(640, 480);
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, 640, 480);
+    await this.tileSprite(ctx, "bg_battleback1", -82, -82, 640, 325, 0.5);
+    await this.tileSprite(ctx, "bg_battleback1", -224, -234, 640, 325, 1);
+
+    if (state.scene === "trashy-trio") {
+      const debris = [
+        [0, 289, 43, -18], [1, 319, 37, 21], [2, 246, 79, -8],
+        [3, 290, 121, 31], [0, 329, 112, 5], [1, 216, 137, -22],
+        [4, 279, 138, 40], [2, 326, 149, -15], [0, 338, 164, 17],
+        [3, 288, 171, 29], [1, 208, 197, -12], [4, 235, 210, 8],
+        [2, 187, 241, 33], [0, 281, 247, -18], [3, 300, 260, 24],
+      ];
+      for (const [frame, x, y, angle] of debris) {
+        await this.drawGameSprite(ctx, "spr_bullet_trash", frame, x, y, 1, 1, angle, {
+          exact: true,
+          filter: "brightness(50%)",
+        });
+      }
+    }
+
+    const specificScene = state.scene === "trashy-trio";
+    await this.drawGameSprite(ctx, specificScene ? "spr_krisb_act" : "spr_krisb_idle", specificScene ? 5 : 0, 94, 50, 2);
+    await this.drawGameSprite(ctx, "spr_susieb_idle", 0, 80, 122, 2);
+    await this.drawGameSprite(ctx, specificScene ? "spr_ralsei_act" : "spr_ralsei_idle", 0, 72, 200, 2);
+    if (state.scene === "trashy-trio") {
+      await this.drawTrashyBallperson(ctx, 0);
+      await this.drawGameSprite(ctx, "spr_npc_trashy", 0, 386, 170, 2);
+      await this.drawGameSprite(ctx, "spr_npc_nubert_super_burrow", 0, 546, 202, 2);
+    }
+    await this.drawTensionBar(ctx);
+    await this.drawBattleHud(ctx);
+
+    const initialFc = state.fc || 0;
+    const fmt = formatText(text, { charline: 33, battle: true, initialFc });
+    const lay = layoutText(fmt.text, {
+      typer: state.typer ?? 4,
+      dark: true,
+      fight: true,
+      writingx: 30,
+      writingy: 376,
+      faceXShift: 116,
+      initialFc,
+      initialFe: state.fe || 0,
+    });
+    let faceExact = true;
+    if (lay.fc !== 0) {
+      const face = await this.drawFace(
+        ctx,
+        lay.fc,
+        lay.fe,
+        26,
+        380,
+        2,
+        true,
+        state.faceVariant
+      );
+      faceExact = face.exact;
+    }
+    this.drawOps(ctx, lay.ops, 0, 0, 1);
+
+    const warnings = [...lay.warnings];
+    if (!faceExact)
+      warnings.push(`⚠ Expression ${lay.fe} introuvable pour ce visage — frame 0 affichée`);
+    if (lay.maxX > 632) warnings.push("⚠ Le texte de combat déborde à droite");
+    if (lay.maxY + lay.vspace > 480) warnings.push("⚠ Trop de lignes pour le panneau de combat");
+    return { warnings, lines: lay.lines, fc: lay.fc, fe: lay.fe, mode: "battletext" };
   }
 
   // --- Boîte de dialogue (monde sombre f=2 sur 640x480 ; monde clair f=1 sur
@@ -246,12 +543,20 @@ export class Preview {
     let faceExact = true;
     if (lay.fc !== 0) {
       const r = await this.drawFace(
-        ctx, lay.fc, lay.fe, writerX + 8 * f, writerY + 5 * f, f, dark
+        ctx,
+        lay.fc,
+        lay.fe,
+        writerX + 8 * f,
+        writerY + 5 * f,
+        f,
+        dark,
+        state.faceVariant
       );
       faceExact = r.exact;
     }
 
     this.drawOps(ctx, lay.ops, 0, 0, 1);
+    if (state.smallFace) await this.drawSmallFace(ctx, state.smallFace, writerX, writerY);
     ctx.restore();
 
     const warnings = [...lay.warnings];
@@ -267,6 +572,28 @@ export class Preview {
       fe: lay.fe,
       mode: dark ? (fight ? "battletext" : "darkbox") : "lightbox",
     };
+  }
+
+  // obj_smallface Alarm_0 + scr_smallface_reset : alarm[0] vaut 5 ; l'alarme
+  // stoppe la vitesse avant le 5e déplacement, soit 4 × 10 px vers la gauche.
+  async drawSmallFace(ctx, smallFace, writerX, writerY) {
+    const xPositions = { left: 70, leftmid: 160, mid: 260, middle: 260, rightmid: 360, right: 400 };
+    const yPositions = { top: -10, topmid: 10, mid: 30, middle: 30, bottommid: 50, bottom: 68 };
+    const localX = typeof smallFace.x === "number" ? smallFace.x : xPositions[smallFace.x];
+    const localY = typeof smallFace.y === "number" ? smallFace.y : yPositions[smallFace.y];
+    if (localX == null || localY == null) return;
+
+    const trueX = writerX + localX - 40;
+    const trueY = writerY + localY;
+    const speaker = String(smallFace.speaker).toLowerCase();
+    const spriteName = SMALL_FACE_SPRITES[speaker];
+    const sprite = spriteName
+      ? await this.sprite(spriteName, Number(smallFace.expression) || 0, true)
+      : null;
+    if (sprite) ctx.drawImage(sprite, Math.round(trueX), Math.round(trueY));
+
+    const font = this.fonts.main;
+    if (font) font.drawText(ctx, smallFace.text, trueX + 70, trueY + 10, "#FFFFFF", 1, 16);
   }
 
   // --- Bulle de combat (obj_battleblcon, auto_length = 1)
@@ -409,18 +736,18 @@ export class Preview {
   // --- Portrait (obj_face_Draw_0, branches chapitre 5)
   // fx, fy : position de l'instance obj_face ; f : échelle du sprite
   // Retourne {exact} — false si l'expression demandée n'existe pas telle quelle.
-  async drawFace(ctx, fc, fe, fx, fy, f, dark = true) {
+  async drawFace(ctx, fc, fe, fx, fy, f, dark = true, variant = null) {
     const spec = FACE_TABLE[fc];
     if (!spec) return { exact: false };
     let img = null;
     let exact = true;
-    for (const cand of spec.resolve(fe ?? 0, dark)) {
+    for (const cand of spec.resolve(fe ?? 0, dark, variant)) {
       img = await this.sprite(cand.name, cand.frame, true);
       if (img) break;
     }
     if (!img) {
       exact = false;
-      for (const cand of spec.resolve(0, dark)) {
+      for (const cand of spec.resolve(0, dark, variant)) {
         img = await this.sprite(cand.name, 0);
         if (img) break;
       }

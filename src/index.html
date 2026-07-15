@@ -103,7 +103,10 @@
       <div id="key-context">
         <div id="key-name">—</div>
         <div id="key-meta"></div>
-        <button id="btn-validate" data-tooltip="Marquer cette ligne comme volontairement identique à l'anglais (Ctrl+D)">✓ OK tel quel</button>
+        <button id="btn-validate" type="button" data-tooltip="Marquer cette ligne comme volontairement identique à l'anglais (Ctrl+Entrée ou Ctrl+D)">
+          <span id="validate-label">✓ OK tel quel</span>
+          <kbd>Ctrl+Entrée</kbd>
+        </button>
       </div>
 
       <div id="sequence-bar" data-tooltip="Lignes voisines dans le même fichier (séquence de dialogue)"></div>
@@ -166,6 +169,7 @@
           <option value="auto">Mode : Auto</option>
           <option value="darkbox">Boîte — Monde Sombre</option>
           <option value="lightbox">Boîte — Monde Clair</option>
+          <option value="shop">Shop — Grande boîte</option>
           <option value="bubble">Bulle de combat</option>
           <option value="battletext">Texte de combat</option>
           <option value="plain">Texte libre</option>
