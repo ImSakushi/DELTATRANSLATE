@@ -114,7 +114,31 @@ const SMALL_FACE_SPRITES = {
   opuppet: "spr_miniface_orange",
 };
 
+// Banques global.writerimg préparées par scr_miniface_init_*.
+// La banque flowers vient de face_list dans le GML (IDs résolus via la liste
+// des sprites UTMT) ; les autres affectent directement les noms de sprites.
+const MINI_FACE_BANKS = {
+  flowers: [
+    "spr_miniface_aqua",
+    "spr_miniface_seth",
+    "spr_miniface_orange",
+    "spr_miniface_green",
+    "spr_miniface_yellow",
+    "spr_miniface_blue",
+  ],
+  aquaseth: [null, "spr_miniface_aqua", "spr_miniface_seth"],
+  sweet: [null, "spr_miniface_sweet", "spr_miniface_kk", "spr_miniface_capn"],
+  clover: [
+    null,
+    "spr_miniface_clover_happy",
+    "spr_miniface_clover_mad",
+    "spr_miniface_clover_sad",
+  ],
+};
+
 const SPRITE_CACHE = new Map();
+const SCENE_CACHE = new Map();
+const TINTED_SPRITE_CACHE = new Map();
 
 export class Preview {
   constructor(canvas, extractedDir, fonts, spriteFiles, spriteMeta = {}) {
@@ -145,6 +169,16 @@ export class Preview {
       );
     }
     return SPRITE_CACHE.get(file);
+  }
+
+  async sceneImage(file) {
+    if (!file) return null;
+    if (!SCENE_CACHE.has(file)) {
+      const img = new Image();
+      img.src = "file:///" + (this.extractedDir + "/" + file).replace(/\\/g, "/");
+      SCENE_CACHE.set(file, img.decode().then(() => img).catch(() => null));
+    }
+    return SCENE_CACHE.get(file);
   }
 
   // -------------------------------------------------------------------------
@@ -188,6 +222,27 @@ export class Preview {
     for (let gy = 0; gy < this.canvas.height; gy += 32)
       for (let gx = (gy / 32) % 2 ? 32 : 0; gx < this.canvas.width; gx += 64)
         ctx.fillRect(gx, gy, 32, 32);
+  }
+
+  async drawSceneBackground(ctx, scene, dark) {
+    const img = await this.sceneImage(scene?.image);
+    if (!img) return false;
+    if (dark) {
+      ctx.drawImage(img, 0, 0);
+      return true;
+    }
+
+    // Les vues extraites couvrent 640×480 autour de l'instance. Le monde
+    // clair emploie une caméra 320×240 : on recadre cette même vue autour du
+    // point exact de l'instance, puis le canvas l'agrandit ×2.
+    const roomWidth = Number(scene.roomWidth) || img.width;
+    const roomHeight = Number(scene.roomHeight) || img.height;
+    const wantedX = Math.max(0, Math.min((Number(scene.focusX) || 0) - 160, roomWidth - 320));
+    const wantedY = Math.max(0, Math.min((Number(scene.focusY) || 0) - 120, roomHeight - 240));
+    const sourceX = Math.max(0, Math.min(wantedX - (Number(scene.cameraX) || 0), img.width - 320));
+    const sourceY = Math.max(0, Math.min(wantedY - (Number(scene.cameraY) || 0), img.height - 240));
+    ctx.drawImage(img, sourceX, sourceY, 320, 240, 0, 0, 320, 240);
+    return true;
   }
 
   drawOps(ctx, ops, ox, oy, scale) {
@@ -243,6 +298,59 @@ export class Preview {
     ctx.restore();
   }
 
+  async tintedSprite(name, frame, color) {
+    const key = `${name}:${frame}:${color}`;
+    if (TINTED_SPRITE_CACHE.has(key)) return TINTED_SPRITE_CACHE.get(key);
+    const image = await this.sprite(name, frame);
+    if (!image) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(image, 0, 0);
+    // draw_sprite_ext(..., color, ...) multiplie la couleur propre du sprite
+    // par la teinte du writer ; les mini-visages ch5 ne sont pas blancs.
+    ctx.globalCompositeOperation = "multiply";
+    ctx.fillStyle = color || "#FFFFFF";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(image, 0, 0);
+    TINTED_SPRITE_CACHE.set(key, canvas);
+    return canvas;
+  }
+
+  // obj_writer Draw_0, tag \mN : global.writerimg[N] à
+  // (writingx - 8, wy - 4), scale 2 et teinte mycolor.
+  async drawMiniFaces(ctx, miniFaces, bankName, ox = 0, oy = 0, scale = 1) {
+    if (!miniFaces?.length) return [];
+    const warnings = [];
+    const bank = MINI_FACE_BANKS[bankName];
+    if (!bank) return [`⚠ Banque de mini-visages inconnue : ${bankName || "non détectée"}`];
+
+    for (const face of miniFaces) {
+      const name = bank[face.index];
+      if (!name) {
+        warnings.push(`⚠ Mini-visage \\m${face.index} absent de la banque ${bankName}`);
+        continue;
+      }
+      const frames = this.spriteMeta[name]?.frames ?? 1;
+      const frame = frames > 1 ? Math.floor(this.jewelTimer / 8) % frames : 0;
+      const image = await this.tintedSprite(name, frame, face.color);
+      if (!image) {
+        warnings.push(`⚠ Sprite ${name} introuvable`);
+        continue;
+      }
+      ctx.drawImage(
+        image,
+        Math.round(ox + face.x * scale),
+        Math.round(oy + face.y * scale),
+        image.width * 2 * scale,
+        image.height * 2 * scale
+      );
+    }
+    return warnings;
+  }
+
   // obj_shop1 Draw_0 : décor Seam ×2, vendeur à (160,34), puis la grande
   // boîte scr_darkbox_black(0,240,640,480) et writer à (30,270).
   async renderShop(text, state = {}) {
@@ -280,9 +388,14 @@ export class Preview {
       );
     }
     await this.drawDarkBox(ctx, 0, 240, 640, 480);
+    const miniFaceWarnings = await this.drawMiniFaces(
+      ctx,
+      lay.miniFaces,
+      state.miniFaceBank
+    );
     this.drawOps(ctx, lay.ops, 0, 0, 1);
 
-    const warnings = [...lay.warnings];
+    const warnings = [...lay.warnings, ...miniFaceWarnings];
     if (lay.maxX > 632) warnings.push("⚠ Le texte déborde à droite de la boîte");
     if (lay.maxY + lay.vspace > 472) warnings.push("⚠ Trop de lignes pour la boîte du shop");
     return { warnings, lines: lay.lines, fc: 0, fe: lay.fe, mode: "shop" };
@@ -466,9 +579,14 @@ export class Preview {
       );
       faceExact = face.exact;
     }
+    const miniFaceWarnings = await this.drawMiniFaces(
+      ctx,
+      lay.miniFaces,
+      state.miniFaceBank
+    );
     this.drawOps(ctx, lay.ops, 0, 0, 1);
 
-    const warnings = [...lay.warnings];
+    const warnings = [...lay.warnings, ...miniFaceWarnings];
     if (!faceExact)
       warnings.push(`⚠ Expression ${lay.fe} introuvable pour ce visage — frame 0 affichée`);
     if (lay.maxX > 632) warnings.push("⚠ Le texte de combat déborde à droite");
@@ -485,7 +603,9 @@ export class Preview {
     ctx.save();
     ctx.scale(S, S);
 
-    this.checkerBg(ctx, dark ? "#151020" : "#1a2c20", "rgba(255,255,255,0.025)");
+    const hasScene = await this.drawSceneBackground(ctx, state.sceneContext, dark);
+    if (!hasScene)
+      this.checkerBg(ctx, dark ? "#151020" : "#1a2c20", "rgba(255,255,255,0.025)");
 
     const initialFc = state.fc || 0;
     const typer = state.typer || (fight ? 47 : dark ? 6 : 5);
@@ -555,11 +675,16 @@ export class Preview {
       faceExact = r.exact;
     }
 
+    const miniFaceWarnings = await this.drawMiniFaces(
+      ctx,
+      lay.miniFaces,
+      state.miniFaceBank
+    );
     this.drawOps(ctx, lay.ops, 0, 0, 1);
     if (state.smallFace) await this.drawSmallFace(ctx, state.smallFace, writerX, writerY);
     ctx.restore();
 
-    const warnings = [...lay.warnings];
+    const warnings = [...lay.warnings, ...miniFaceWarnings];
     if (!faceExact)
       warnings.push(`⚠ Expression ${lay.fe} introuvable pour ce visage — frame 0 affichée`);
     if (lay.maxX > boxRight - 8) warnings.push("⚠ Le texte déborde à droite de la boîte");
@@ -646,9 +771,16 @@ export class Preview {
       ctx.restore();
     }
 
+    const miniFaceWarnings = await this.drawMiniFaces(
+      ctx,
+      lay.miniFaces,
+      state.miniFaceBank,
+      writingx,
+      writingy
+    );
     this.drawOps(ctx, lay.ops, writingx, writingy, 1);
 
-    const warnings = [...lay.warnings];
+    const warnings = [...lay.warnings, ...miniFaceWarnings];
     if (bw > 330) warnings.push(`⚠ Bulle très large (${bw}px) — pense à couper avec &`);
     if (writingx < 10) warnings.push("⚠ La bulle sort de l'écran à gauche");
     return { warnings, lines: lay.lines, fc: 0, fe: 0, mode: "bubble" };
@@ -673,8 +805,22 @@ export class Preview {
         ctx.fillStyle = (gx / 16 + gy / 16) % 2 ? "#26262e" : "#1e1e26";
         ctx.fillRect(gx, gy, 16, 16);
       }
+    const miniFaceWarnings = await this.drawMiniFaces(
+      ctx,
+      lay.miniFaces,
+      state.miniFaceBank,
+      8,
+      8,
+      scale
+    );
     this.drawOps(ctx, lay.ops, 8, 8, scale);
-    return { warnings: lay.warnings, lines: lay.lines, fc: 0, fe: 0, mode: "plain" };
+    return {
+      warnings: [...lay.warnings, ...miniFaceWarnings],
+      lines: lay.lines,
+      fc: 0,
+      fe: 0,
+      mode: "plain",
+    };
   }
 
   // --- Boîte du monde sombre (scr_darkbox_black + scr_darkbox)

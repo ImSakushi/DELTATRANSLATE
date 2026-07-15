@@ -30,10 +30,19 @@ cliquer sur **Choisir un data.win…**. DELTATRANSLATE extrait alors localement 
 - le code GML nécessaire au catalogue anglais et au contexte des dialogues ;
 - les polices bitmap ;
 - les portraits et éléments de textbox utiles à la preview ;
+- les décors des rooms, leurs couches de tiles/sprites et les placements des
+  objets qui déclenchent les dialogues ;
 - la référence anglaise et les visages associés aux lignes.
 
 Les extractions sont placées dans les données locales de l'application et ne sont
 jamais versionnées par Git.
+
+Le contexte visuel est lui aussi entièrement généré depuis le `data.win` : pour
+chaque texte, l'import relie son objet GML aux rooms qui le contiennent et produit
+une vue 640×480. Lorsqu'une cutscene contient un `c_pan(x, y, …)` statique, la vue
+reprend directement ces coordonnées de caméra. Les contextes ambigus restent
+sélectionnables dans la preview. Après une mise à jour du jeu, un import avec
+`--force` régénère le code, les ressources et les décors.
 
 ### Choix de la cible de sauvegarde
 
@@ -61,6 +70,8 @@ jamais versionnées par Git.
 - filtre « À traduire » et validation « OK tel quel » ;
 - regroupement des lignes voisines d'une même séquence ;
 - preview temps réel en modes monde sombre, monde clair, combat et texte libre ;
+- décor contextuel automatique derrière les textbox, avec nom de room, niveau
+  de confiance et choix manuel quand plusieurs placements sont possibles ;
 - détection automatique des portraits depuis le GML ;
 - compteurs de colonnes reproduisant le word-wrap du jeu ;
 - import autonome de tous les chapitres pris en charge par UTMT.

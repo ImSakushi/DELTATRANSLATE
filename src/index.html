@@ -103,7 +103,7 @@
       <div id="key-context">
         <div id="key-name">—</div>
         <div id="key-meta"></div>
-        <button id="btn-validate" type="button" data-tooltip="Marquer cette ligne comme volontairement identique à l'anglais (Ctrl+Entrée ou Ctrl+D)">
+        <button id="btn-validate" type="button" data-tooltip="Marquer cette ligne comme volontairement identique à l'anglais, puis passer à la suivante (Ctrl+Entrée ou Ctrl+D)">
           <span id="validate-label">✓ OK tel quel</span>
           <kbd>Ctrl+Entrée</kbd>
         </button>
@@ -181,6 +181,11 @@
         <label>Visage :</label>
         <select id="sel-preview-face"></select>
         <input id="inp-preview-fe" type="number" min="0" max="61" value="0" data-tooltip="Expression (\E)" />
+      </div>
+      <div id="preview-context-controls">
+        <label for="sel-scene-context">Décor :</label>
+        <select id="sel-scene-context"></select>
+        <div id="preview-context-info"></div>
       </div>
       <div id="canvas-wrap">
         <canvas id="preview-canvas" width="640" height="480"></canvas>

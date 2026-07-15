@@ -496,6 +496,22 @@ select { cursor: pointer; }
   font-size: 12px;
   color: var(--fg-dim);
 }
+#preview-context-controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+#preview-context-controls label { white-space: nowrap; }
+#sel-scene-context { min-width: 0; width: 100%; }
+#preview-context-info {
+  grid-column: 1 / -1;
+  line-height: 1.35;
+}
+#preview-context-controls.no-context #sel-scene-context,
+#preview-context-controls.no-context > label { display: none; }
 #inp-preview-fe {
   width: 58px;
   background: var(--bg3);

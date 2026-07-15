@@ -9,6 +9,11 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { buildReference, buildReferenceFromLangJson, makeCsx } from "./import-lib.mjs";
+import {
+  attachRoomContexts,
+  collectRoomContextRequests,
+  makeRoomContextCsx,
+} from "./room-context.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -115,6 +120,38 @@ if (Object.keys(ref).length < 50) {
   ref = buildReferenceFromLangJson(codeDir, enJson, log);
   legacyLanguagePath = plainLang;
 }
+
+// --- 2b. rooms + vues contextuelles ---
+const roomContextPath = path.join(outDir, "room-context.json");
+const roomScenesDir = path.join(outDir, "room-scenes");
+const hasRoomContext =
+  fs.existsSync(roomContextPath) &&
+  fs.existsSync(roomScenesDir) &&
+  fs.readdirSync(roomScenesDir).some((name) => name.endsWith(".png"));
+if (hasRoomContext && !force) {
+  log("  contexte des rooms : déjà extrait (utilise --force pour refaire).");
+} else {
+  log("  extraction automatique des décors et placements de texte…");
+  fs.mkdirSync(roomScenesDir, { recursive: true });
+  const requests = collectRoomContextRequests(ref, codeDir);
+  const roomCsxPath = path.join(os.tmpdir(), `deltatranslate_rooms_${Date.now()}.csx`);
+  fs.writeFileSync(roomCsxPath, makeRoomContextCsx(outDir, requests), "utf8");
+  const roomResult = spawnSync(cli, ["load", sourceDataWin, "-s", roomCsxPath], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  fs.rmSync(roomCsxPath, { force: true });
+  for (const line of (roomResult.stdout || "").split(/\r?\n/)) {
+    if (line.trim().startsWith("ROOM_CONTEXT_")) log(`  ${line.trim()}`);
+  }
+  if (roomResult.status !== 0 || !fs.existsSync(roomContextPath)) {
+    console.error("ERREUR: l’extraction du contexte des rooms a échoué.");
+    console.error((roomResult.stdout || "").slice(-3000));
+    console.error((roomResult.stderr || "").slice(-3000));
+    process.exit(1);
+  }
+}
+attachRoomContexts(ref, codeDir, outDir, log);
 const referencePath = path.join(outDir, "reference.json");
 fs.writeFileSync(referencePath, JSON.stringify(ref), "utf8");
 

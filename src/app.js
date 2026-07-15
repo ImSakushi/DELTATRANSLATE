@@ -110,11 +110,18 @@ async function init() {
   appConfig = data.config ?? {};
   utmtReady = Boolean(data.utmt?.ready);
   prefs = Object.assign(
-    { modeOverrides: {}, bubbleSides: {}, validated: {}, faceOverrides: {} },
+    {
+      modeOverrides: {},
+      bubbleSides: {},
+      validated: {},
+      faceOverrides: {},
+      sceneOverrides: {},
+    },
     data.prefs
   );
   if (!prefs.validated) prefs.validated = {};
   if (!prefs.faceOverrides) prefs.faceOverrides = {};
+  if (!prefs.sceneOverrides) prefs.sceneOverrides = {};
   applyTheme(prefs.theme === "light" ? "light" : "dark");
   $("btn-theme").onclick = toggleTheme;
 
@@ -353,6 +360,7 @@ function selectKey(key) {
   updateModeSelect();
   updateValidateButton();
   updateFaceOverrideControls();
+  updateSceneContextControls();
   schedulePreview();
 }
 
@@ -373,13 +381,15 @@ function updateValidateButton() {
 function toggleValidated() {
   const e = entriesByKey.get(selectedKey);
   if (!e || e.en == null || e.fr !== e.en) return;
-  if (prefs.validated[selectedKey]) delete prefs.validated[selectedKey];
+  const wasValidated = !!prefs.validated[selectedKey];
+  if (wasValidated) delete prefs.validated[selectedKey];
   else prefs.validated[selectedKey] = true;
   window.api.savePrefs(prefs);
   e.todo = computeTodo(e);
   updateValidateButton();
   updateProgress();
-  renderListRaf();
+  if (!wasValidated) gotoTodo(1);
+  applyFilter();
 }
 
 function renderSequenceBar(e) {
@@ -553,8 +563,16 @@ function effectiveMode() {
 
 // Hérite fc/fe du contexte GML (précalculé) puis des lignes précédentes de la séquence
 function inheritedState() {
-  const state = { fc: 0, fe: 0, faceVariant: null, typer: null };
+  const state = {
+    fc: 0,
+    fe: 0,
+    faceVariant: null,
+    typer: null,
+    miniFaceBank: null,
+  };
   const ref = reference[selectedKey];
+  state.typer = ref?.typer ?? null;
+  state.miniFaceBank = ref?.miniFaceBank ?? null;
   if (ref?.face) {
     state.fc = ref.face.fc;
     state.fe = ref.face.fe ?? 0;
@@ -585,6 +603,64 @@ function scanStateTags(text, state) {
   }
 }
 
+function sceneContextKey(context) {
+  return `${context.image}|${context.focusX ?? ""}|${context.focusY ?? ""}`;
+}
+
+function selectedSceneContext() {
+  if (!roomSceneApplies()) return null;
+  const contexts = reference[selectedKey]?.sceneContexts ?? [];
+  if (!contexts.length) return null;
+  const override = prefs.sceneOverrides[selectedKey];
+  return contexts.find((context) => sceneContextKey(context) === override) ?? contexts[0];
+}
+
+function roomSceneApplies() {
+  return ["darkbox", "lightbox"].includes(effectiveMode());
+}
+
+function contextConfidenceLabel(confidence) {
+  if (confidence === "camera-exact") return "caméra exacte";
+  if (confidence === "exact") return "room certaine";
+  if (confidence === "high") return "héritage d’objet";
+  return "contexte déduit";
+}
+
+function updateSceneContextControls() {
+  const wrap = $("preview-context-controls");
+  const select = $("sel-scene-context");
+  const info = $("preview-context-info");
+  const contexts = reference[selectedKey]?.sceneContexts ?? [];
+  select.replaceChildren();
+  if (!roomSceneApplies()) {
+    wrap.classList.add("no-context");
+    info.textContent = "Ce mode utilise son propre décor (combat, shop ou texte libre).";
+    return;
+  }
+  if (!contexts.length) {
+    wrap.classList.add("no-context");
+    info.textContent = "Décor non localisable automatiquement (texte partagé ou objet dynamique).";
+    return;
+  }
+
+  wrap.classList.remove("no-context");
+  contexts.forEach((context, index) => {
+    const option = document.createElement("option");
+    option.value = sceneContextKey(context);
+    option.textContent =
+      `${context.room} · ${contextConfidenceLabel(context.confidence)}` +
+      (contexts.length > 1 ? ` · vue ${index + 1}/${contexts.length}` : "");
+    select.appendChild(option);
+  });
+  const selected = selectedSceneContext();
+  select.value = sceneContextKey(selected);
+  select.style.display = contexts.length > 1 ? "" : "none";
+  info.textContent =
+    `${selected.room} — ${contextConfidenceLabel(selected.confidence)}` +
+    (selected.reason ? ` (${selected.reason})` : "") +
+    ` · ancre ${selected.focusX}, ${selected.focusY}`;
+}
+
 async function runPreview() {
   if (!preview || !selectedKey) return;
   const e = entriesByKey.get(selectedKey);
@@ -593,6 +669,7 @@ async function runPreview() {
   const substitution = substituteArgs(sourceText, reference[selectedKey]?.substitutions);
   const mode = effectiveMode();
   const state = inheritedState();
+  state.sceneContext = selectedSceneContext();
   const sourceFile = reference[selectedKey]?.file ?? e.file ?? "";
   if (/obj_shop1(?:_|$)/i.test(sourceFile)) state.scene = "shop-seam";
   if (/obj_trashy_trio(?:_|$)/i.test(sourceFile)) state.scene = "trashy-trio";
@@ -644,7 +721,8 @@ async function runPreview() {
   $("preview-info").textContent =
     `${res.lines} ligne(s) · visage : ${fcName}` +
     (res.fc ? ` (expr. ${res.fe})` : "") +
-    ` · mode : ${res.mode}`;
+    ` · mode : ${res.mode}` +
+    (state.sceneContext ? ` · room : ${state.sceneContext.room}` : "");
 }
 
 function updateModeSelect() {
@@ -1113,6 +1191,7 @@ function bindEvents() {
     if (v === "auto") delete prefs.modeOverrides[selectedKey];
     else prefs.modeOverrides[selectedKey] = v;
     window.api.savePrefs(prefs);
+    updateSceneContextControls();
     schedulePreview();
   });
   $("btn-side").onclick = () => {
@@ -1124,6 +1203,12 @@ function bindEvents() {
   $("btn-validate").onclick = toggleValidated;
   $("sel-preview-face").addEventListener("change", applyFaceOverride);
   $("inp-preview-fe").addEventListener("input", debounce(applyFaceOverride, 150));
+  $("sel-scene-context").addEventListener("change", () => {
+    prefs.sceneOverrides[selectedKey] = $("sel-scene-context").value;
+    window.api.savePrefs(prefs);
+    updateSceneContextControls();
+    schedulePreview();
+  });
 
   document.querySelectorAll(".ins").forEach((b) =>
     b.addEventListener("click", () => insertAtCursor(b.dataset.ins))

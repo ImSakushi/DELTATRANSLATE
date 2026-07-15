@@ -187,6 +187,28 @@ const SPEAKER_FC = {
   none: 0, x: 0, no_name: 0, "no name": 0, silent: 0,
 };
 
+// Typers dont la couleur ou la police diffère du writer sombre par défaut.
+// scr_speaker et scr_anyface(_next) utilisent les mêmes valeurs via les tags
+// \T4…\T9 ; les conserver dans la référence est indispensable quand le tag est
+// injecté par c_speaker/c_facenext et n'apparaît donc pas dans la chaîne traduite.
+const SPEAKER_TYPER = {
+  jackenstein: 83,
+  tenna: 84,
+  flowery_s: 86,
+  flowery: 88,
+  flowery_noface: 88,
+  aqua: 90,
+  seth: 91,
+  purple: 91,
+  yellow: 92,
+  orange: 93,
+  blue: 94,
+  bluef: 94,
+  green: 95,
+  pink: 97,
+  opuppet: 98,
+};
+
 // \Fx → fc (obj_writer_Draw_0), pour les tags inline dans les textes
 const F_TAG_FC = {
   "0": 0, S: 1, R: 2, N: 3, T: 4, L: 5, s: 6, U: 9, A: 10, a: 11,
@@ -361,6 +383,72 @@ function findFace(lines, lineIdx) {
   return null;
 }
 
+// Même remontée que findFace, mais uniquement pour les typers qui changent
+// visiblement le rendu. Les commandes de cutscene injectent leur \T hors de la
+// chaîne localisée ; sans cette métadonnée la preview retomberait sur du blanc.
+function findTyper(lines, lineIdx) {
+  const from = Math.max(0, lineIdx - 120);
+  for (let i = lineIdx; i >= from; i--) {
+    const line = lines[i];
+    const speakers = [
+      ...line.matchAll(
+        /(?:c_(?:facenext|face|msgface|speaker)|scr_(?:anyface_next|anyface|speaker))\(\s*"([\w ]+)"/g
+      ),
+    ];
+    if (speakers.length) {
+      const speaker = speakers[speakers.length - 1][1].toLowerCase();
+      return SPEAKER_TYPER[speaker] ?? null;
+    }
+
+    const typerAssignments = [...line.matchAll(/global\.typer\s*=\s*(\d+)/g)];
+    if (typerAssignments.length) return Number(typerAssignments.at(-1)[1]);
+  }
+  return null;
+}
+
+function resolvedLocalizedText(entry) {
+  let text = entry.english;
+  for (let i = 0; i < (entry.substitutions?.length ?? 0); i++) {
+    const value = entry.substitutions[i];
+    if (typeof value === "string") text = text.replaceAll(`~${i + 1}`, value);
+  }
+  return text;
+}
+
+function findMiniFaceBanks(codeDir) {
+  const byOwner = new Map();
+  for (const file of fs.readdirSync(codeDir).filter((name) => name.endsWith(".gml"))) {
+    const source = fs.readFileSync(path.join(codeDir, file), "utf8");
+    const banks = [...source.matchAll(/\bscr_miniface_init_([A-Za-z0-9_]+)\s*\(\s*\)/g)];
+    if (!banks.length || file.startsWith("gml_GlobalScript_scr_miniface_init_")) continue;
+    const owner = codeOwner(file);
+    if (!byOwner.has(owner)) byOwner.set(owner, new Set());
+    for (const match of banks) byOwner.get(owner).add(match[1]);
+  }
+  return byOwner;
+}
+
+// global.writerimg est une banque mutable. On prend d'abord le dernier init
+// exécuté plus haut dans le même événement, puis l'init unique de l'objet (cas
+// du shop musical : init dans Create, textes dans Draw).
+function findMiniFaceBank(file, lines, lineIdx, ownerBanks) {
+  for (let i = lineIdx; i >= 0; i--) {
+    const matches = [...lines[i].matchAll(/\bscr_miniface_init_([A-Za-z0-9_]+)\s*\(/g)];
+    if (matches.length) return matches.at(-1)[1];
+  }
+  const banks = ownerBanks.get(codeOwner(file));
+  return banks?.size === 1 ? [...banks][0] : null;
+}
+
+function inferMiniFaceBank(file, lines, lineIdx, ownerBanks, typer) {
+  const initialized = findMiniFaceBank(file, lines, lineIdx, ownerBanks);
+  if (initialized) return initialized;
+  // Les typers 90–95 sont les six fleurs et 98 leur marionnette orange.
+  // Dans leurs scripts de combat, la banque flowers est initialisée par le
+  // contrôleur de scène plutôt que par l'objet qui contient le texte.
+  return (typer >= 90 && typer <= 95) || typer === 98 ? "flowers" : null;
+}
+
 function codeOwner(file) {
   return file
     .replace(/\.gml$/, "")
@@ -410,6 +498,7 @@ function inferPreviewMode(file, text, battleTextOwners) {
 export function buildReference(codeDir, log = () => {}) {
   const entries = scanCatalog(codeDir, log);
   const battleTextOwners = findBattleTextOwners(codeDir);
+  const miniFaceBanks = findMiniFaceBanks(codeDir);
   log(`  ${entries.length} appels localisés trouvés`);
   const entriesByFile = new Map();
   for (const entry of entries) {
@@ -449,6 +538,18 @@ export function buildReference(codeDir, log = () => {}) {
     if (e.substitutions?.length) entry.substitutions = e.substitutions;
     const lines = getLines(e.file);
     if (lines) {
+      const typer = findTyper(lines, e.line - 1);
+      if (typer != null) entry.typer = typer;
+      if (/\\m\d/.test(resolvedLocalizedText(e))) {
+        const miniFaceBank = inferMiniFaceBank(
+          e.file,
+          lines,
+          e.line - 1,
+          miniFaceBanks,
+          typer
+        );
+        if (miniFaceBank) entry.miniFaceBank = miniFaceBank;
+      }
       const smallFace = findSmallFace(lines, e.line - 1, e.id);
       if (smallFace) {
         const triggerTag = `\\f${smallFace.slot}`;
@@ -499,6 +600,7 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
   const ids = new Set(Object.keys(enJson).filter((k) => k !== "date"));
   const files = fs.readdirSync(codeDir).filter((f) => f.endsWith(".gml"));
   const battleTextOwners = findBattleTextOwners(codeDir);
+  const miniFaceBanks = findMiniFaceBanks(codeDir);
   const sites = new Map(); // id → {file, line, context}
   const STR_RE = /"((?:[^"\\]|\\.)+)"/g;
   let scanned = 0;
@@ -546,6 +648,18 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
       if (/global\.msg\[|msgset|msgnext/.test(ctx)) entry.channel = "message";
       else if (/c_cmd|cutscene/.test(ctx)) entry.channel = "cutscene-message";
       if (entry.channel !== "string" && lines) {
+        const typer = findTyper(lines, site.line - 1);
+        if (typer != null) entry.typer = typer;
+        if (/\\m\d/.test(entry.en)) {
+          const miniFaceBank = inferMiniFaceBank(
+            site.file,
+            lines,
+            site.line - 1,
+            miniFaceBanks,
+            typer
+          );
+          if (miniFaceBank) entry.miniFaceBank = miniFaceBank;
+        }
         const face = findFace(lines, site.line - 1);
         if (face) {
           entry.face = face;
@@ -617,7 +731,7 @@ ScriptMessage("FONTS_OK");
 
 string[] prefixes = new string[] {
     "spr_face_", "spr_face", "spr_textbox_", "spr_pxwhite", "spr_battleblcon", "spr_blcon",
-    "button_", "spr_smallface", "spr_darkface", "spr_alphysface", "spr_seam_",
+    "button_", "spr_smallface", "spr_darkface", "spr_alphysface", "spr_seam_", "spr_miniface_",
     "spr_head", "spr_bname", "spr_tensionbar"
 };
 string[] previewNames = new string[] {

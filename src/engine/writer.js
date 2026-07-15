@@ -161,6 +161,7 @@ export function layoutText(formattedText, opts) {
 
   const mystring = formattedText;
   const ops = [];
+  const miniFaces = [];
   const warnings = [];
   let baseX = writingx + (fc !== 0 ? faceXShift : 0);
   let wx = baseX;
@@ -232,6 +233,16 @@ export function layoutText(formattedText, opts) {
         }
       } else if (nextchar === "m") {
         drawaster = 0;
+        if (/\d/.test(nextchar2)) {
+          // obj_writer Draw_0 : le mini-visage reste ancré au bord gauche du
+          // writer, à (writingx - 8, ligne - 4), et est dessiné en x2.
+          miniFaces.push({
+            index: Number(nextchar2),
+            x: writingx - 8,
+            y: wy - 4,
+            color: mycolor,
+          });
+        }
       } else if (
         !["s", "M", "v", "V", "S", "I", "O", "*", "f", "C", "z", "u", "d", "D", "x", "X", "H", "p", "P", "w", "W", "Y", "e", "b", "R", "t", "G", "g", "q", "_", "+", "-"].includes(
           nextchar
@@ -274,6 +285,7 @@ export function layoutText(formattedText, opts) {
 
   return {
     ops,
+    miniFaces,
     fc,
     fe,
     lines: lineno + 1,
