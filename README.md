@@ -1,106 +1,235 @@
-# DELTATRANSLATE
+<div align="center">
+  <img src="src/assets/deltatranslate-icon.png" alt="Icône DELTATRANSLATE" width="112">
+  <br>
+  <img src="src/assets/deltatranslate-wordmark.png" alt="DELTATRANSLATE" width="620">
 
-Éditeur de traduction pour les chapitres de **DELTARUNE**, avec aperçu fidèle au
-moteur du jeu : polices bitmap, portraits, boîtes de dialogue et bulles de combat.
+  <p><strong>L’éditeur de traduction DELTARUNE avec aperçu fidèle au moteur du jeu.</strong></p>
 
-Le dépôt ne contient aucun dump GML, sprite, police ou texte extrait du jeu. Tout
-est généré localement depuis le `data.win` choisi par l'utilisateur.
+  <p>
+    <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-20d9e8?style=flat-square">
+    <img alt="Electron 43" src="https://img.shields.io/badge/Electron-43-47848f?style=flat-square&logo=electron&logoColor=white">
+    <img alt="Windows, macOS et Linux" src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-111827?style=flat-square">
+    <img alt="Aucune donnée du jeu incluse" src="https://img.shields.io/badge/données%20du%20jeu-non%20incluses-3fb950?style=flat-square">
+  </p>
+</div>
+
+DELTATRANSLATE est une application de bureau conçue pour traduire les textes de **DELTARUNE** de l’anglais vers le français. Elle associe un éditeur rapide à une prévisualisation en temps réel des textbox : polices bitmap, portraits, couleurs, retours à la ligne, boîtes de dialogue et bulles de combat.
+
+> [!IMPORTANT]
+> DELTATRANSLATE ne distribue aucune donnée de DELTARUNE. Vous devez posséder votre propre copie du jeu et importer le `data.win` du chapitre que vous souhaitez traduire. Toutes les ressources nécessaires sont extraites localement.
+
+## Sommaire
+
+- [Pourquoi DELTATRANSLATE ?](#pourquoi-deltatranslate-)
+- [Installation](#installation)
+- [Premier démarrage](#premier-démarrage)
+- [Fonctionnalités](#fonctionnalités)
+- [Sauvegarde et sécurité](#sauvegarde-et-sécurité)
+- [Raccourcis et codes de contrôle](#raccourcis-et-codes-de-contrôle)
+- [Données locales et confidentialité](#données-locales-et-confidentialité)
+- [Développement](#développement)
+- [Dépannage](#dépannage)
+
+## Pourquoi DELTATRANSLATE ?
+
+Traduire une ligne sans la voir dans sa textbox réelle rend les problèmes de longueur, de rythme ou de portrait difficiles à détecter. DELTATRANSLATE reconstruit le comportement du writer GameMaker à partir du code du jeu afin de montrer le résultat avant même de le lancer.
+
+| Besoin | Réponse de DELTATRANSLATE |
+| --- | --- |
+| Retrouver rapidement un texte | Recherche dans l’anglais, le français et les clés, avec ou sans codes de contrôle |
+| Conserver le contexte | Regroupement des lignes voisines et décor de room associé quand il peut être déterminé |
+| Éviter les débordements | Compteurs de colonnes et word-wrap reproduisant les règles du jeu |
+| Contrôler le rendu | Prévisualisation des portraits, expressions, couleurs, styles et modes de textbox |
+| Suivre l’avancement | Filtre **À traduire** et validation **OK tel quel** pour les textes volontairement identiques |
+| Protéger le travail | Copies de sauvegarde horodatées et écriture sécurisée dans la cible active |
 
 ## Installation
 
+### Prérequis
+
+- [Node.js](https://nodejs.org/) avec `npm` ;
+- une copie installée de DELTARUNE ;
+- le fichier `data.win` du chapitre à traduire ;
+- une connexion Internet au premier lancement si vous choisissez l’installation automatique d’UTMT.
+
+### Depuis le dépôt
+
 ```bash
+git clone https://github.com/ImSakushi/DELTATRANSLATE.git
+cd DELTATRANSLATE
 npm install
 npm start
 ```
 
-Au premier lancement, l'assistant propose deux possibilités :
+L’application utilise [UndertaleModTool CLI](https://github.com/UnderminersTeam/UndertaleModTool/releases/) pour lire les données du jeu. Au premier lancement, vous pourrez soit lier une installation existante, soit laisser DELTATRANSLATE télécharger la version adaptée à Windows, macOS ou Linux.
 
-- lier un dossier contenant une installation existante d'UTMT CLI ;
-- cliquer sur **Installer UTMT** pour télécharger automatiquement la dernière
-  release CLI officielle correspondant à Windows, macOS ou Linux.
+## Premier démarrage
 
-La release est recherchée dynamiquement avec l'API GitHub officielle du projet
-[UndertaleModTool](https://github.com/UnderminersTeam/UndertaleModTool/releases/).
+1. Lancez l’application avec `npm start`.
+2. Cliquez sur **Installer UTMT**, ou choisissez **Lier mon dossier UTMT…** si le CLI est déjà présent sur votre machine.
+3. Glissez le `data.win` d’un chapitre dans la zone d’import, ou cliquez sur **Choisir un data.win…**.
+4. Patientez pendant l’extraction. Selon la machine et le chapitre, cette étape peut prendre quelques minutes.
+5. Sélectionnez une ligne, saisissez sa traduction et contrôlez immédiatement son rendu dans la preview.
+6. Enregistrez avec `Ctrl+S`. DELTATRANSLATE écrit dans la cible adaptée au chapitre et crée une sauvegarde avant remplacement.
 
-## Importer un chapitre
+L’import génère localement :
 
-Après la configuration d'UTMT, glisser-déposer le `data.win` dans l'assistant ou
-cliquer sur **Choisir un data.win…**. DELTATRANSLATE extrait alors localement :
+- le catalogue anglais et les références vers le code GML ;
+- les polices bitmap et les glyphes ;
+- les portraits et les éléments nécessaires aux textbox ;
+- les décors de rooms et les placements utiles au contexte visuel ;
+- les associations entre dialogues, personnages et expressions.
 
-- le code GML nécessaire au catalogue anglais et au contexte des dialogues ;
-- les polices bitmap ;
-- les portraits et éléments de textbox utiles à la preview ;
-- les décors des rooms, leurs couches de tiles/sprites et les placements des
-  objets qui déclenchent les dialogues ;
-- la référence anglaise et les visages associés aux lignes.
-
-Les extractions sont placées dans les données locales de l'application et ne sont
-jamais versionnées par Git.
-
-Le contexte visuel est lui aussi entièrement généré depuis le `data.win` : pour
-chaque texte, l'import relie son objet GML aux rooms qui le contiennent et produit
-une vue 640×480. Lorsqu'une cutscene contient un `c_pan(x, y, …)` statique, la vue
-reprend directement ces coordonnées de caméra. Les contextes ambigus restent
-sélectionnables dans la preview. Après une mise à jour du jeu, un import avec
-`--force` régénère le code, les ressources et les décors.
-
-### Choix de la cible de sauvegarde
-
-- Si `lang/lang_fr.json` existe, il est toujours prioritaire, y compris pour les
-  chapitres 1 et 2. Une copie horodatée est créée avant chaque écriture.
-- Pour les chapitres récents sans `lang_fr.json`, `data.win` devient la cible :
-  `data-original.win` conserve une copie anglaise immuable, puis
-  chaque sauvegarde recompile les traductions dans le `data.win` actif via UTMT.
-- Pour les anciens chapitres dont le moteur lit les textes depuis `lang_en.json`,
-  l'outil édite ce fichier directement et préserve `lang_en.json.original`. Écrire
-  ces textes dans `data.win` n'aurait aucun effet dans ces versions du moteur.
-
-## Sécurité des sauvegardes
-
-- Le fichier source anglais n'est jamais modifié.
-- Les fichiers JSON sont sauvegardés avant écriture, avec 40 versions conservées
-  par cible.
-- En mode `data.win`, UTMT écrit d'abord un nouveau fichier temporaire. Le fichier
-  actif n'est remplacé qu'après validation de la sortie, avec restauration du
-  précédent fichier si le remplacement échoue.
+Après l’import initial, le bouton **⚙ data.win** permet de changer de chapitre ou de relancer la configuration.
 
 ## Fonctionnalités
 
-- recherche EN/FR insensible aux codes de contrôle ;
-- filtre « À traduire » et validation « OK tel quel » ;
-- regroupement des lignes voisines d'une même séquence ;
-- preview temps réel en modes monde sombre, monde clair, combat et texte libre ;
-- décor contextuel automatique derrière les textbox, avec nom de room, niveau
-  de confiance et choix manuel quand plusieurs placements sont possibles ;
-- détection automatique des portraits depuis le GML ;
-- compteurs de colonnes reproduisant le word-wrap du jeu ;
-- import autonome de tous les chapitres pris en charge par UTMT.
+### Édition pensée pour la traduction
 
-## Raccourcis
+- recherche EN/FR insensible aux codes de contrôle ;
+- filtres **Tout**, **À traduire**, **Dialogues**, **Menus** et **Sans réf** ;
+- liste virtualisée, adaptée aux catalogues contenant plusieurs milliers de lignes ;
+- navigation directe entre les prochaines traductions à effectuer ;
+- copie du texte anglais ou de ses seuls tags de début et de fin ;
+- coloration des codes de contrôle dans l’éditeur ;
+- historique annuler/rétablir indépendant pour chaque ligne ;
+- deux thèmes d’interface : DELTARUNE et classique.
+
+### Preview fidèle au jeu
+
+- modes automatiques et manuels : **Monde Sombre**, **Monde Clair**, **Shop**, **Bulle de combat**, **Texte de combat** et **Texte libre** ;
+- polices bitmap, espacements et couleurs extraits depuis votre `data.win` ;
+- détection automatique du portrait et de son expression depuis le GML ;
+- substitution des arguments `~1`, `~2`, etc. ;
+- reproduction du word-wrap et des limites de colonnes du writer ;
+- décor contextuel 640×480 avec nom de room et choix manuel lorsque plusieurs scènes sont possibles ;
+- comparaison rapide de la preview française avec le texte anglais.
+
+## Sauvegarde et sécurité
+
+Le mode de sauvegarde est sélectionné automatiquement selon le chapitre :
+
+| Situation détectée | Cible utilisée | Protection appliquée |
+| --- | --- | --- |
+| `lang/lang_fr.json` existe | Le fichier français existant | Backup horodaté avant écriture |
+| Le chapitre lit ses textes depuis `lang_en.json` | `lang_en.json` | Conservation de `lang_en.json.original` comme référence anglaise |
+| Les textes doivent être recompilés dans le jeu | `data.win` actif | Conservation de `data-original.win`, génération temporaire et remplacement atomique |
+
+Garanties importantes :
+
+- le `data.win` utilisé comme source d’extraction reste en lecture seule ;
+- le fichier anglais de référence n’est jamais normalisé ni réordonné ;
+- jusqu’à **40 sauvegardes** sont conservées par cible ;
+- une copie automatique supplémentaire est créée après 30 minutes de modifications non enregistrées ;
+- si le remplacement d’un `data.win` échoue, le fichier précédent est restauré ;
+- les validations, choix de portrait, modes et autres préférences sont conservés séparément.
+
+Le bouton **🗁 Backups** ouvre directement le dossier contenant les copies de sécurité.
+
+## Raccourcis et codes de contrôle
+
+### Raccourcis
 
 | Touche | Action |
 | --- | --- |
-| `Ctrl+S` | Sauvegarder dans la cible active |
-| `Ctrl+↓` / `Ctrl+↑` | Traduction suivante / précédente |
-| `Ctrl+D` | Marquer ou démarquer « OK tel quel » |
+| `Ctrl+S` / `Cmd+S` | Sauvegarder dans la cible active |
+| `Ctrl+↓` / `Ctrl+↑` | Aller à la traduction suivante / précédente |
+| `Ctrl+Entrée` ou `Ctrl+D` | Marquer ou démarquer la ligne comme **OK tel quel**, puis avancer |
+| `Ctrl+Z` / `Ctrl+Y` | Annuler / rétablir dans la ligne active |
+| `Entrée` | Insérer un saut de ligne du jeu (`&`) |
+| `Maj+Entrée` | Insérer une vraie nouvelle ligne dans la valeur |
+| `Alt` | Ouvrir la roue d’insertion rapide des tags |
 
-## Codes de contrôle principaux
+### Codes principaux
 
 | Code | Effet |
 | --- | --- |
-| `&` | saut de ligne |
-| `^1`…`^9` | pause |
-| `/` | attendre la confirmation |
-| `%` | message suivant |
-| `/%` | fin de séquence |
-| `\En` | expression du portrait |
-| `\Fx` | personnage du portrait |
-| `\cX` | couleur |
-| `\Tx` | voix ou style |
+| `&` | Saut de ligne dans la textbox |
+| `^1`…`^9` | Pause pendant l’affichage |
+| `~1`, `~2`, … | Argument substitué par le jeu |
+| `/` | Attendre la confirmation du joueur |
+| `%` | Passer au message suivant |
+| `/%` | Terminer la séquence |
+| `\E?` | Expression du portrait |
+| `\F?` | Personnage du portrait |
+| `\c?` | Couleur du texte |
+| `\T?` | Voix ou style de texte |
+| `\|` | Espace fine |
+| `` \` `` | Échapper le caractère suivant |
+
+## Données locales et confidentialité
+
+Le dépôt et les livrables contiennent uniquement le code de DELTATRANSLATE. Aucun `data.win`, texte, sprite, portrait, décor, son ou fichier extrait de DELTARUNE n’est inclus.
+
+Les fichiers générés lors d’un import restent sur votre machine :
+
+- extraction UTMT et références locales ;
+- traductions intermédiaires ;
+- préférences par clé ;
+- sauvegardes horodatées ;
+- installation UTMT gérée par l’application, le cas échéant.
+
+Ces données sont placées dans le dossier utilisateur de l’application. Les anciennes installations qui possèdent déjà `config.json`, `prefs.json`, `backups/` ou `extracted-imports/` à côté du code continuent d’utiliser ces emplacements afin de ne pas perdre le travail existant.
 
 ## Développement
 
-Le processus principal Electron est en CommonJS, le renderer et les scripts
-d'extraction sont en ESM. L'import UTMT est piloté par
-`extraction/import-datawin.mjs`; la recompilation directe de `data.win` passe par
-`extraction/patch-datawin.mjs`.
+### Architecture
+
+```text
+main.js                       Processus principal Electron, IPC et sauvegardes
+preload.js                    API sécurisée exposée au renderer
+src/app.js                    Interface, navigation et état de l’éditeur
+src/engine/writer.js          Word-wrap et interprétation des codes de contrôle
+src/engine/preview.js         Rendu canvas des différents modes de texte
+src/engine/bitmapfont.js      Chargement et teinte des polices bitmap
+extraction/import-datawin.mjs Pipeline d’import complet via UTMT
+extraction/import-lib.mjs     Analyse du GML et construction du catalogue
+extraction/patch-datawin.mjs  Recompilation sécurisée des traductions
+```
+
+Le processus principal et le preload sont en CommonJS. Le renderer et les scripts d’extraction utilisent les modules ESM.
+
+### Commandes utiles
+
+```bash
+# Lancer l’application
+npm start
+
+# Import avancé ou régénération complète d’un chapitre
+node extraction/import-datawin.mjs \
+  --datawin "/chemin/vers/data.win" \
+  --cli "/chemin/vers/UndertaleModCli" \
+  --force
+```
+
+Toute modification du rendu doit pouvoir être reliée au comportement observé dans le GML décompilé. Les données extraites servent uniquement de cache local de développement et ne doivent jamais être ajoutées au dépôt.
+
+## Dépannage
+
+<details>
+<summary><strong>L’application demande UTMT à chaque lancement</strong></summary>
+
+Vérifiez que le dossier sélectionné contient bien `UndertaleModCli.exe` sous Windows ou `UndertaleModCli` sous macOS/Linux. Vous pouvez aussi utiliser **Installer UTMT** pour laisser l’application gérer son emplacement.
+</details>
+
+<details>
+<summary><strong>L’import semble bloqué</strong></summary>
+
+La première extraction décompile le code et exporte plusieurs ressources ; elle peut rester plusieurs minutes sur une même étape. Consultez le journal affiché dans la fenêtre d’import avant d’interrompre l’opération.
+</details>
+
+<details>
+<summary><strong>Une ligne reste dans « À traduire » alors que le français est identique</strong></summary>
+
+C’est volontaire : une ligne est considérée comme non traduite lorsque son texte français est identique à l’anglais. Utilisez `Ctrl+Entrée` ou `Ctrl+D` pour la marquer **OK tel quel**.
+</details>
+
+<details>
+<summary><strong>Le jeu a été mis à jour</strong></summary>
+
+Relancez un import complet avec l’option `--force` afin de régénérer le code, les ressources, le catalogue et les décors depuis le nouveau `data.win`.
+</details>
+
+## Projet non officiel
+
+DELTATRANSLATE est un projet communautaire non officiel, sans affiliation avec les créateurs ou éditeurs de DELTARUNE. Les noms et marques cités appartiennent à leurs détenteurs respectifs.
