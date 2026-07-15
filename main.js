@@ -10,8 +10,8 @@ const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
 const windowsAllowedToClose = new WeakSet();
 const TITLE_BAR_HEIGHT = 32;
 const TITLE_BAR_THEMES = {
-  dark: { color: "#000000", symbolColor: "#ffffff", height: TITLE_BAR_HEIGHT },
-  light: { color: "#fffdf4", symbolColor: "#101010", height: TITLE_BAR_HEIGHT },
+  deltarune: { color: "#000000", symbolColor: "#ffffff", height: TITLE_BAR_HEIGHT },
+  classic: { color: "#121219", symbolColor: "#e8e8f0", height: TITLE_BAR_HEIGHT },
 };
 const DEFAULT_CONFIG = {
   langFrPath: null,
@@ -194,7 +194,7 @@ function createWindow() {
     icon: APP_ICON_PATH,
     ...(process.platform === "win32" && {
       titleBarStyle: "hidden",
-      titleBarOverlay: TITLE_BAR_THEMES.dark,
+      titleBarOverlay: TITLE_BAR_THEMES.deltarune,
     }),
     webPreferences: {
       preload: path.join(ROOT, "preload.js"),
@@ -243,7 +243,7 @@ ipcMain.handle("get-utmt-status", () => getUtmtStatus());
 ipcMain.handle("set-title-bar-theme", (event, theme) => {
   if (process.platform !== "win32") return;
   BrowserWindow.fromWebContents(event.sender)?.setTitleBarOverlay(
-    TITLE_BAR_THEMES[theme] ?? TITLE_BAR_THEMES.dark
+    TITLE_BAR_THEMES[theme] ?? TITLE_BAR_THEMES.deltarune
   );
 });
 

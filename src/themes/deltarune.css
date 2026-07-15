@@ -6,13 +6,13 @@
 
 @font-face {
   font-family: "Determination Mono";
-  src: url("assets/fonts/DeterminationMono.ttf") format("truetype");
+  src: url("../assets/fonts/DeterminationMono.ttf") format("truetype");
   font-weight: normal;
   font-style: normal;
 }
 @font-face {
   font-family: "Deltarune Text";
-  src: url("assets/fonts/DeltaruneText.ttf") format("truetype");
+  src: url("../assets/fonts/DeltaruneText.ttf") format("truetype");
   font-weight: normal;
   font-style: normal;
 }
@@ -45,34 +45,6 @@
   --mono: "Consolas", "Cascadia Mono", monospace;
   --font-ui: "Deltarune Text", "Segoe UI", sans-serif;
   --font-title: "Determination Mono", "Consolas", monospace;
-}
-
-/* ---------- Monde Clair (thème clair) ---------- */
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f6f4ea;
-  --bg2: #fffdf4;
-  --bg3: #eceadd;
-  --border: #000000;
-  --border-dim: #cfccbc;
-  --fg: #101010;
-  --fg-dim: #62625e;
-  --accent: #8a6d00;
-  --green: #157a3f;
-  --red: #c22735;
-  --yellow: #8a6d00;
-  --heart: #d40030;
-  --tag-face: #ad1f80;
-  --tag-color: #8a5c00;
-  --tag-flow: #0a6e95;
-  --tag-pause: #5f43b4;
-  --tag-misc: #0e7247;
-  --accent-contrast: #fffdf4;
-  --item-border: #dcd9ca;
-  --item-selected: #efe9cf;
-  --caret: #101010;
-  --selection: rgba(138, 109, 0, 0.25);
-  --titlebar: #fffdf4;
 }
 
 * { box-sizing: border-box; }
@@ -253,13 +225,9 @@ kbd { font-family: var(--mono); }
   font-size: 18px;
   transition: transform 180ms ease, opacity 180ms ease;
 }
-.theme-icon-moon { transform: translateY(24px) rotate(45deg); opacity: 0; }
-:root[data-theme="light"] .theme-icon-sun { transform: translateY(-24px) rotate(-45deg); opacity: 0; }
-:root[data-theme="light"] .theme-icon-moon { transform: translateY(0) rotate(0); opacity: 1; }
-:root[data-theme="light"] .brand-icon,
-:root[data-theme="light"] .brand-logo {
-  mix-blend-mode: multiply;
-}
+/* Icône du switch de design : en thème DELTARUNE on montre l'icône
+   « classique » (cible du switch), le cœur reste caché. */
+.theme-icon-dr { transform: translateY(24px); opacity: 0; color: var(--heart); }
 
 /* ---------- layout ---------- */
 #layout {
@@ -602,11 +570,11 @@ kbd { font-family: var(--mono); }
   grid-template-columns: auto minmax(0, 1fr);
   gap: 4px 6px;
   align-items: center;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--fg-dim);
 }
-#preview-context-controls label { white-space: nowrap; }
-#sel-scene-context { min-width: 0; width: 100%; }
+#preview-context-controls label { white-space: nowrap; color: var(--yellow); }
+#sel-scene-context { min-width: 0; width: 100%; font-size: 13px; padding: 3px 6px; }
 #preview-context-info {
   grid-column: 1 / -1;
   line-height: 1.35;

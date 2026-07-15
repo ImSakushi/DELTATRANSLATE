@@ -122,7 +122,7 @@ async function init() {
   if (!prefs.validated) prefs.validated = {};
   if (!prefs.faceOverrides) prefs.faceOverrides = {};
   if (!prefs.sceneOverrides) prefs.sceneOverrides = {};
-  applyTheme(prefs.theme === "light" ? "light" : "dark");
+  applyTheme(prefs.theme === "classic" ? "classic" : "deltarune");
   $("btn-theme").onclick = toggleTheme;
 
   if (!data.ready) {
@@ -166,18 +166,22 @@ function parseFontCsvs(fonts) {
   return fonts;
 }
 
+// Deux designs : "deltarune" (défaut) et "classic" (ancien look).
+// Chaque design est une feuille de style complète dans src/themes/.
 function applyTheme(theme) {
-  const isLight = theme === "light";
-  document.documentElement.dataset.theme = isLight ? "light" : "dark";
-  window.api.setTitleBarTheme(isLight ? "light" : "dark");
+  const isClassic = theme === "classic";
+  const name = isClassic ? "classic" : "deltarune";
+  document.documentElement.dataset.theme = name;
+  $("theme-css").setAttribute("href", `themes/${name}.css`);
+  window.api.setTitleBarTheme(name);
   const button = $("btn-theme");
-  const label = isLight ? "Passer au thème sombre" : "Passer au thème clair";
+  const label = isClassic ? "Passer au design DELTARUNE" : "Passer au design classique";
   button.dataset.tooltip = label;
   button.setAttribute("aria-label", label);
 }
 
 function toggleTheme() {
-  prefs.theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  prefs.theme = document.documentElement.dataset.theme === "classic" ? "deltarune" : "classic";
   applyTheme(prefs.theme);
   window.api.savePrefs(prefs);
 }
