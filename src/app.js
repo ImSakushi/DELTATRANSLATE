@@ -17,6 +17,7 @@ let dirty = false;
 let savedTranslations = new Map();
 const unsavedKeys = new Set();
 let savePromise = null;
+let saveAndNextRunning = false;
 let closePromptOpen = false;
 let preview = null;
 let sequences = new Map(); // key -> [keys de la même séquence]
@@ -1223,6 +1224,18 @@ function save() {
   return savePromise;
 }
 
+async function saveAndGotoNext() {
+  if (saveAndNextRunning) return;
+  saveAndNextRunning = true;
+  const keyToLeave = selectedKey;
+  try {
+    onEdit();
+    if ((await save()) && selectedKey === keyToLeave) gotoTodo(1);
+  } finally {
+    saveAndNextRunning = false;
+  }
+}
+
 function backupIfModified() {
   if (prefs.backupsEnabled === false || !dirty || backupPromise) return;
   backupPromise = window.api
@@ -1318,7 +1331,7 @@ function bindEvents() {
     const shortcut = ev.ctrlKey || ev.metaKey;
     if (ev.ctrlKey && ev.key === "Enter") {
       ev.preventDefault();
-      toggleValidated();
+      void saveAndGotoNext();
     } else if (shortcut && ev.key.toLowerCase() === "z") {
       ev.preventDefault();
       applyEditHistory(ev.shiftKey ? "redo" : "undo");
@@ -1404,7 +1417,7 @@ function bindEvents() {
     if (ev.ctrlKey && ev.key === "Enter") {
       if (!ev.defaultPrevented) {
         ev.preventDefault();
-        toggleValidated();
+        void saveAndGotoNext();
       }
     } else if (ev.ctrlKey && (ev.key === "d" || ev.key === "D")) {
       ev.preventDefault();
