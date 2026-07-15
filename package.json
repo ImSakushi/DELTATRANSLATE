@@ -2,16 +2,17 @@
   "name": "deltatranslate",
   "productName": "DELTATRANSLATE",
   "version": "1.0.0",
+  "desktopName": "DELTATRANSLATE",
   "description": "Éditeur de traduction pour tous les chapitres de DELTARUNE avec preview fidèle au jeu",
   "author": "ImSakushi",
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win --x64",
-    "dist:mac": "electron-builder --mac --universal",
-    "dist:linux": "electron-builder --linux --x64"
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win --x64 --publish never",
+    "dist:mac": "electron-builder --mac --universal --publish never",
+    "dist:linux": "electron-builder --linux --x64 --publish never"
   },
   "devDependencies": {
     "electron": "^43.1.0",
@@ -87,6 +88,8 @@
     "linux": {
       "icon": "src/assets/deltatranslate-icon.png",
       "category": "Development",
+      "maintainer": "ImSakushi <116188905+ImSakushi@users.noreply.github.com>",
+      "syncDesktopName": true,
       "target": [
         {
           "target": "AppImage",
