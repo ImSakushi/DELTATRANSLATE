@@ -1157,6 +1157,7 @@ using (StreamWriter sw = new(Path.Combine(outRoot, "sprites_list.txt")))
         sw.WriteLine($"{spr.Name.Content};{spr.Textures.Count};{spr.Width};{spr.Height};{spr.OriginX};{spr.OriginY}");
     }
 }
+
 ScriptMessage("SPRITELIST_OK");
 
 using (TextureWorker worker = new())
@@ -1239,5 +1240,46 @@ Parallel.ForEach(toDump, code =>
     if (d % 1000 == 0) ScriptMessage($"CODE_PROGRESS {d}");
 });
 ScriptMessage("CODE_OK");
+`;
+}
+
+// Décompilation minimale utilisée pour comparer le catalogue cumulatif avec le
+// chapitre précédent. Aucun sprite, font ou autre ressource du jeu n'est copié.
+export function makeCodeOnlyCsx(outRoot) {
+  const esc = outRoot.replace(/\\/g, "\\\\");
+  return `// Généré par TranslatorTool — catalogue de référence local
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
+using UndertaleModLib.Util;
+
+EnsureDataLoaded();
+
+string codeFolder = Path.Combine("${esc}", "CodeEntries");
+Directory.CreateDirectory(codeFolder);
+GlobalDecompileContext globalDecompileContext = new(Data);
+Underanalyzer.Decompiler.IDecompileSettings decompilerSettings = Data.ToolInfo.DecompilerSettings;
+List<UndertaleCode> toDump = Data.Code.Where(c => c.ParentEntry is null).ToList();
+int done = 0;
+Parallel.ForEach(toDump, code =>
+{
+    if (code is not null)
+    {
+        string output = Path.Combine(codeFolder, code.Name.Content + ".gml");
+        try
+        {
+            File.WriteAllText(output, new Underanalyzer.Decompiler.DecompileContext(globalDecompileContext, code, decompilerSettings).DecompileToString());
+        }
+        catch (Exception error)
+        {
+            File.WriteAllText(output, "/*\\nDECOMPILER FAILED!\\n\\n" + error.ToString() + "\\n*/");
+        }
+    }
+    Interlocked.Increment(ref done);
+});
+ScriptMessage($"CODE_ONLY_OK {done}");
 `;
 }

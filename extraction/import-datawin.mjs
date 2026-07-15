@@ -9,6 +9,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { buildReference, buildReferenceFromLangJson, makeCsx } from "./import-lib.mjs";
+import { scopeReferenceToChapter } from "./chapter-scope.mjs";
 import {
   attachRoomContexts,
   collectRoomContextRequests,
@@ -20,6 +21,41 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 function arg(name, def = null) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : def;
+}
+
+function sourceFingerprint(file) {
+  const stat = fs.statSync(file);
+  return { path: path.resolve(file), size: stat.size, mtimeMs: stat.mtimeMs };
+}
+
+function extractionMatches(manifestPath, source) {
+  if (!fs.existsSync(manifestPath)) return false;
+  try {
+    const saved = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const current = sourceFingerprint(source);
+    return (
+      saved.path === current.path &&
+      saved.size === current.size &&
+      saved.mtimeMs === current.mtimeMs
+    );
+  } catch {
+    return false;
+  }
+}
+
+function clearGeneratedExtraction(outDir) {
+  for (const directory of ["CodeEntries", "fonts", "sprites", "room-scenes"]) {
+    fs.rmSync(path.join(outDir, directory), { recursive: true, force: true });
+  }
+  for (const file of [
+    "sprites_list.txt",
+    "reference.json",
+    "room-context.json",
+    "chapter-scope.json",
+    "extraction-source.json",
+  ]) {
+    fs.rmSync(path.join(outDir, file), { force: true });
+  }
 }
 
 const dataWin = arg("datawin");
@@ -67,10 +103,15 @@ log(`Destination : ${outDir}`);
 // --- 1. extraction UTMT ---
 const force = process.argv.includes("--force");
 const codeDir = path.join(outDir, "CodeEntries");
-const alreadyExtracted = fs.existsSync(codeDir) && fs.readdirSync(codeDir).length > 100;
+const extractionManifestPath = path.join(outDir, "extraction-source.json");
+const alreadyExtracted =
+  fs.existsSync(codeDir) &&
+  fs.readdirSync(codeDir).length > 100 &&
+  extractionMatches(extractionManifestPath, sourceDataWin);
 if (alreadyExtracted && !force) {
   log("Étape 1/3 — extraction UTMT : déjà faite (utilise --force pour refaire).");
 } else {
+  clearGeneratedExtraction(outDir);
   log("Étape 1/3 — extraction UTMT (peut prendre quelques minutes)…");
   const csxPath = path.join(os.tmpdir(), `deltatranslate_export_${Date.now()}.csx`);
   fs.writeFileSync(csxPath, makeCsx(outDir), "utf8");
@@ -92,6 +133,11 @@ if (alreadyExtracted && !force) {
     console.error((result.stderr || "").slice(-2000));
     process.exit(1);
   }
+  fs.writeFileSync(
+    extractionManifestPath,
+    JSON.stringify(sourceFingerprint(sourceDataWin)),
+    "utf8"
+  );
 }
 
 // --- 2. référence anglaise + visages ---
@@ -120,6 +166,27 @@ if (Object.keys(ref).length < 50) {
   ref = buildReferenceFromLangJson(codeDir, enJson, log);
   legacyLanguagePath = plainLang;
 }
+
+const scope = scopeReferenceToChapter({
+  reference: ref,
+  codeDir,
+  dataWinPath: dataWin,
+  cli,
+  outDir,
+  force,
+  log,
+});
+ref = scope.reference;
+fs.writeFileSync(
+  path.join(outDir, "chapter-scope.json"),
+  JSON.stringify({
+    chapter: scope.chapter,
+    scoped: scope.scoped,
+    removed: scope.removed,
+    count: Object.keys(ref).length,
+  }),
+  "utf8"
+);
 
 // --- 2b. rooms + vues contextuelles ---
 const roomContextPath = path.join(outDir, "room-context.json");

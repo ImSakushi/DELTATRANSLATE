@@ -8,7 +8,7 @@ import { substituteArgs } from "./engine/writer.js";
 // ---------------------------------------------------------------------------
 let lang = {}; // objet complet du lang_fr.json (ordre des clés préservé)
 let reference = {}; // id -> {en, call, channel, file, line, face, substitutions, smallFace, speakerOverlay}
-let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme, backupsEnabled }
+let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme, backupsEnabled, listSort }
 let entries = []; // index pour la liste
 let entriesByKey = new Map();
 let filtered = [];
@@ -30,6 +30,26 @@ const $ = (id) => document.getElementById(id);
 const ROW_H = 65;
 const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
 const BACKUP_CHECK_MS = 60 * 1000;
+const LIST_SORTS = new Set(["source", "speaker", "type"]);
+const SORT_COLLATOR = new Intl.Collator("fr", { sensitivity: "base", numeric: true });
+const DIALOGUE_TYPE_NAMES = {
+  darkbox: "Textbox (monde sombre)",
+  lightbox: "Textbox (monde clair)",
+  bubble: "Bulle de combat",
+  battletext: "Texte de combat",
+  shop: "Dialogue de boutique",
+  device: "Appareil",
+  plain: "Menu / texte libre",
+};
+const SMALL_FACE_SPEAKER_NAMES = {
+  susie: "Susie",
+  ralsei: "Ralsei",
+  noelle: "Noelle",
+  lancer: "Lancer",
+  queen: "Queen",
+  rouxls: "Rouxls",
+  flowery: "Flowery",
+};
 
 // ---------------------------------------------------------------------------
 // Infobulles
@@ -122,6 +142,8 @@ async function init() {
   if (!prefs.validated) prefs.validated = {};
   if (!prefs.faceOverrides) prefs.faceOverrides = {};
   if (!prefs.sceneOverrides) prefs.sceneOverrides = {};
+  prefs.listSort = LIST_SORTS.has(prefs.listSort) ? prefs.listSort : "source";
+  $("sel-list-sort").value = prefs.listSort;
   const backupsToggle = $("chk-backups");
   backupsToggle.checked = prefs.backupsEnabled !== false;
   backupsToggle.addEventListener("change", () => {
@@ -162,7 +184,7 @@ async function init() {
   const urlKey = new URLSearchParams(location.search).get("key");
   const firstTodo = entries.find((e) => e.todo);
   selectKey(
-    urlKey && lang[urlKey] != null ? urlKey : firstTodo ? firstTodo.key : entries[0]?.key
+    urlKey && entriesByKey.has(urlKey) ? urlKey : firstTodo ? firstTodo.key : entries[0]?.key
   );
   scrollToSelected();
 }
@@ -243,19 +265,26 @@ function computeTodo(e) {
 function buildIndex() {
   entries = [];
   entriesByKey = new Map();
-  for (const key of Object.keys(lang)) {
-    if (key === "date") continue;
+  const referencedKeys = new Set(Object.keys(reference));
+  const orderedKeys = Object.keys(lang).filter(
+    (key) => key !== "date" && referencedKeys.has(key)
+  );
+  for (const key of referencedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(lang, key)) orderedKeys.push(key);
+  }
+  for (const key of orderedKeys) {
     const ref = reference[key];
-    const fr = lang[key];
-    const en = ref ? ref.en : null;
+    const fr = lang[key] ?? ref.en;
+    const en = ref.en;
     const e = {
       key,
       fr,
       en,
-      channel: ref ? ref.channel : null,
-      file: ref ? ref.file : null,
-      line: ref ? ref.line : 0,
-      noref: !ref,
+      channel: ref.channel,
+      file: ref.file,
+      line: ref.line,
+      noref: false,
+      sourceIndex: entries.length,
       todo: false,
       searchable: "",
     };
@@ -294,6 +323,44 @@ function buildSequences() {
 // ---------------------------------------------------------------------------
 // Liste virtuelle
 // ---------------------------------------------------------------------------
+function speakerName(e) {
+  const ref = reference[e.key];
+  const fc = prefs.faceOverrides[e.key]?.fc ?? ref?.face?.fc;
+  if (fc && FC_NAMES[fc]) return FC_NAMES[fc];
+  const smallFaceSpeaker = String(ref?.smallFace?.speaker ?? "").toLowerCase();
+  if (SMALL_FACE_SPEAKER_NAMES[smallFaceSpeaker]) {
+    return SMALL_FACE_SPEAKER_NAMES[smallFaceSpeaker];
+  }
+  return "Sans personnage identifié";
+}
+
+function dialogueTypeName(e) {
+  if (e.noref) return "Sans référence";
+  const mode = prefs.modeOverrides[e.key] ?? autoMode(e);
+  return DIALOGUE_TYPE_NAMES[mode] ?? "Autre";
+}
+
+function activeSortLabel(e) {
+  if (prefs.listSort === "speaker") return speakerName(e);
+  if (prefs.listSort === "type") return dialogueTypeName(e);
+  return "";
+}
+
+function compareEntries(a, b) {
+  let groupComparison = 0;
+  if (prefs.listSort === "speaker") {
+    const speakerA = speakerName(a);
+    const speakerB = speakerName(b);
+    const unidentifiedA = speakerA === "Sans personnage identifié";
+    const unidentifiedB = speakerB === "Sans personnage identifié";
+    if (unidentifiedA !== unidentifiedB) return unidentifiedA ? 1 : -1;
+    groupComparison = SORT_COLLATOR.compare(speakerA, speakerB);
+  } else if (prefs.listSort === "type") {
+    groupComparison = SORT_COLLATOR.compare(dialogueTypeName(a), dialogueTypeName(b));
+  }
+  return groupComparison || a.sourceIndex - b.sourceIndex;
+}
+
 function applyFilter() {
   const q = $("search").value.trim().toLowerCase();
   const f = document.querySelector(".filter.active").dataset.filter;
@@ -305,8 +372,15 @@ function applyFilter() {
     if (q && !e.searchable.includes(q)) return false;
     return true;
   });
+  if (prefs.listSort !== "source") filtered.sort(compareEntries);
   $("list-spacer").style.height = filtered.length * ROW_H + "px";
-  $("list-status").textContent = `${filtered.length} lignes affichées`;
+  const sortSuffix =
+    prefs.listSort === "speaker"
+      ? " · triées par personnage"
+      : prefs.listSort === "type"
+        ? " · triées par type"
+        : "";
+  $("list-status").textContent = `${filtered.length} lignes affichées${sortSuffix}`;
   renderList();
 }
 
@@ -336,8 +410,11 @@ function renderList() {
       (e.todo ? " todo" : "") +
       (e.key === selectedKey ? " selected" : "");
     const dot = e.noref ? "noref" : e.todo ? "todo" : "ok";
+    const sortLabel = activeSortLabel(e);
     div.innerHTML =
-      `<div class="li-key"><span class="li-dot ${dot}"></span>${escapeHtml(shortKey(e.key))}</div>` +
+      `<div class="li-key"><span class="li-key-main"><span class="li-dot ${dot}"></span>${escapeHtml(shortKey(e.key))}</span>` +
+      (sortLabel ? `<span class="li-sort-label">${escapeHtml(sortLabel)}</span>` : "") +
+      `</div>` +
       `<div class="li-en">${escapeHtml(e.en ?? "(pas de référence)")}</div>` +
       `<div class="li-fr">${escapeHtml(e.fr)}</div>`;
     div.onclick = () => selectKey(e.key);
@@ -816,6 +893,10 @@ function applyFaceOverride() {
       fe: Math.max(0, Number($("inp-preview-fe").value) || 0),
     };
   window.api.savePrefs(prefs);
+  if (prefs.listSort === "speaker") {
+    applyFilter();
+    scrollToSelected();
+  }
   schedulePreview();
 }
 
@@ -1213,6 +1294,12 @@ function bindEvents() {
   $("btn-theme").onclick = toggleTheme;
   $("list-container").addEventListener("scroll", renderListRaf, { passive: true });
   $("search").addEventListener("input", debounce(applyFilter, 200));
+  $("sel-list-sort").addEventListener("change", () => {
+    prefs.listSort = $("sel-list-sort").value;
+    window.api.savePrefs(prefs);
+    $("list-container").scrollTop = 0;
+    applyFilter();
+  });
   document.querySelectorAll(".filter").forEach((b) =>
     b.addEventListener("click", () => {
       document.querySelector(".filter.active").classList.remove("active");
@@ -1261,6 +1348,10 @@ function bindEvents() {
     if (v === "auto") delete prefs.modeOverrides[selectedKey];
     else prefs.modeOverrides[selectedKey] = v;
     window.api.savePrefs(prefs);
+    if (prefs.listSort === "type") {
+      applyFilter();
+      scrollToSelected();
+    }
     updateSceneContextControls();
     schedulePreview();
   });
@@ -1276,6 +1367,10 @@ function bindEvents() {
   $("sel-scene-context").addEventListener("change", () => {
     prefs.sceneOverrides[selectedKey] = $("sel-scene-context").value;
     window.api.savePrefs(prefs);
+    if (prefs.listSort === "type") {
+      applyFilter();
+      scrollToSelected();
+    }
     updateSceneContextControls();
     schedulePreview();
   });

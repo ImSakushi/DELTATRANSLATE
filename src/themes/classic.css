@@ -194,6 +194,9 @@ select { cursor: pointer; }
 #filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px 8px; }
 .filter { font-size: 12px; padding: 3px 8px; }
 .filter.active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+#sort-row { display: flex; align-items: center; gap: 6px; padding: 0 8px 8px; }
+#sort-row label { color: var(--fg-dim); font-size: 11px; white-space: nowrap; }
+#sel-list-sort { flex: 1; min-width: 0; font-size: 12px; padding: 2px 5px; }
 #list-container { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
 #list-items { position: absolute; left: 0; right: 0; top: 0; }
 .list-item {
@@ -206,13 +209,17 @@ select { cursor: pointer; }
 .list-item:hover { background: var(--bg3); }
 .list-item.selected { background: var(--item-selected); }
 .list-item .li-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--mono);
   font-size: 10px;
   color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
+.li-key-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.li-sort-label { margin-left: auto; color: var(--accent); flex: none; max-width: 48%; overflow: hidden; text-overflow: ellipsis; }
 .list-item .li-en, .list-item .li-fr {
   font-size: 12px;
   white-space: nowrap;
