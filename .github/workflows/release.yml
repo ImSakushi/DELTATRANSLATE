@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            command: npm run dist:win
+            artifact: windows
+            files: |
+              dist/*.exe
+          - name: macOS
+            os: macos-latest
+            command: npm run dist:mac
+            artifact: macos
+            files: |
+              dist/*.dmg
+              dist/*.zip
+          - name: Linux
+            os: ubuntu-latest
+            command: npm run dist:linux
+            artifact: linux
+            files: |
+              dist/*.AppImage
+              dist/*.deb
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Construire les livrables
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: ${{ matrix.command }}
+
+      - name: Archiver les livrables
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publier la release GitHub
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Télécharger les livrables
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Générer les sommes SHA-256
+        shell: bash
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Créer la release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DELTATRANSLATE 1.0.0
+          body: |
+            Première release publique de DELTATRANSLATE.
+
+            - Windows : installateur et version portable x64
+            - macOS : DMG et archive ZIP universels (Intel et Apple Silicon)
+            - Linux : AppImage et paquet DEB x64
+
+            Aucun fichier ni aucune donnée extraite de DELTARUNE n’est inclus. L’application extrait localement les ressources depuis le `data.win` fourni par l’utilisateur.
+
+            Les binaires ne sont pas signés ni notariés pour cette première version.
+          files: release-assets/*
+          fail_on_unmatched_files: true

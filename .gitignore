@@ -1,4 +1,5 @@
 node_modules/
+dist/
 extracted/
 extracted-imports/
 backups/
