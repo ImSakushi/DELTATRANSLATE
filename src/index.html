@@ -25,7 +25,10 @@
         <span class="theme-icon theme-icon-dr" aria-hidden="true">♥</span>
       </button>
       <button id="btn-import" data-tooltip="Importer un data.win DELTARUNE (n'importe quel chapitre)">⚙ data.win</button>
-      <button id="btn-backups" data-tooltip="Ouvrir le dossier des backups">🗁 Backups</button>
+      <label class="chk backup-toggle" data-tooltip="Créer des backups avant les sauvegardes et pendant les modifications non sauvegardées">
+        <input type="checkbox" id="chk-backups" /> Backups
+      </label>
+      <button id="btn-backups" data-tooltip="Ouvrir le dossier des backups">🗁 Dossier</button>
       <button id="btn-reload" data-tooltip="Recharger le fichier du jeu (écrase les modifs non sauvées)">⟳ Recharger</button>
       <button id="btn-save" data-tooltip="Toutes les modifications sont sauvegardées" disabled>✓ Sauvegardé</button>
     </div>
@@ -172,6 +175,7 @@
           <option value="shop">Shop — Grande boîte</option>
           <option value="bubble">Bulle de combat</option>
           <option value="battletext">Texte de combat</option>
+          <option value="device">Interface DEVICE</option>
           <option value="plain">Texte libre</option>
         </select>
         <button id="btn-side" data-tooltip="Côté de la bulle">↔</button>

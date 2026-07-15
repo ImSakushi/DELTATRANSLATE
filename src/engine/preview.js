@@ -230,6 +230,8 @@ export class Preview {
         return this.renderBubble(text, state);
       case "battletext":
         return this.renderBattleText(text, state);
+      case "device":
+        return this.renderDevice(text, state);
       case "plain":
         return this.renderPlain(text, state);
       case "darkbox":
@@ -285,7 +287,24 @@ export class Preview {
         const n = Number(color.slice(8));
         color = rainbowHex((((n * 20 + this.jewelTimer * 3) % 255) + 255) % 255);
       }
-      font.drawChar(ctx, op.ch, ox + op.x * scale, oy + op.y * scale, color, scale);
+      const x = ox + op.x * scale;
+      const y = oy + op.y * scale;
+      if (op.special === 2) {
+        // obj_writer Draw_0, special == 2 : glyphe plein, quatre copies
+        // cardinales puis quatre diagonales avec une alpha plus faible.
+        const pulse = Math.sin(this.jewelTimer / 14);
+        const baseAlpha = ctx.globalAlpha;
+        font.drawChar(ctx, op.ch, x, y, color, scale);
+        ctx.globalAlpha = baseAlpha * (0.3 + pulse * 0.1);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
+          font.drawChar(ctx, op.ch, x + dx * scale, y + dy * scale, color, scale);
+        ctx.globalAlpha = baseAlpha * (0.08 + pulse * 0.04);
+        for (const [dx, dy] of [[1, 1], [-1, -1], [-1, 1], [1, -1]])
+          font.drawChar(ctx, op.ch, x + dx * scale, y + dy * scale, color, scale);
+        ctx.globalAlpha = baseAlpha;
+      } else {
+        font.drawChar(ctx, op.ch, x, y, color, scale);
+      }
     }
   }
 
@@ -393,7 +412,11 @@ export class Preview {
     if (!spec) return [`⚠ Expression ${fe} inconnue pour le portrait de Mad Mew Mew`];
 
     const x = 640 - 224;
-    const y = 480 - 116;
+    // obj_pinkspeaker fixe image_yscale à 2 dans Create_0, puis les scènes
+    // utilisent `camera_bottom - pinkface.sprite_height`. sprite_height inclut
+    // cette échelle dans GameMaker : 116 × 2, et non 116 px.
+    const baseHeight = this.spriteMeta.spr_pinkspeaker_silhouette?.height || 116;
+    const y = 480 - baseHeight * 2;
     if (spec.tail) {
       const tailFrames = this.spriteMeta.spr_pinkspeaker_tail?.frames ?? 1;
       const tailFrame = Math.floor(this.jewelTimer / 5) % Math.max(1, tailFrames);
@@ -689,7 +712,9 @@ export class Preview {
 
     // formatage (word-wrap)
     const fmt = formatText(text, {
-      charline: 33,
+      // obj_writer Other_15 force charline à 23 pour le typer rose, avant
+      // que le texte ne puisse atteindre le grand obj_pinkspeaker à droite.
+      charline: !fight && typer === 97 ? 23 : 33,
       dialoguer: !fight,
       battle: fight,
       initialFc,
@@ -901,6 +926,69 @@ export class Preview {
       fe: 0,
       mode: "plain",
     };
+  }
+
+  // scr_texttype 666/667 + writers créés directement par les objets DEVICE :
+  // canvas 320×240, aucun dialoguer et coordonnées absolues du instance_create.
+  async renderDevice(text, state = {}) {
+    const style = state.deviceStyle ?? {};
+    const ctx = this.clear(320, 240);
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, 320, 240);
+
+    if (style.background === "contact") {
+      // DEVICE_OBACK_4 Draw_0 : quatre IMAGE_DEPTH en miroir autour de (160,120).
+      for (const [xs, ys] of [[2, 2], [-2, 2], [-2, -2], [2, -2]]) {
+        await this.drawGameSprite(ctx, "IMAGE_DEPTH", 0, 160, 120, xs, ys, 0, {
+          exact: true,
+          alpha: 0.34,
+        });
+      }
+    }
+
+    if (style.vessel) {
+      const parts = [
+        // Apparence d'exemple : les flags 900…902 dépendent du choix fait en
+        // jeu et ne sont pas stockés dans le fichier de langue.
+        ["IMAGE_GONERHEAD", 0, 1],
+        ["IMAGE_GONERBODY", 34],
+        ["IMAGE_GONERLEGS", 60],
+      ];
+      const steps = Math.max(0, Math.min(3, Number(style.vessel.steps) || 1));
+      for (let i = 0; i < steps; i++) {
+        await this.drawGameSprite(
+          ctx,
+          parts[i][0],
+          parts[i][2] ?? 0,
+          Number(style.vessel.x) || 140,
+          (Number(style.vessel.y) || 90) + parts[i][1],
+          2,
+          2,
+          0,
+          { exact: true }
+        );
+      }
+    }
+
+    const fmt = formatText(text, { charline: 33, initialFc: 0 });
+    const lay = layoutText(fmt.text, {
+      typer: state.typer ?? 667,
+      writingx: Number(style.x) || 0,
+      writingy: Number(style.y) || 0,
+      initialFc: 0,
+      hspaceScale: Number(style.hspaceScale) || 1,
+    });
+    const miniFaceWarnings = await this.drawMiniFaces(
+      ctx,
+      lay.miniFaces,
+      state.miniFaceBank
+    );
+    this.drawOps(ctx, lay.ops, 0, 0, 1);
+
+    const warnings = [...lay.warnings, ...miniFaceWarnings];
+    if (lay.maxX > 320) warnings.push("⚠ Le texte DEVICE déborde à droite");
+    if (lay.maxY + lay.vspace > 240) warnings.push("⚠ Le texte DEVICE déborde en bas");
+    return { warnings, lines: lay.lines, fc: 0, fe: lay.fe, mode: "device" };
   }
 
   // --- Boîte du monde sombre (scr_darkbox_black + scr_darkbox)

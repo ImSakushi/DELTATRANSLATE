@@ -13,6 +13,15 @@ export function objectFromCodeFile(file) {
   return String(file ?? "").replace(/\.gml$/, "").match(OBJECT_FILE_RE)?.[1] ?? null;
 }
 
+// Le décor de room n'a de sens que derrière une textbox. Les libellés de
+// menus/inventaire partagent souvent un objet global présent partout — on ne
+// garde des strings que celles requalifiées en dialogue (shop, darkbox).
+function wantsRoomContext(entry) {
+  if (entry.channel !== "string") return true;
+  if (entry.smallFace) return true;
+  return entry.previewMode === "shop" || entry.previewMode === "darkbox";
+}
+
 function scanCreationGraph(codeDir) {
   const creators = new Map();
   const roomsByObject = new Map();
@@ -35,10 +44,7 @@ function scanCreationGraph(codeDir) {
 export function collectRoomContextRequests(reference, codeDir) {
   const directObjects = new Set();
   for (const entry of Object.values(reference)) {
-    // Le décor de room n'a de sens que derrière une textbox. Les libellés de
-    // menus/inventaire partagent souvent un objet global présent partout.
-    if (entry.channel === "string" && !entry.smallFace && entry.previewMode !== "shop")
-      continue;
+    if (!wantsRoomContext(entry)) continue;
     const owner = objectFromCodeFile(entry.file);
     if (owner) directObjects.add(owner);
   }
@@ -65,8 +71,7 @@ export function collectRoomContextRequests(reference, codeDir) {
   const cameraViews = new Set();
   const lineCache = new Map();
   for (const entry of Object.values(reference)) {
-    if (entry.channel === "string" && !entry.smallFace && entry.previewMode !== "shop")
-      continue;
+    if (!wantsRoomContext(entry)) continue;
     const owner = objectFromCodeFile(entry.file);
     if (!owner || !entry.line) continue;
     if (!lineCache.has(entry.file)) {
@@ -128,8 +133,7 @@ export function attachRoomContexts(reference, codeDir, extractedDir, log = () =>
   const lineCache = new Map();
 
   for (const entry of Object.values(reference)) {
-    if (entry.channel === "string" && !entry.smallFace && entry.previewMode !== "shop")
-      continue;
+    if (!wantsRoomContext(entry)) continue;
     const owner = objectFromCodeFile(entry.file);
     if (!owner) continue;
     if (!lineCache.has(entry.file)) {

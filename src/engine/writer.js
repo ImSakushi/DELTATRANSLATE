@@ -159,9 +159,11 @@ export function layoutText(formattedText, opts) {
     faceXShift = 0, // décalage writingx quand un visage est présent (58*f)
     initialFc = 0,
     initialFe = 0,
+    hspaceScale = 1,
   } = opts;
 
   let cur = Object.assign({}, TYPERS[typer] || TYPERS[6]);
+  cur.hspace *= hspaceScale;
   let mycolor = cur.color;
   let xcolor = mycolor;
   let colorchange = 0;
@@ -290,7 +292,14 @@ export function layoutText(formattedText, opts) {
       if (rainbow > 0) color = "RAINBOW:" + n;
       else if (colorchange === 1) color = xcolor;
       if (mychar !== " ") {
-        ops.push({ ch: mychar, x: wx, y: wy, color, font: cur.font });
+        ops.push({
+          ch: mychar,
+          x: wx,
+          y: wy,
+          color,
+          font: cur.font,
+          special: cur.special ?? 0,
+        });
       }
       wx += cur.hspace;
       // ajustements spécifiques fnt_mainbig (myfont == 7 dans le GML)

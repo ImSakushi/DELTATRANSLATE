@@ -93,9 +93,11 @@ function analyzeArg(raw) {
 function resolveStaticSubstitution(arg, lang = "fr") {
   if (arg.string != null) return arg.string;
 
+  // stringset() est un wrapper identité : accepter les branches avec ou sans
   const stringLiteral = '"(?:[^"\\\\]|\\\\.)*"';
+  const branch = `(?:stringset\\(\\s*)?(${stringLiteral})\\s*\\)?`;
   const languageTernary = new RegExp(
-    `^\\(?\\s*global\\.lang\\s*(==|!=)\\s*(${stringLiteral})\\s*\\)?\\s*\\?\\s*(${stringLiteral})\\s*:\\s*(${stringLiteral})\\s*$`,
+    `^\\(?\\s*global\\.lang\\s*(==|!=)\\s*(${stringLiteral})\\s*\\)?\\s*\\?\\s*${branch}\\s*:\\s*${branch}\\s*$`,
     "s"
   );
   const match = arg.raw.match(languageTernary);
@@ -117,6 +119,43 @@ const DEFAULT_KEY_NAMES = {
   5: "[X]", 6: "[C]", 7: "[Enter]", 8: "[Shift]", 9: "[Control]",
 };
 
+// Littéral nu ou enveloppé dans stringset()/stringsetloc() (wrappers identité
+// pour la valeur anglaise) → la chaîne, sinon null.
+function literalString(expr) {
+  const direct = analyzeArg(expr.trim());
+  if (direct.string != null) return direct.string;
+  const setloc = expr.trim().match(/^stringset(?:loc)?\(\s*("(?:[^"\\]|\\.)*")/);
+  return setloc ? analyzeArg(setloc[1]).string : null;
+}
+
+// Découpe `cond ? A : B` au premier niveau (hors chaînes et parenthèses).
+function splitTernary(expr) {
+  let depth = 0;
+  let inString = false;
+  let question = -1;
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "(" || c === "[") depth++;
+    else if (c === ")" || c === "]") depth--;
+    else if (c === "?" && depth === 0) {
+      if (question >= 0) return null; // ternaire imbriqué : on passe
+      question = i;
+    } else if (c === ":" && depth === 0 && question >= 0) {
+      return {
+        whenTrue: expr.slice(question + 1, i).trim(),
+        whenFalse: expr.slice(i + 1).trim(),
+      };
+    }
+  }
+  return null;
+}
+
 // Valeur d'exemple pour une expression irrésoluble hors partie. Jamais écrite
 // dans le fichier de langue : la preview s'en sert pour remplacer ~N par une
 // valeur de la même famille que celle que le jeu injecterait (avec avertissement).
@@ -136,6 +175,24 @@ function sampleExpression(raw, emotion = false) {
   ) {
     return emotion ? "0" : "12";
   }
+  if (/^choose\(/.test(expr)) {
+    const parsed = parseArgs(expr, "choose(".length);
+    const first = parsed?.args?.[0];
+    if (first) return first.string ?? literalString(first.raw);
+  }
+  const ternary = splitTernary(expr);
+  if (ternary) return literalString(ternary.whenTrue) ?? literalString(ternary.whenFalse);
+  // noms de variables clairement numériques (cost, moneyamt, foxes_counted…)
+  if (
+    /^[\w.\[\]]+$/.test(expr) &&
+    /(?:cost|price|amount|amt|count(?:ed)?|bonus|coins?|gold|exp|hp|lv|level|slot|total|num|crown)(?:$|_)/i.test(expr)
+  ) {
+    return emotion ? "0" : "12";
+  }
+  // arithmétique simple sans chaîne (MENUCOORD[10] + 1, 4 - gardencount…)
+  if (!expr.includes('"') && /^[\w.\[\]\s()]+[+\-*/]\s*[\w.\[\]\s()]+$/.test(expr) && /\d/.test(expr)) {
+    return emotion ? "0" : "12";
+  }
   return null;
 }
 
@@ -149,10 +206,8 @@ function sampleFromAssignment(lines, lineIdx, name, emotion) {
     const m = lines[i].match(assignRe);
     if (!m) continue;
     const expr = m[1].trim().replace(/;$/, "");
-    const literal = analyzeArg(expr);
-    if (literal.string != null) return literal.string;
-    const setloc = expr.match(/^stringset(?:loc)?\(\s*("(?:[^"\\]|\\.)*")/);
-    if (setloc) return analyzeArg(setloc[1]).string;
+    const literal = literalString(expr);
+    if (literal != null) return literal;
     return sampleExpression(expr, emotion);
   }
   return null;
@@ -161,9 +216,25 @@ function sampleFromAssignment(lines, lineIdx, name, emotion) {
 function sampleSubstitution(arg, lines, lineIdx, emotion) {
   const direct = sampleExpression(arg.raw, emotion);
   if (direct != null) return direct;
-  const name = arg.raw.trim().match(/^[A-Za-z_]\w*$/);
-  if (!name || !lines) return null;
-  return sampleFromAssignment(lines, lineIdx, name[0], emotion);
+  if (!lines) return null;
+  const raw = arg.raw.trim();
+  const name = raw.match(/^[A-Za-z_]\w*$/);
+  if (name) return sampleFromAssignment(lines, lineIdx, name[0], emotion);
+  // élément de tableau (face[hatState]) : une assignation d'élément ou de
+  // tableau littéral (`face = ["8", "2"]`) fournit une valeur de la bonne famille
+  const indexed = raw.match(/^([A-Za-z_]\w*)\[[^\]]+\]$/);
+  if (indexed) {
+    const element = sampleFromAssignment(lines, lineIdx, `${indexed[1]}\\[[^\\]]*\\]`, emotion);
+    if (element != null) return element;
+    const arrayRe = new RegExp(`(?:\\bvar\\s+)?\\b${indexed[1]}\\s*=\\s*\\[(.+)\\]\\s*;?\\s*$`);
+    for (let i = lineIdx; i >= Math.max(0, lineIdx - 80); i--) {
+      const m = lines[i].match(arrayRe);
+      if (!m) continue;
+      const first = parseArgs(`${m[1]})`, 0)?.args?.[0];
+      return first ? first.string ?? literalString(first.raw) : null;
+    }
+  }
+  return null;
 }
 
 export function scanCatalog(codeDir, log = () => {}) {
@@ -459,7 +530,7 @@ function findFace(lines, lineIdx) {
 // Même remontée que findFace, mais uniquement pour les typers qui changent
 // visiblement le rendu. Les commandes de cutscene injectent leur \T hors de la
 // chaîne localisée ; sans cette métadonnée la preview retomberait sur du blanc.
-function findTyper(lines, lineIdx) {
+function findTyper(lines, lineIdx, ownerTyper = null) {
   const from = Math.max(0, lineIdx - 120);
   for (let i = lineIdx; i >= from; i--) {
     const line = lines[i];
@@ -476,7 +547,121 @@ function findTyper(lines, lineIdx) {
     const typerAssignments = [...line.matchAll(/global\.typer\s*=\s*(\d+)/g)];
     if (typerAssignments.length) return Number(typerAssignments.at(-1)[1]);
   }
+  return ownerTyper;
+}
+
+// Certaines interfaces créent le writer dans Draw/Step alors que leur typer
+// est initialisé dans Create. Cette valeur appartient à l'objet, tous événements
+// confondus, et sert uniquement de repli après la recherche locale ci-dessus.
+function findOwnerTypers(codeDir) {
+  const typers = new Map();
+  for (const file of fs.readdirSync(codeDir).filter((name) => /_Create_\d+\.gml$/.test(name))) {
+    const source = fs.readFileSync(path.join(codeDir, file), "utf8");
+    const assignments = [...source.matchAll(/global\.typer\s*=\s*(\d+)/g)];
+    if (assignments.length) typers.set(codeOwner(file), Number(assignments.at(-1)[1]));
+  }
+  return typers;
+}
+
+function assignedNumber(lines, lineIdx, name) {
+  const re = new RegExp(`\\b${name}\\s*=\\s*(-?\\d+(?:\\.\\d+)?)\\s*;`);
+  for (let i = lineIdx; i >= Math.max(0, lineIdx - 120); i--) {
+    const match = lines[i].match(re);
+    if (!match) continue;
+    // La preview est française : ignorer les overrides contenus dans le petit
+    // bloc `if (global.lang == "ja")` qui suit souvent la valeur par défaut.
+    let japaneseOnly = false;
+    for (let j = i - 1; j >= Math.max(0, i - 12); j--) {
+      if (/^\s*}\s*$/.test(lines[j])) break;
+      if (/if\s*\(\s*global\.lang\s*==\s*["']ja["']\s*\)/.test(lines[j])) {
+        japaneseOnly = true;
+        break;
+      }
+    }
+    if (!japaneseOnly) return Number(match[1]);
+  }
   return null;
+}
+
+function staticDeviceCoordinate(raw, lines, lineIdx) {
+  let expression = raw.trim();
+  const langopt = expression.match(/^langopt\(\s*(-?\d+(?:\.\d+)?)\s*,/);
+  if (langopt) return Number(langopt[1]); // langopt : le premier argument hors japonais
+  if (/^-?\d+(?:\.\d+)?$/.test(expression)) return Number(expression);
+
+  let total = 0;
+  let found = false;
+  for (const term of expression.matchAll(/(^|[+-])\s*(-?\d+(?:\.\d+)?|[A-Za-z_]\w*)/g)) {
+    const sign = term[1] === "-" ? -1 : 1;
+    const token = term[2];
+    const value = /^-?\d/.test(token) ? Number(token) : assignedNumber(lines, lineIdx, token);
+    if (value == null) return null;
+    total += sign * value;
+    found = true;
+  }
+  return found ? total : null;
+}
+
+function findDeviceWriter(lines, lineIdx) {
+  const context = lines[lineIdx] ?? "";
+  if (!/global\.msg\s*\[|\b(?:msgset|msgnext)(?:sub)?loc\s*\(/.test(context)) return null;
+
+  for (let i = lineIdx; i <= Math.min(lines.length - 1, lineIdx + 40); i++) {
+    let from = 0;
+    while (from < lines[i].length) {
+      const call = lines[i].indexOf("instance_create(", from);
+      if (call < 0) break;
+      const parsed = parseArgs(lines[i], call + "instance_create(".length);
+      from = call + "instance_create(".length;
+      if (!parsed || parsed.args.length < 3) continue;
+      if (parsed.args.at(-1).raw.trim() !== "obj_writer") continue;
+      const x = staticDeviceCoordinate(parsed.args[0].raw, lines, i);
+      const y = staticDeviceCoordinate(parsed.args[1].raw, lines, i);
+      if (x == null || y == null) return null;
+
+      let hspaceScale = 1;
+      for (let j = i + 1; j <= Math.min(lines.length - 1, i + 12); j++) {
+        const scale = lines[j].match(/\bhspace\s*\*=\s*(-?\d+(?:\.\d+)?)/);
+        if (scale) {
+          hspaceScale = Number(scale[1]);
+          break;
+        }
+      }
+      return { x, y, ...(hspaceScale !== 1 ? { hspaceScale } : {}) };
+    }
+  }
+  return null;
+}
+
+function findDeviceVessel(lines, lineIdx) {
+  let vessel = null;
+  for (let i = 0; i <= lineIdx; i++) {
+    const creation = lines[i].match(
+      /\bGM\s*=\s*instance_create\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*DEVICE_GONERMAKER\s*\)/
+    );
+    if (creation) {
+      const x = staticDeviceCoordinate(creation[1], lines, i);
+      const y = staticDeviceCoordinate(creation[2], lines, i);
+      vessel = x == null || y == null ? null : { x, y, steps: 1 };
+    }
+    const steps = lines[i].match(/\bGM\.STEP\s*=\s*(\d+)/);
+    if (steps && vessel) vessel.steps = Number(steps[1]);
+  }
+  return vessel;
+}
+
+function findDeviceStyle(entry, lines, lineIdx, typer) {
+  if (typer !== 666 && typer !== 667) return null;
+  const writer = findDeviceWriter(lines, lineIdx);
+  if (!writer) return null;
+  const owner = codeOwner(entry.file);
+  const contact = /DEVICE_(?:CONTACT|NAMER)/i.test(owner);
+  const vessel = /DEVICE_CONTACT/i.test(owner) ? findDeviceVessel(lines, lineIdx) : null;
+  return {
+    ...writer,
+    background: contact ? "contact" : "failure",
+    ...(vessel ? { vessel } : {}),
+  };
 }
 
 // Mad Mew Mew n'utilise pas obj_face : obj_pinkspeaker est une grande instance
@@ -626,11 +811,17 @@ function startsWithWriterAsterisk(text) {
 }
 
 // `/` (attend) et `%` (fin) sont des codes de flux du writer : une chaîne qui
-// se termine ainsi est un message de textbox, pas un libellé de menu. Le seul
-// `%` ambigu est un vrai pourcentage, toujours précédé d'un chiffre.
+// se termine ainsi est un message de textbox, pas un libellé de menu. Un code
+// de flux est collé au texte : précédé d'un espace c'est un caractère littéral
+// (« Numpad / ») ; précédé d'un chiffre, `%` est un vrai pourcentage.
 function endsWithWriterClose(text) {
   const s = String(text).trimEnd();
-  return /\/%?$/.test(s) || /%%$/.test(s) || (/%$/.test(s) && !/\d%$/.test(s));
+  const m = s.match(/(\/%|%%|\/|%)$/);
+  if (!m) return false;
+  const before = s[s.length - m[1].length - 1];
+  if (before === " ") return false;
+  if (m[1] === "%" && /\d/.test(before ?? "")) return false;
+  return true;
 }
 
 function isLargeShopDialogue(file, text) {
@@ -656,25 +847,36 @@ function findBattleTextOwners(codeDir) {
 function inferPreviewMode(file, text, battleTextOwners, contextLine = "", channel = null) {
   const cleanFile = file.replace(/\.gml$/, "");
   if (isLargeShopDialogue(cleanFile, text)) return "shop";
+  // c_msgsetloc/c_msgnextloc passent par la file de cinématique puis par
+  // obj_dialoguer : même dans un objet qui contient aussi un combat, ce ne
+  // sont jamais les lignes du panneau de combat du bas.
+  if (String(channel ?? "").startsWith("cutscene-")) return null;
   const inBattleOwner =
     battleTextOwners.has(codeOwner(cleanFile)) ||
     /scr_encountersetup|obj_battlecontroller/.test(cleanFile);
   if (startsWithWriterAsterisk(text) && inBattleOwner) return "battletext";
   if (channel !== "string") return null;
   // Les stringsetloc qui alimentent la file du writer sont des dialogues, pas
-  // des libellés : global.msg[] → obj_dialoguer (ou writer de combat chez un
-  // battleTextOwner), global.battlemsg[] → recopié dans global.msg[0] par
-  // obj_battlecontroller, global.choicemsg[] → scr_readychoicer (choix rendus
-  // dans la textbox).
+  // des libellés : global.battlemsg[] → recopié dans global.msg[0] par
+  // obj_battlecontroller (texte de combat du bas), global.msg[]/msgset →
+  // obj_dialoguer, global.choicemsg[] → scr_readychoicer (choix rendus dans la
+  // textbox). Chez un battle owner, global.msg sert aussi aux bulles
+  // (msgset + scr_enemyblcon) : on laisse l'heuristique bubble/battletext de
+  // l'app trancher (astérisque).
   if (/global\.battlemsg\s*\[/.test(contextLine)) return "battletext";
+  // En contexte de combat (même hors battleTextOwner : managers d'attaque,
+  // cutscenes de boss…), global.msg et les variables intermédiaires peuvent
+  // alimenter des bulles (obj_battleblcon) : on laisse l'heuristique
+  // bubble/battletext de l'app trancher.
+  if (inBattleOwner || /enemy|battle|blcon|_attack|encounter|boss|trashy_trio/i.test(cleanFile))
+    return null;
   if (/\bmsg\s*\[[^\]]*\]\s*=/.test(contextLine) || /\bmsgset\s*\(/.test(contextLine))
-    return inBattleOwner ? "battletext" : "darkbox";
+    return "darkbox";
   if (/global\.choicemsg\s*\[/.test(contextLine) || /\bscr_readychoicer\s*\(/.test(contextLine))
     return "darkbox";
   // Variables intermédiaires (ex. _dialogue[i], transmises à msgset plus bas) :
   // la terminaison writer signe un message de textbox.
-  if (endsWithWriterClose(text))
-    return inBattleOwner ? "battletext" : "darkbox";
+  if (endsWithWriterClose(text)) return "darkbox";
   return null;
 }
 
@@ -686,6 +888,7 @@ export function buildReference(codeDir, log = () => {}) {
   const battleTextOwners = findBattleTextOwners(codeDir);
   const miniFaceBanks = findMiniFaceBanks(codeDir);
   const pinkSpeakerOwners = findPinkSpeakerOwners(codeDir);
+  const ownerTypers = findOwnerTypers(codeDir);
   log(`  ${entries.length} appels localisés trouvés`);
   const entriesByFile = new Map();
   for (const entry of entries) {
@@ -733,8 +936,13 @@ export function buildReference(codeDir, log = () => {}) {
     if (e.substitutions?.length) entry.substitutions = e.substitutions;
     if (e.substitutionSamples?.length) entry.substitutionSamples = e.substitutionSamples;
     if (lines) {
-      const typer = findTyper(lines, e.line - 1);
+      const typer = findTyper(lines, e.line - 1, ownerTypers.get(codeOwner(e.file)) ?? null);
       if (typer != null) entry.typer = typer;
+      const deviceStyle = findDeviceStyle(e, lines, e.line - 1, typer);
+      if (deviceStyle) {
+        entry.previewMode = "device";
+        entry.deviceStyle = deviceStyle;
+      }
       const speakerOverlay = findPinkSpeakerOverlay(
         e,
         lines,
@@ -780,6 +988,7 @@ export function buildReference(codeDir, log = () => {}) {
     const isDialogue =
       e.channel !== "string" ||
       entry.previewMode === "darkbox" ||
+      entry.previewMode === "device" ||
       entry.previewMode === "battletext";
     if (isDialogue) {
       if (lines) {
@@ -811,6 +1020,7 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
   const battleTextOwners = findBattleTextOwners(codeDir);
   const miniFaceBanks = findMiniFaceBanks(codeDir);
   const pinkSpeakerOwners = findPinkSpeakerOwners(codeDir);
+  const ownerTypers = findOwnerTypers(codeDir);
   const sites = new Map(); // id → {file, line, context}
   const STR_RE = /"((?:[^"\\]|\\.)+)"/g;
   let scanned = 0;
@@ -864,8 +1074,22 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
       if (/global\.msg\[|msgset|msgnext/.test(ctx)) entry.channel = "message";
       else if (/c_cmd|cutscene/.test(ctx)) entry.channel = "cutscene-message";
       if (entry.channel !== "string" && lines) {
-        const typer = findTyper(lines, site.line - 1);
+        const typer = findTyper(
+          lines,
+          site.line - 1,
+          ownerTypers.get(codeOwner(site.file)) ?? null
+        );
         if (typer != null) entry.typer = typer;
+        const deviceStyle = findDeviceStyle(
+          { ...entry, file: site.file },
+          lines,
+          site.line - 1,
+          typer
+        );
+        if (deviceStyle) {
+          entry.previewMode = "device";
+          entry.deviceStyle = deviceStyle;
+        }
         const speakerOverlay = findPinkSpeakerOverlay(
           { ...entry, file: site.file },
           lines,
@@ -961,6 +1185,7 @@ string[] prefixes = new string[] {
 };
 string[] previewNames = new string[] {
     "bg_seam_shop_ch2", "bg_battleback1", "spr_npc_trashy",
+    "IMAGE_DEPTH", "IMAGE_GONERHEAD", "IMAGE_GONERBODY", "IMAGE_GONERLEGS", "IMAGE_SOUL_BLUR",
     "spr_npc_nubert_super_burrow", "spr_ballperson_battle",
     "spr_ballperson_battle_wig", "spr_bullet_trash", "spr_trashy_hoop",
     "spr_krisb_act", "spr_krisb_idle", "spr_susieb_idle", "spr_ralseib_act",

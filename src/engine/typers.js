@@ -65,6 +65,10 @@ export const TYPERS = {
   200: { font: "dotumche", color: "#000000", hspace: 9, vspace: 20 },
   201: { font: "dotumche", color: "#000000", hspace: 9, vspace: 20 },
   202: { font: "mainbig", color: "#FFFFFF", hspace: 16, vspace: 36 },
+  // scr_texttype 666/667 : interface DEVICE_CONTACT / DEVICE_FAILURE.
+  // special 2 ajoute les huit copies translucides autour du glyphe principal.
+  666: { font: "main", color: "#FFFFFF", hspace: 12, vspace: 20, special: 2 },
+  667: { font: "main", color: "#FFFFFF", hspace: 12, vspace: 20, special: 2 },
 };
 
 // \Tx → global.typer selon le contexte (obj_writer_Draw_0).

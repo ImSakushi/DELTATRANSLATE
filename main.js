@@ -59,6 +59,10 @@ function prefsPath() {
   return runtimeFile("prefs.json");
 }
 
+function backupsEnabled() {
+  return loadJson(prefsPath(), {}).backupsEnabled !== false;
+}
+
 function getConfig() {
   return Object.assign({}, DEFAULT_CONFIG, loadJson(configPath(), {}));
 }
@@ -350,7 +354,9 @@ ipcMain.handle("save-lang", async (event, langObj) => {
   let dataWinTemp = null;
   try {
     if (config.storageMode !== "datawin") {
-      const backup = backupFile(config.langFrPath, serialized);
+      const backup = backupsEnabled()
+        ? backupFile(config.langFrPath, serialized)
+        : null;
       fs.writeFileSync(config.langFrPath, serialized, "utf8");
       return {
         ok: true,
@@ -370,7 +376,9 @@ ipcMain.handle("save-lang", async (event, langObj) => {
     ];
     if (required.some((item) => !item)) throw new Error("Configuration data.win incomplète.");
 
-    const backup = backupFile(config.langFrPath, serialized);
+    const backup = backupsEnabled()
+      ? backupFile(config.langFrPath, serialized)
+      : null;
     translationTemp = `${config.langFrPath}.tmp-${process.pid}`;
     dataWinTemp = `${config.dataWinPath}.deltatranslate-tmp-${process.pid}`;
     fs.writeFileSync(translationTemp, serialized, "utf8");
@@ -421,6 +429,9 @@ ipcMain.handle("save-lang", async (event, langObj) => {
 
 ipcMain.handle("backup-lang", (_event, langObj) => {
   try {
+    if (!backupsEnabled()) {
+      return { ok: true, backupCreated: false, disabled: true };
+    }
     const config = getConfig();
     const serialized = serializeLanguage(langObj);
     if (!config.langFrPath || !fs.existsSync(config.langFrPath)) {

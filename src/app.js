@@ -8,7 +8,7 @@ import { substituteArgs } from "./engine/writer.js";
 // ---------------------------------------------------------------------------
 let lang = {}; // objet complet du lang_fr.json (ordre des clés préservé)
 let reference = {}; // id -> {en, call, channel, file, line, face, substitutions, smallFace, speakerOverlay}
-let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme }
+let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme, backupsEnabled }
 let entries = []; // index pour la liste
 let entriesByKey = new Map();
 let filtered = [];
@@ -122,6 +122,12 @@ async function init() {
   if (!prefs.validated) prefs.validated = {};
   if (!prefs.faceOverrides) prefs.faceOverrides = {};
   if (!prefs.sceneOverrides) prefs.sceneOverrides = {};
+  const backupsToggle = $("chk-backups");
+  backupsToggle.checked = prefs.backupsEnabled !== false;
+  backupsToggle.addEventListener("change", () => {
+    prefs.backupsEnabled = backupsToggle.checked;
+    window.api.savePrefs(prefs);
+  });
   applyTheme(prefs.theme === "classic" ? "classic" : "deltarune");
   $("btn-theme").onclick = toggleTheme;
 
@@ -484,10 +490,13 @@ function refreshHighlight() {
 // Longueur des lignes vs limite de la boîte
 function updateLineLens(text) {
   const mode = effectiveMode();
-  const hasFace = /\\F[^0]/.test(text) || inheritedState().fc !== 0;
+  const state = inheritedState();
+  const hasFace = /\\F[^0]/.test(text) || state.fc !== 0;
   let charline = 33;
   if (mode === "battletext") charline = hasFace ? 29 : 37;
-  else if (mode === "darkbox" || mode === "lightbox" || mode === "shop")
+  else if ((mode === "darkbox" || mode === "lightbox") && state.typer === 97)
+    charline = 23;
+  else if (mode === "darkbox" || mode === "lightbox" || mode === "shop" || mode === "device")
     charline = hasFace ? 26 : 33;
   else charline = 999;
 
@@ -496,8 +505,7 @@ function updateLineLens(text) {
     const cls = len > charline ? "over" : "";
     return `<span class="${cls}">${len}</span>`;
   });
-  $("line-lens").innerHTML =
-    parts.join(" · ") + (charline < 999 ? ` <span style="opacity:.5">/ ${charline}</span>` : "");
+  $("line-lens").innerHTML = parts.join(" · ");
 }
 
 // Longueur visible de chaque ligne (règles de comptage d'Other_15)
@@ -541,20 +549,58 @@ function isLargeShopDialogue(e) {
   return visibleStart.startsWith("*");
 }
 
+// `/` (attend) et `%` (fin) sont des codes de flux du writer : une chaîne qui
+// se termine ainsi est un message de textbox, pas un libellé de menu. Un code
+// de flux est collé au texte : précédé d'un espace c'est un caractère littéral
+// (« Numpad / ») ; précédé d'un chiffre, `%` est un vrai pourcentage.
+function endsWithWriterClose(text) {
+  const s = String(text ?? "").trimEnd();
+  const m = s.match(/(\/%|%%|\/|%)$/);
+  if (!m) return false;
+  const before = s[s.length - m[1].length - 1];
+  if (before === " ") return false;
+  if (m[1] === "%" && /\d/.test(before ?? "")) return false;
+  return true;
+}
+
+// Le jeu choisit la boîte selon global.darkzone (état runtime, scr_become_dark
+// / scr_become_light). Statiquement, la room du décor détecté est le meilleur
+// indice : on ne passe en monde clair que sur un préfixe sans ambiguïté.
+const LIGHT_WORLD_ROOM_RE =
+  /^room_(?:town|lw_|hospital|school|kris|tor|diner|library|flowershop|graveyard|townhall|beach|insidecloset|alphys|church|icehouse|man$)/;
+
+function lightWorldAdjust(e, mode) {
+  if (mode !== "darkbox") return mode;
+  const contexts = reference[e.key]?.sceneContexts;
+  if (!contexts?.length) return mode;
+  const override = prefs.sceneOverrides[e.key];
+  const context = contexts.find((c) => sceneContextKey(c) === override) ?? contexts[0];
+  return LIGHT_WORLD_ROOM_RE.test(context.room ?? "") ? "lightbox" : mode;
+}
+
 function autoMode(e) {
   if (!e || e.noref) return "darkbox";
   if (reference[e.key]?.smallFace?.dialogueKey) return "darkbox";
-  const detectedMode = reference[e.key]?.previewMode;
-  if (detectedMode) return detectedMode;
-  const f = (e.file || "").toLowerCase();
   if (isLargeShopDialogue(e)) return "shop";
+  // Les wrappers c_msg* créent une textbox de cinématique via obj_dialoguer.
+  // Le nom de l'objet peut contenir "encounter" tout en alternant cinématique
+  // et combat : le canal est donc plus fiable que le nom du propriétaire.
+  if (String(e.channel ?? "").startsWith("cutscene-"))
+    return lightWorldAdjust(e, "darkbox");
+  const detectedMode = reference[e.key]?.previewMode;
+  if (detectedMode) return lightWorldAdjust(e, detectedMode);
+  const f = (e.file || "").toLowerCase();
   if (/enemy|battle|blcon|_attack|encounter|boss|trashy_trio/.test(f)) {
     // texte à astérisque = boîte de combat en bas ; sinon = bulle de l'ennemi
     const t = (e.en ?? e.fr ?? "").replace(/^(\\..|\^[0-9]|[|&/%])*/, "");
     return t.startsWith("*") ? "battletext" : "bubble";
   }
-  if (e.channel === "string") return "plain";
-  return "darkbox";
+  if (e.channel === "string") {
+    // Référence pas encore régénérée : la terminaison writer signe un dialogue.
+    if (endsWithWriterClose(e.en ?? e.fr)) return lightWorldAdjust(e, "darkbox");
+    return "plain";
+  }
+  return lightWorldAdjust(e, "darkbox");
 }
 
 function effectiveMode() {
@@ -574,11 +620,13 @@ function inheritedState() {
     typer: null,
     miniFaceBank: null,
     speakerOverlay: null,
+    deviceStyle: null,
   };
   const ref = reference[selectedKey];
   state.typer = ref?.typer ?? null;
   state.miniFaceBank = ref?.miniFaceBank ?? null;
   state.speakerOverlay = ref?.speakerOverlay ?? null;
+  state.deviceStyle = ref?.deviceStyle ?? null;
   if (ref?.face) {
     state.fc = ref.face.fc;
     state.fe = ref.face.fe ?? 0;
@@ -1095,7 +1143,7 @@ function save() {
 }
 
 function backupIfModified() {
-  if (!dirty || backupPromise) return;
+  if (prefs.backupsEnabled === false || !dirty || backupPromise) return;
   backupPromise = window.api
     .backupLang({ ...lang })
     .then((result) => {

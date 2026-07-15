@@ -202,6 +202,10 @@ kbd { font-family: var(--mono); }
   height: 30px;
   line-height: 1;
 }
+.top-actions .backup-toggle {
+  white-space: nowrap;
+  cursor: pointer;
+}
 #btn-save.dirty { border-color: var(--yellow); color: var(--yellow); }
 #btn-save:disabled {
   color: var(--fg-dim);
