@@ -851,10 +851,16 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
     if (site) {
       entry.file = site.file.replace(/\.gml$/, "");
       entry.line = site.line;
-      const previewMode = inferPreviewMode(site.file, entry.en, battleTextOwners);
-      if (previewMode) entry.previewMode = previewMode;
       const lines = getLines(site.file);
       const ctx = lines ? lines[site.line - 1] ?? "" : "";
+      const previewMode = inferPreviewMode(
+        site.file,
+        entry.en,
+        battleTextOwners,
+        ctx,
+        entry.channel
+      );
+      if (previewMode) entry.previewMode = previewMode;
       if (/global\.msg\[|msgset|msgnext/.test(ctx)) entry.channel = "message";
       else if (/c_cmd|cutscene/.test(ctx)) entry.channel = "cutscene-message";
       if (entry.channel !== "string" && lines) {
