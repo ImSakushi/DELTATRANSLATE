@@ -7,7 +7,7 @@ import { substituteArgs } from "./engine/writer.js";
 // État global
 // ---------------------------------------------------------------------------
 let lang = {}; // objet complet du lang_fr.json (ordre des clés préservé)
-let reference = {}; // id -> {en, call, channel, file, line, face, substitutions, smallFace}
+let reference = {}; // id -> {en, call, channel, file, line, face, substitutions, smallFace, speakerOverlay}
 let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme }
 let entries = []; // index pour la liste
 let entriesByKey = new Map();
@@ -573,10 +573,12 @@ function inheritedState() {
     faceVariant: null,
     typer: null,
     miniFaceBank: null,
+    speakerOverlay: null,
   };
   const ref = reference[selectedKey];
   state.typer = ref?.typer ?? null;
   state.miniFaceBank = ref?.miniFaceBank ?? null;
+  state.speakerOverlay = ref?.speakerOverlay ?? null;
   if (ref?.face) {
     state.fc = ref.face.fc;
     state.fe = ref.face.fe ?? 0;

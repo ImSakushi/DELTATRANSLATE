@@ -110,6 +110,62 @@ function resolveStaticSubstitution(arg, lang = "fr") {
   return condition ? whenTrue : whenFalse;
 }
 
+// scr_get_input_name hors manette : "[" + global.asc_def[global.input_k[n]] + "]".
+// Bindings clavier par défaut : scr_controls_default ; noms : scr_ascii_input_names.
+const DEFAULT_KEY_NAMES = {
+  0: "[Down]", 1: "[Right]", 2: "[Up]", 3: "[Left]", 4: "[Z]",
+  5: "[X]", 6: "[C]", 7: "[Enter]", 8: "[Shift]", 9: "[Control]",
+};
+
+// Valeur d'exemple pour une expression irrésoluble hors partie. Jamais écrite
+// dans le fichier de langue : la preview s'en sert pour remplacer ~N par une
+// valeur de la même famille que celle que le jeu injecterait (avec avertissement).
+// `emotion` : le ~N alimente un tag \E → il faut un unique caractère 0-9/A-Z/a-z.
+function sampleExpression(raw, emotion = false) {
+  const expr = raw.trim().replace(/;$/, "");
+  const inputCall = expr.match(/^scr_get_input_name\(\s*(\d)\s*\)$/);
+  if (inputCall) return DEFAULT_KEY_NAMES[inputCall[1]] ?? "[?]";
+  if (/^global\.l?charname\b/.test(expr)) return "Susie";
+  if (/^global\.(?:name|truename)\b/.test(expr)) return "Kris";
+  if (/^global\.monstername\b/.test(expr)) return "Leafling";
+  if (/^(?:global\.l?)?(?:item|weapon|armor)name\b/i.test(expr)) return "Dark Candy";
+  if (
+    /^(?:string|real|floor|ceil|round|abs)\s*\(/.test(expr) ||
+    /^global\.(?:flag|l(?:hp|maxhp|lv|gold|xp|at|df))\b/.test(expr) ||
+    /^-?\d+(?:\.\d+)?$/.test(expr)
+  ) {
+    return emotion ? "0" : "12";
+  }
+  return null;
+}
+
+// Remonte la dernière assignation d'une variable locale au-dessus de l'appel
+// (cas `var timestring = string(sec)` ou `var s = stringsetloc(...)`).
+function sampleFromAssignment(lines, lineIdx, name, emotion) {
+  const assignRe = new RegExp(
+    `(?:\\bvar\\s+)?\\b${name}\\s*(?<![=!<>+\\-*/])=(?!=)\\s*(.+?);?\\s*$`
+  );
+  for (let i = lineIdx; i >= Math.max(0, lineIdx - 80); i--) {
+    const m = lines[i].match(assignRe);
+    if (!m) continue;
+    const expr = m[1].trim().replace(/;$/, "");
+    const literal = analyzeArg(expr);
+    if (literal.string != null) return literal.string;
+    const setloc = expr.match(/^stringset(?:loc)?\(\s*("(?:[^"\\]|\\.)*")/);
+    if (setloc) return analyzeArg(setloc[1]).string;
+    return sampleExpression(expr, emotion);
+  }
+  return null;
+}
+
+function sampleSubstitution(arg, lines, lineIdx, emotion) {
+  const direct = sampleExpression(arg.raw, emotion);
+  if (direct != null) return direct;
+  const name = arg.raw.trim().match(/^[A-Za-z_]\w*$/);
+  if (!name || !lines) return null;
+  return sampleFromAssignment(lines, lineIdx, name[0], emotion);
+}
+
 export function scanCatalog(codeDir, log = () => {}) {
   const files = fs.readdirSync(codeDir).filter((f) => f.endsWith(".gml"));
   const entries = [];
@@ -406,8 +462,101 @@ function findTyper(lines, lineIdx) {
   return null;
 }
 
+// Mad Mew Mew n'utilise pas obj_face : obj_pinkspeaker est une grande instance
+// de scène ancrée au bord droit de la caméra. On repère les propriétaires qui
+// la créent afin de ne pas confondre les autres usages du typer rose (97).
+function findPinkSpeakerOwners(codeDir) {
+  const owners = new Map();
+  for (const file of fs.readdirSync(codeDir).filter((name) => name.endsWith(".gml"))) {
+    const source = fs.readFileSync(path.join(codeDir, file), "utf8");
+    const creations = [
+      ...source.matchAll(
+        /\b([A-Za-z_]\w*)\s*=\s*instance_create(?:_depth)?\([^;]*\bobj_pinkspeaker\s*\)/g
+      ),
+    ];
+    if (!creations.length) continue;
+
+    const owner = codeOwner(file);
+    const spec = owners.get(owner) ?? { variables: new Set(), defaultVisible: true };
+    for (const creation of creations) {
+      const variable = creation[1];
+      spec.variables.add(variable);
+      const after = source.slice(creation.index + creation[0].length, creation.index + creation[0].length + 400);
+      if (new RegExp(`\\b${variable}\\.visible\\s*=\\s*false\\b`).test(after)) {
+        spec.defaultVisible = false;
+      }
+    }
+    owners.set(owner, spec);
+  }
+  return owners;
+}
+
+function pinkSpeakerBool(line, variables, property) {
+  const names = [...variables].join("|");
+  if (!names) return null;
+  const direct = line.match(
+    new RegExp(`\\b(?:${names})\\.${property}\\s*=\\s*(true|false)\\b`)
+  );
+  if (direct) return direct[1] === "true";
+
+  const command = line.match(
+    new RegExp(
+      `\\bc_(?:var_instance|msgvar_instance)\\(\\s*(?:${names})\\s*,\\s*["']${property}["']\\s*,\\s*(true|false)\\b`
+    )
+  );
+  if (command) return command[1] === "true";
+
+  const delayed = line.match(
+    new RegExp(
+      `\\bc_delaycmd\\([^;]*?["']var["']\\s*,\\s*(?:${names})\\s*,\\s*["']${property}["']\\s*,\\s*(true|false)\\b`
+    )
+  );
+  return delayed ? delayed[1] === "true" : null;
+}
+
+function findPinkSpeakerExpression(entry, lines, lineIdx) {
+  const current = [...resolvedLocalizedText(entry).matchAll(/\\E(.)/g)];
+  if (current.length) return decodeEmotion(current.at(-1)[1]) ?? 0;
+  for (let i = lineIdx - 1; i >= Math.max(0, lineIdx - 120); i--) {
+    const tags = [...lines[i].matchAll(/\\\\E(.)/g)];
+    if (tags.length) return decodeEmotion(tags.at(-1)[1]) ?? 0;
+    if (/(?:c_speaker|scr_speaker)\s*\(/.test(lines[i])) break;
+  }
+  return 0;
+}
+
+function findPinkSpeakerOverlay(entry, lines, lineIdx, typer, owners) {
+  if (typer !== 97 || entry.channel === "string") return null;
+  const owner = owners.get(codeOwner(entry.file));
+  if (!owner) return null;
+
+  let visible = owner.defaultVisible;
+  let sweat = false;
+  for (let i = 0; i <= lineIdx; i++) {
+    const visibleValue = pinkSpeakerBool(lines[i], owner.variables, "visible");
+    if (visibleValue != null) visible = visibleValue;
+    const sweatValue = pinkSpeakerBool(lines[i], owner.variables, "sweat");
+    if (sweatValue != null) sweat = sweatValue;
+  }
+
+  // c_msgvar_instance placé juste après c_msgset s'applique au message qui
+  // vient d'être créé. On le prend avant le prochain appel localisé.
+  for (let i = lineIdx + 1; i <= Math.min(lines.length - 1, lineIdx + 5); i++) {
+    if (/\b(?:stringset|msgset|msgnext|c_msg)/.test(lines[i])) break;
+    const sweatValue = pinkSpeakerBool(lines[i], owner.variables, "sweat");
+    if (sweatValue != null) sweat = sweatValue;
+  }
+
+  if (!visible) return null;
+  return {
+    kind: "pinkspeaker",
+    expression: findPinkSpeakerExpression(entry, lines, lineIdx),
+    ...(sweat ? { sweat: true } : {}),
+  };
+}
+
 function resolvedLocalizedText(entry) {
-  let text = entry.english;
+  let text = entry.english ?? entry.en ?? "";
   for (let i = 0; i < (entry.substitutions?.length ?? 0); i++) {
     const value = entry.substitutions[i];
     if (typeof value === "string") text = text.replaceAll(`~${i + 1}`, value);
@@ -459,6 +608,14 @@ function startsWithWriterAsterisk(text) {
   return String(text).replace(/^(?:\\..|\^[0-9]|[|&]|\s)*/, "").startsWith("*");
 }
 
+// `/` (attend) et `%` (fin) sont des codes de flux du writer : une chaîne qui
+// se termine ainsi est un message de textbox, pas un libellé de menu. Le seul
+// `%` ambigu est un vrai pourcentage, toujours précédé d'un chiffre.
+function endsWithWriterClose(text) {
+  const s = String(text).trimEnd();
+  return /\/%?$/.test(s) || /%%$/.test(s) || (/%$/.test(s) && !/\d%$/.test(s));
+}
+
 function isLargeShopDialogue(file, text) {
   const source = String(text);
   return (
@@ -479,16 +636,28 @@ function findBattleTextOwners(codeDir) {
   return owners;
 }
 
-function inferPreviewMode(file, text, battleTextOwners) {
+function inferPreviewMode(file, text, battleTextOwners, contextLine = "", channel = null) {
   const cleanFile = file.replace(/\.gml$/, "");
   if (isLargeShopDialogue(cleanFile, text)) return "shop";
-  if (
-    startsWithWriterAsterisk(text) &&
-    (battleTextOwners.has(codeOwner(cleanFile)) ||
-      /scr_encountersetup|obj_battlecontroller/.test(cleanFile))
-  ) {
-    return "battletext";
-  }
+  const inBattleOwner =
+    battleTextOwners.has(codeOwner(cleanFile)) ||
+    /scr_encountersetup|obj_battlecontroller/.test(cleanFile);
+  if (startsWithWriterAsterisk(text) && inBattleOwner) return "battletext";
+  if (channel !== "string") return null;
+  // Les stringsetloc qui alimentent la file du writer sont des dialogues, pas
+  // des libellés : global.msg[] → obj_dialoguer (ou writer de combat chez un
+  // battleTextOwner), global.battlemsg[] → recopié dans global.msg[0] par
+  // obj_battlecontroller, global.choicemsg[] → scr_readychoicer (choix rendus
+  // dans la textbox).
+  if (/global\.battlemsg\s*\[/.test(contextLine)) return "battletext";
+  if (/\bmsg\s*\[[^\]]*\]\s*=/.test(contextLine) || /\bmsgset\s*\(/.test(contextLine))
+    return inBattleOwner ? "battletext" : "darkbox";
+  if (/global\.choicemsg\s*\[/.test(contextLine) || /\bscr_readychoicer\s*\(/.test(contextLine))
+    return "darkbox";
+  // Variables intermédiaires (ex. _dialogue[i], transmises à msgset plus bas) :
+  // la terminaison writer signe un message de textbox.
+  if (endsWithWriterClose(text))
+    return inBattleOwner ? "battletext" : "darkbox";
   return null;
 }
 
@@ -499,6 +668,7 @@ export function buildReference(codeDir, log = () => {}) {
   const entries = scanCatalog(codeDir, log);
   const battleTextOwners = findBattleTextOwners(codeDir);
   const miniFaceBanks = findMiniFaceBanks(codeDir);
+  const pinkSpeakerOwners = findPinkSpeakerOwners(codeDir);
   log(`  ${entries.length} appels localisés trouvés`);
   const entriesByFile = new Map();
   for (const entry of entries) {
@@ -533,13 +703,28 @@ export function buildReference(codeDir, log = () => {}) {
       file: e.file.replace(/\.gml$/, ""),
       line: e.line,
     };
-    const previewMode = inferPreviewMode(e.file, e.english, battleTextOwners);
+    const lines = getLines(e.file);
+    const contextLine = lines?.[e.line - 1] ?? "";
+    const previewMode = inferPreviewMode(
+      e.file,
+      e.english,
+      battleTextOwners,
+      contextLine,
+      e.channel
+    );
     if (previewMode) entry.previewMode = previewMode;
     if (e.substitutions?.length) entry.substitutions = e.substitutions;
-    const lines = getLines(e.file);
     if (lines) {
       const typer = findTyper(lines, e.line - 1);
       if (typer != null) entry.typer = typer;
+      const speakerOverlay = findPinkSpeakerOverlay(
+        e,
+        lines,
+        e.line - 1,
+        typer,
+        pinkSpeakerOwners
+      );
+      if (speakerOverlay) entry.speakerOverlay = speakerOverlay;
       if (/\\m\d/.test(resolvedLocalizedText(e))) {
         const miniFaceBank = inferMiniFaceBank(
           e.file,
@@ -601,6 +786,7 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
   const files = fs.readdirSync(codeDir).filter((f) => f.endsWith(".gml"));
   const battleTextOwners = findBattleTextOwners(codeDir);
   const miniFaceBanks = findMiniFaceBanks(codeDir);
+  const pinkSpeakerOwners = findPinkSpeakerOwners(codeDir);
   const sites = new Map(); // id → {file, line, context}
   const STR_RE = /"((?:[^"\\]|\\.)+)"/g;
   let scanned = 0;
@@ -650,6 +836,14 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
       if (entry.channel !== "string" && lines) {
         const typer = findTyper(lines, site.line - 1);
         if (typer != null) entry.typer = typer;
+        const speakerOverlay = findPinkSpeakerOverlay(
+          { ...entry, file: site.file },
+          lines,
+          site.line - 1,
+          typer,
+          pinkSpeakerOwners
+        );
+        if (speakerOverlay) entry.speakerOverlay = speakerOverlay;
         if (/\\m\d/.test(entry.en)) {
           const miniFaceBank = inferMiniFaceBank(
             site.file,
@@ -732,6 +926,7 @@ ScriptMessage("FONTS_OK");
 string[] prefixes = new string[] {
     "spr_face_", "spr_face", "spr_textbox_", "spr_pxwhite", "spr_battleblcon", "spr_blcon",
     "button_", "spr_smallface", "spr_darkface", "spr_alphysface", "spr_seam_", "spr_miniface_",
+    "spr_pinkspeaker",
     "spr_head", "spr_bname", "spr_tensionbar"
 };
 string[] previewNames = new string[] {

@@ -136,6 +136,37 @@ const MINI_FACE_BANKS = {
   ],
 };
 
+// obj_pinkspeaker Create_0 : global.fe indexe cette table. Les poses de fin
+// remplacent le sprite principal lorsque le writer est en pause (halt > 0).
+const PINK_SPEAKER_EXPRESSIONS = [
+  { name: "spr_pinkspeaker_silhouette", frame: 0 },
+  { name: "spr_pinkspeaker_talk", frame: 0, tail: true },
+  { name: "spr_pinkspeaker_concerned", frame: 0, tail: true },
+  { name: "spr_pinkspeaker_tongue", frame: 0 },
+  { name: "spr_pinkspeaker_nya", frame: 1 },
+  { name: "spr_pinkspeaker_nya2", frame: 1 },
+  { name: "spr_pinkspeaker_talk_happy", frame: 16, tail: true },
+  { name: "spr_pinkspeaker_angry", frame: 0 },
+  { name: "spr_pinkspeaker_wink", frame: 0, tail: true },
+  { name: "spr_pinkspeaker_cry", frame: 0, animate: true },
+  { name: "spr_pinkspeaker_sad", frame: 0, halt: "spr_pinkspeaker_sad_end" },
+  { name: "spr_pinkspeaker_angry", frame: 0, tears: true },
+  {
+    name: "spr_pinkspeaker_happytearful",
+    frame: 1,
+    halt: "spr_pinkspeaker_happytearful_end",
+  },
+  {
+    name: "spr_pinkspeaker_happycry",
+    frame: 1,
+    halt: "spr_pinkspeaker_happycry_end",
+  },
+  { name: "spr_pinkspeaker_overjoyed", frame: 0, animate: true },
+  { name: "spr_pinkspeaker_shocked", frame: 0, animate: true },
+  { name: "spr_pinkspeaker_exploded", frame: 0 },
+  { name: "spr_pinkspeaker_angryblush", frame: 0 },
+];
+
 const SPRITE_CACHE = new Map();
 const SCENE_CACHE = new Map();
 const TINTED_SPRITE_CACHE = new Map();
@@ -349,6 +380,52 @@ export class Preview {
       );
     }
     return warnings;
+  }
+
+  // obj_pinkspeaker Draw_0 : instance à (camera droite - 224,
+  // camera bas - sprite_height), échelle 2. La queue est derrière le corps,
+  // puis viennent la goutte de sueur et les larmes.
+  async drawSpeakerOverlay(ctx, overlay, expression) {
+    if (!overlay || overlay.kind !== "pinkspeaker") return [];
+    const fe = Number(expression) || Number(overlay.expression) || 0;
+    if (fe === 0) return [];
+    const spec = PINK_SPEAKER_EXPRESSIONS[Math.min(fe, PINK_SPEAKER_EXPRESSIONS.length - 1)];
+    if (!spec) return [`⚠ Expression ${fe} inconnue pour le portrait de Mad Mew Mew`];
+
+    const x = 640 - 224;
+    const y = 480 - 116;
+    if (spec.tail) {
+      const tailFrames = this.spriteMeta.spr_pinkspeaker_tail?.frames ?? 1;
+      const tailFrame = Math.floor(this.jewelTimer / 5) % Math.max(1, tailFrames);
+      await this.drawGameSprite(ctx, "spr_pinkspeaker_tail", tailFrame, x + 2, y, 2, 2, 0, {
+        exact: true,
+      });
+    }
+
+    const bodyName = spec.halt ?? spec.name;
+    const bodyFrames = this.spriteMeta[bodyName]?.frames ?? 1;
+    const bodyFrame =
+      spec.halt || spec.animate
+        ? Math.floor(this.jewelTimer / 5) % Math.max(1, bodyFrames)
+        : spec.frame % Math.max(1, bodyFrames);
+    const bodyDrawn = await this.drawGameSprite(ctx, bodyName, bodyFrame, x, y, 2, 2, 0, {
+      exact: true,
+    });
+    if (!bodyDrawn) return [`⚠ Sprite ${bodyName} introuvable`];
+
+    if (overlay.sweat) {
+      await this.drawGameSprite(ctx, "spr_pinkspeaker_sweatdrop", 2, x, y, 2, 2, 0, {
+        exact: true,
+      });
+    }
+    if (spec.tears) {
+      const tearFrames = this.spriteMeta.spr_pinkspeaker_tears?.frames ?? 1;
+      const tearFrame = Math.floor(this.jewelTimer / 5) % Math.max(1, tearFrames);
+      await this.drawGameSprite(ctx, "spr_pinkspeaker_tears", tearFrame, x - 2, y + 40, 2, 2, 0, {
+        exact: true,
+      });
+    }
+    return [];
   }
 
   // obj_shop1 Draw_0 : décor Seam ×2, vendeur à (160,34), puis la grande
@@ -675,6 +752,9 @@ export class Preview {
       faceExact = r.exact;
     }
 
+    const speakerOverlayWarnings = dark
+      ? await this.drawSpeakerOverlay(ctx, state.speakerOverlay, lay.fe)
+      : [];
     const miniFaceWarnings = await this.drawMiniFaces(
       ctx,
       lay.miniFaces,
@@ -684,7 +764,7 @@ export class Preview {
     if (state.smallFace) await this.drawSmallFace(ctx, state.smallFace, writerX, writerY);
     ctx.restore();
 
-    const warnings = [...lay.warnings, ...miniFaceWarnings];
+    const warnings = [...lay.warnings, ...speakerOverlayWarnings, ...miniFaceWarnings];
     if (!faceExact)
       warnings.push(`⚠ Expression ${lay.fe} introuvable pour ce visage — frame 0 affichée`);
     if (lay.maxX > boxRight - 8) warnings.push("⚠ Le texte déborde à droite de la boîte");
