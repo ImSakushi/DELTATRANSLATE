@@ -8,6 +8,18 @@ contextBridge.exposeInMainWorld("api", {
   loadData: () => ipcRenderer.invoke("load-data"),
   saveLang: (langObj) => ipcRenderer.invoke("save-lang", langObj),
   backupLang: (langObj) => ipcRenderer.invoke("backup-lang", langObj),
+  getSpriteFrame: (name, role, frame) => ipcRenderer.invoke("get-sprite-frame", name, role, frame),
+  exportSpriteFrame: (name, frame) => ipcRenderer.invoke("export-sprite-frame", name, frame),
+  importSpriteFrame: (name, frame, file) =>
+    ipcRenderer.invoke("import-sprite-frame", name, frame, webUtils.getPathForFile(file)),
+  resetSpriteFrame: (name, frame) => ipcRenderer.invoke("reset-sprite-frame", name, frame),
+  openSpriteOverrides: () => ipcRenderer.invoke("open-sprite-overrides"),
+  applySpriteOverrides: () => ipcRenderer.invoke("apply-sprite-overrides"),
+  listCodeFiles: (query) => ipcRenderer.invoke("list-code-files", query),
+  readCodeFile: (file) => ipcRenderer.invoke("read-code-file", file),
+  saveCodeFile: (file, content) => ipcRenderer.invoke("save-code-file", file, content),
+  resetCodeFile: (file) => ipcRenderer.invoke("reset-code-file", file),
+  applyCodeOverrides: () => ipcRenderer.invoke("apply-code-overrides"),
   savePrefs: (prefs) => ipcRenderer.invoke("save-prefs", prefs),
   confirmClose: (unsavedCount) => ipcRenderer.invoke("confirm-close", unsavedCount),
   closeWindow: () => ipcRenderer.invoke("close-window"),
@@ -25,4 +37,8 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.on("utmt-progress", (_e, progress) => cb(progress)),
   onSaveProgress: (cb) =>
     ipcRenderer.on("save-progress", (_e, line) => cb(line)),
+  onCodeProgress: (cb) =>
+    ipcRenderer.on("code-progress", (_e, line) => cb(line)),
+  onSpriteProgress: (cb) =>
+    ipcRenderer.on("sprite-progress", (_e, line) => cb(line)),
 });

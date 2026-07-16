@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <title>DELTATRANSLATE</title>
   <link id="theme-css" rel="stylesheet" href="themes/deltarune.css" />
+  <link rel="stylesheet" href="themes/sprites.css" />
 </head>
 <body>
   <div id="window-titlebar">
@@ -25,6 +26,7 @@
         <span class="theme-icon theme-icon-dr" aria-hidden="true">♥</span>
       </button>
       <button id="btn-import" data-tooltip="Importer un data.win DELTARUNE (n'importe quel chapitre)">⚙ data.win</button>
+      <button id="btn-code" data-tooltip="Lire le GML de la scène sélectionnée et modifier ponctuellement le code">⌘ Code GML</button>
       <label class="chk backup-toggle" data-tooltip="Créer des backups avant les sauvegardes et pendant les modifications non sauvegardées">
         <input type="checkbox" id="chk-backups" /> Backups
       </label>
@@ -33,6 +35,16 @@
       <button id="btn-save" data-tooltip="Toutes les modifications sont sauvegardées" disabled>✓ Sauvegardé</button>
     </div>
   </header>
+
+  <nav id="workspace-tabs" aria-label="Sections de l'éditeur">
+    <button class="workspace-tab active" type="button" data-view="translations" aria-selected="true">
+      <span aria-hidden="true">✦</span> Textes
+    </button>
+    <button class="workspace-tab" type="button" data-view="sprites" aria-selected="false">
+      <span aria-hidden="true">▧</span> Sprites
+      <span id="sprite-tab-count" class="workspace-tab-count">0</span>
+    </button>
+  </nav>
 
   <!-- ==================== Modal import data.win ==================== -->
   <div id="import-modal" class="modal hidden">
@@ -83,7 +95,145 @@
     </div>
   </div>
 
-  <div id="layout">
+  <!-- ==================== Modal code GML ==================== -->
+  <div id="code-modal" class="modal hidden">
+    <div class="modal-box code-modal-box">
+      <div class="code-modal-title">
+        <div>
+          <h2>Code GML de la scène</h2>
+          <div id="code-file-name">—</div>
+        </div>
+        <button id="btn-close-code" type="button">Fermer</button>
+      </div>
+
+      <div class="code-toolbar">
+        <label for="code-file-query">Fichier</label>
+        <input id="code-file-query" type="text" placeholder="Rechercher un objet, script ou événement…" autocomplete="off" />
+        <select id="code-file-results" aria-label="Résultats des fichiers GML"></select>
+        <label for="code-find">Dans le code</label>
+        <input id="code-find" type="text" placeholder="Condition, fonction, texte…" />
+        <button id="btn-code-find-prev" type="button" data-tooltip="Occurrence précédente">↑</button>
+        <button id="btn-code-find-next" type="button" data-tooltip="Occurrence suivante">↓</button>
+      </div>
+
+      <div class="code-workspace">
+        <aside class="code-related-pane">
+          <h3>Textes de cette scène</h3>
+          <p>Choisis une ligne pour voir les conditions et les branches qui la déclenchent.</p>
+          <div id="code-related-list"></div>
+        </aside>
+        <section class="code-editor-pane">
+          <div id="code-readonly" class="code-source" tabindex="0"></div>
+          <textarea id="code-input" class="code-source hidden" spellcheck="false" aria-label="Éditeur de code GML"></textarea>
+        </section>
+      </div>
+
+      <div class="code-footer">
+        <span id="code-status">Lecture seule — le GML extrait reste intact.</span>
+        <div class="code-actions">
+          <button id="btn-code-edit" type="button">✎ Activer l’édition</button>
+          <button id="btn-code-reset" type="button" disabled>↶ Revenir au code original</button>
+          <button id="btn-code-save" type="button" disabled>Enregistrer l’override</button>
+          <button id="btn-code-apply" class="primary" type="button" disabled>▶ Appliquer au jeu</button>
+        </div>
+      </div>
+      <pre id="code-progress" class="hidden"></pre>
+    </div>
+  </div>
+
+  <!-- ==================== Éditeur de sprites ==================== -->
+  <section id="sprites-view" class="hidden" aria-label="Éditeur de sprites">
+    <aside id="sprite-sidebar">
+      <div class="sprite-sidebar-head">
+        <label for="sprite-search">Sprites du chapitre</label>
+        <input id="sprite-search" type="text" placeholder="Rechercher un sprite…" autocomplete="off" />
+        <div id="sprite-filters" role="group" aria-label="Filtres des sprites">
+          <button class="sprite-filter active" type="button" data-filter="all">Tous</button>
+          <button class="sprite-filter" type="button" data-filter="translated">Traduits</button>
+          <button class="sprite-filter" type="button" data-filter="todo">À faire</button>
+          <button class="sprite-filter" type="button" data-filter="imported">Importés</button>
+        </div>
+      </div>
+      <div id="sprite-list" tabindex="0">
+        <div id="sprite-list-spacer"></div>
+        <div id="sprite-list-items"></div>
+      </div>
+      <div id="sprite-list-status">Chargement…</div>
+    </aside>
+
+    <main id="sprite-editor">
+      <header id="sprite-editor-head">
+        <div>
+          <div class="sprite-eyebrow">SPRITE SÉLECTIONNÉ</div>
+          <h1 id="sprite-name">—</h1>
+          <div id="sprite-meta">Sélectionne un sprite dans la liste.</div>
+        </div>
+        <div id="sprite-badges"></div>
+      </header>
+
+      <div id="sprite-frame-bar">
+        <button id="sprite-prev-frame" type="button" aria-label="Frame précédente">←</button>
+        <span id="sprite-frame-label">Frame 1 / 1</span>
+        <button id="sprite-next-frame" type="button" aria-label="Frame suivante">→</button>
+        <span class="sprite-frame-tip">Une frame importée remplace uniquement cette image.</span>
+      </div>
+
+      <div id="sprite-compare">
+        <article class="sprite-preview-card">
+          <header>
+            <div>
+              <span class="sprite-preview-kicker">SOURCE</span>
+              <strong>Original</strong>
+            </div>
+            <span id="sprite-original-name" class="sprite-file-name">—</span>
+          </header>
+          <div class="sprite-canvas" id="sprite-original-canvas">
+            <div class="sprite-loading">Sélectionne un sprite</div>
+            <img id="sprite-original-image" alt="Aperçu du sprite original" class="hidden" />
+          </div>
+        </article>
+
+        <article class="sprite-preview-card translated-card">
+          <header>
+            <div>
+              <span class="sprite-preview-kicker">JEU EN FRANÇAIS</span>
+              <strong>Traduit</strong>
+            </div>
+            <span id="sprite-translated-name" class="sprite-file-name">—</span>
+          </header>
+          <div class="sprite-canvas" id="sprite-translated-canvas">
+            <div class="sprite-loading">Aucune image chargée</div>
+            <img id="sprite-translated-image" alt="Aperçu du sprite traduit" class="hidden" />
+          </div>
+        </article>
+      </div>
+
+      <section id="sprite-import-panel">
+        <div class="sprite-import-copy">
+          <span class="sprite-import-icon" aria-hidden="true">＋</span>
+          <div>
+            <h2 id="sprite-import-title">Importer la traduction de cette frame</h2>
+            <p id="sprite-import-hint">PNG aux mêmes dimensions que le sprite original.</p>
+          </div>
+        </div>
+        <div id="sprite-dropzone" role="button" tabindex="0">
+          <strong>Dépose un PNG ici</strong>
+          <span>ou clique pour choisir un fichier</span>
+        </div>
+        <input id="sprite-file-input" type="file" accept="image/png,.png" hidden />
+        <div class="sprite-actions">
+          <button id="sprite-reset-frame" type="button" disabled>↶ Annuler l'import de la frame</button>
+          <button id="sprite-export-frame" type="button">↓ Exporter l'original</button>
+          <button id="sprite-open-folder" type="button">▤ Ouvrir le dossier local</button>
+          <button id="sprite-apply" class="primary" type="button" disabled>▶ Appliquer les sprites au jeu</button>
+        </div>
+        <div id="sprite-message" role="status" aria-live="polite"></div>
+        <pre id="sprite-progress" class="hidden"></pre>
+      </section>
+    </main>
+  </section>
+
+  <div id="layout" data-workspace-view="translations">
     <!-- ==================== Colonne gauche : liste ==================== -->
     <aside id="sidebar">
       <input id="search" type="text" placeholder="Rechercher (texte EN/FR ou clé)…" />
@@ -216,7 +366,7 @@
 
   <footer id="statusbar">
     <span id="save-state">Aucune modification</span>
-    <span id="hint">Alt : roue des tags · Ctrl+Entrée : sauvegarder et passer à la suivante · Ctrl+↓/↑ : ligne suivante/précédente à traduire</span>
+    <span id="hint">Alt : roue des tags · Ctrl+Entrée : sauvegarder et passer au dialogue suivant · Ctrl+↓/↑ : ligne suivante/précédente à traduire</span>
   </footer>
 
   <div id="tag-wheel" aria-hidden="true">

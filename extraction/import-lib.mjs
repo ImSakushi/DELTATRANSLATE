@@ -1201,7 +1201,9 @@ using (TextureWorker worker = new())
     {
         if (spr is null) continue;
         string name = spr.Name.Content;
-        if (!prefixes.Any(p => name.StartsWith(p)) && !previewNames.Contains(name)) continue;
+        bool localizedPair =
+            name.EndsWith("_fr") || Data.Sprites.Any(candidate => candidate?.Name?.Content == name + "_fr");
+        if (!prefixes.Any(p => name.StartsWith(p)) && !previewNames.Contains(name) && !localizedPair) continue;
         for (int i = 0; i < spr.Textures.Count; i++)
         {
             if (spr.Textures[i]?.Texture is null) continue;

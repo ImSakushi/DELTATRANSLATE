@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { patchLocalizedGml } from "./patch-gml.mjs";
+import { prepareCodeEntries } from "./code-overrides.mjs";
 
 function arg(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -27,15 +27,23 @@ const output = required("output");
 const cli = required("cli");
 const codeDir = required("code");
 const referencePath = required("reference");
-const translationPath = required("translation");
+const translationPath = arg("translation") ? path.resolve(arg("translation")) : null;
+const overridesDir = arg("overrides") ? path.resolve(arg("overrides")) : null;
+const spriteOverridesDir = arg("sprites") ? path.resolve(arg("sprites")) : null;
+const overridesOnly = process.argv.includes("--overrides-only");
 
-for (const file of [source, cli, referencePath, translationPath]) {
+if (!overridesOnly && !translationPath) {
+  throw new Error("Argument --translation manquant.");
+}
+for (const file of [source, cli, referencePath, ...(translationPath ? [translationPath] : [])]) {
   if (!fs.existsSync(file)) throw new Error(`Fichier introuvable : ${file}`);
 }
 if (!fs.existsSync(codeDir)) throw new Error(`Code GML extrait introuvable : ${codeDir}`);
 
 const reference = JSON.parse(fs.readFileSync(referencePath, "utf8"));
-const translation = JSON.parse(fs.readFileSync(translationPath, "utf8"));
+const translation = overridesOnly
+  ? {}
+  : JSON.parse(fs.readFileSync(translationPath, "utf8"));
 const translated = {};
 for (const [id, entry] of Object.entries(reference)) {
   if (translation[id] != null && String(translation[id]) !== String(entry.en)) {
@@ -46,23 +54,34 @@ for (const [id, entry] of Object.entries(reference)) {
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "deltatranslate-patch-"));
 const patchedDir = path.join(temporary, "CodeEntries");
 fs.mkdirSync(patchedDir);
-let siteCount = 0;
-let fileCount = 0;
-
+const spriteCount =
+  spriteOverridesDir && fs.existsSync(spriteOverridesDir)
+    ? fs
+        .readdirSync(spriteOverridesDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .reduce(
+          (total, entry) =>
+            total +
+            fs
+              .readdirSync(path.join(spriteOverridesDir, entry.name))
+              .filter((name) => /^\d+\.png$/i.test(name)).length,
+          0
+        )
+    : 0;
 try {
-  for (const file of fs.readdirSync(codeDir)) {
-    if (!file.endsWith(".gml")) continue;
-    const original = fs.readFileSync(path.join(codeDir, file), "utf8");
-    const patched = patchLocalizedGml(original, translated);
-    if (!patched.count) continue;
-    fs.writeFileSync(path.join(patchedDir, file), patched.text, "utf8");
-    siteCount += patched.count;
-    fileCount++;
-  }
+  const { siteCount, fileCount, overrideCount } = prepareCodeEntries({
+    codeDir,
+    overridesDir,
+    outputDir: patchedDir,
+    translations: translated,
+  });
 
-  console.log(`PATCH_INFO ${fileCount} fichiers GML, ${siteCount} sites traduits`);
+  console.log(
+    `PATCH_INFO ${fileCount} fichiers GML, ${overrideCount} overrides, ` +
+      `${siteCount} sites traduits, ${spriteCount} frames de sprites`
+  );
   fs.rmSync(output, { force: true });
-  if (!fileCount) {
+  if (!fileCount && !spriteCount) {
     fs.copyFileSync(source, output);
     console.log("PATCH_DONE aucune traduction différente de l’anglais");
     process.exit(0);
@@ -70,9 +89,12 @@ try {
 
   const scriptPath = path.join(temporary, "import.csx");
   const escapedDir = csxString(patchedDir);
+  const escapedSpriteDir = csxString(spriteOverridesDir ?? "");
   fs.writeFileSync(
     scriptPath,
-    `using System.IO;
+    `using System;
+using System.IO;
+using ImageMagick;
 using UndertaleModLib.Util;
 
 EnsureDataLoaded();
@@ -89,6 +111,52 @@ foreach (string file in files)
 }
 importGroup.Import();
 ScriptMessage($"PATCH_COMPILED {files.Length}");
+
+string spriteFolder = "${escapedSpriteDir}";
+int importedSprites = 0;
+if (Directory.Exists(spriteFolder))
+{
+    foreach (string spriteDirectory in Directory.GetDirectories(spriteFolder))
+    {
+        string spriteName = Path.GetFileName(spriteDirectory);
+        var sprite = Data.Sprites.ByName(spriteName);
+        if (sprite is null)
+            throw new Exception($"Sprite cible introuvable : {spriteName}");
+
+        foreach (string imagePath in Directory.GetFiles(spriteDirectory, "*.png"))
+        {
+            if (!int.TryParse(Path.GetFileNameWithoutExtension(imagePath), out int frame) ||
+                frame < 0 || frame >= sprite.Textures.Count)
+                throw new Exception($"Frame invalide pour {spriteName} : {Path.GetFileName(imagePath)}");
+
+            using MagickImage image = TextureWorker.ReadBGRAImageFromFile(imagePath);
+            if ((uint)image.Width != sprite.Width || (uint)image.Height != sprite.Height)
+                throw new Exception(
+                    $"Dimensions incorrectes pour {spriteName}_{frame} : " +
+                    $"{image.Width}x{image.Height}, attendu {sprite.Width}x{sprite.Height}"
+                );
+
+            UndertaleEmbeddedTexture texture = new();
+            texture.Name = new UndertaleString($"Texture {Data.EmbeddedTextures.Count}");
+            texture.TextureData.Image = GMImage.FromMagickImage(image).ConvertToPng();
+            Data.EmbeddedTextures.Add(texture);
+
+            UndertaleTexturePageItem item = new();
+            item.Name = new UndertaleString($"PageItem {Data.TexturePageItems.Count}");
+            item.SourceWidth = (ushort)image.Width;
+            item.SourceHeight = (ushort)image.Height;
+            item.TargetWidth = (ushort)image.Width;
+            item.TargetHeight = (ushort)image.Height;
+            item.BoundingWidth = (ushort)image.Width;
+            item.BoundingHeight = (ushort)image.Height;
+            item.TexturePage = texture;
+            Data.TexturePageItems.Add(item);
+            sprite.Textures[frame].Texture = item;
+            importedSprites++;
+        }
+    }
+}
+ScriptMessage($"SPRITES_PATCHED {importedSprites}");
 `,
     "utf8"
   );

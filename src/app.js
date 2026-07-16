@@ -2,6 +2,7 @@ import { loadFonts } from "./engine/bitmapfont.js";
 import { Preview } from "./engine/preview.js";
 import { C_TAG, FC_NAMES, F_TAG, encodeFe } from "./engine/typers.js";
 import { substituteArgs } from "./engine/writer.js";
+import { SpriteEditor } from "./sprites.js";
 
 // ---------------------------------------------------------------------------
 // État global
@@ -25,8 +26,23 @@ const editHistories = new Map(); // historique indépendant pour chaque clé
 let pendingEdit = null;
 let applyingHistory = false;
 let backupPromise = null;
+let codeModalBound = false;
+let codeApplyRunning = false;
+const codeState = {
+  file: null,
+  content: "",
+  original: "",
+  saved: "",
+  modified: false,
+  editing: false,
+  dirty: false,
+  needsApply: false,
+  targetLine: null,
+  findIndex: -1,
+};
 
 const $ = (id) => document.getElementById(id);
+const spriteEditor = new SpriteEditor($);
 
 const ROW_H = 65;
 const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
@@ -127,6 +143,8 @@ let appReady = false;
 
 async function init() {
   bindImportModal();
+  bindCodeModal();
+  spriteEditor.bind();
   const data = await window.api.loadData();
   appConfig = data.config ?? {};
   utmtReady = Boolean(data.utmt?.ready);
@@ -162,6 +180,7 @@ async function init() {
   appReady = true;
   lang = data.lang;
   reference = data.reference;
+  spriteEditor.init(data.spriteCatalog);
 
   const fonts = await loadFonts(data.extractedDir, parseFontCsvs(data.fonts));
   preview = new Preview(
@@ -1025,7 +1044,8 @@ function setupTagWheel() {
     { tag: "^3", label: "pause légère", kind: "pause" },
     { tag: "^6", label: "pause longue", kind: "pause" },
     { tag: "^9", label: "pause max", kind: "pause" },
-    { tag: "&", label: "nouvelle ligne", kind: "flow" },
+    { tag: "~1", label: "substitution 1", kind: "flow" },
+    { tag: "~2", label: "substitution 2", kind: "flow" },
     { tag: "/", label: "attendre", kind: "flow" },
     { tag: "%", label: "message suivant", kind: "flow" },
     { tag: "/%", label: "fin de séquence", kind: "flow" },
@@ -1139,6 +1159,371 @@ function setupTagWheel() {
 }
 
 // ---------------------------------------------------------------------------
+// Lecteur / éditeur de code GML
+// ---------------------------------------------------------------------------
+function codeText() {
+  return codeState.editing ? $("code-input").value : codeState.content;
+}
+
+function setCodeStatus(message, modified = false) {
+  const status = $("code-status");
+  status.textContent = message;
+  status.classList.toggle("modified", modified);
+}
+
+function updateCodeButtons() {
+  $("btn-code-save").disabled = !codeState.dirty || codeApplyRunning;
+  $("btn-code-reset").disabled =
+    (!codeState.modified && !codeState.dirty) || codeApplyRunning;
+  $("btn-code-apply").disabled = !codeState.file || codeApplyRunning;
+  $("btn-code-edit").disabled = !codeState.file || codeApplyRunning;
+  $("btn-code-edit").textContent = codeState.editing
+    ? "▣ Revenir en lecture"
+    : "✎ Activer l’édition";
+
+  if (codeApplyRunning) return;
+  if (codeState.dirty) {
+    setCodeStatus("Override modifié mais pas encore enregistré.", true);
+  } else if (codeState.needsApply) {
+    setCodeStatus("Override enregistré — il reste à l’appliquer au data.win.", true);
+  } else if (codeState.modified) {
+    setCodeStatus("Override local enregistré. Le GML extrait original est intact.", true);
+  } else {
+    setCodeStatus("Lecture seule — le GML extrait reste intact.");
+  }
+}
+
+function renderCodeSource(targetLine = codeState.targetLine) {
+  codeState.targetLine = Number(targetLine) || null;
+  const container = $("code-readonly");
+  const fragment = document.createDocumentFragment();
+  const lines = codeState.content.split("\n");
+  lines.forEach((line, index) => {
+    const number = index + 1;
+    const row = document.createElement("div");
+    row.className = `code-line${number === codeState.targetLine ? " target" : ""}`;
+    row.dataset.line = String(number);
+    const gutter = document.createElement("span");
+    gutter.className = "code-line-number";
+    gutter.textContent = String(number);
+    const source = document.createElement("span");
+    source.className = "code-line-text";
+    source.textContent = line || " ";
+    row.append(gutter, source);
+    fragment.appendChild(row);
+  });
+  container.replaceChildren(fragment);
+  requestAnimationFrame(() => {
+    container.querySelector(".code-line.target")?.scrollIntoView({ block: "center" });
+  });
+}
+
+function jumpToCodeLine(line) {
+  const wanted = Math.max(1, Number(line) || 1);
+  codeState.targetLine = wanted;
+  if (!codeState.editing) {
+    renderCodeSource(wanted);
+    return;
+  }
+  const input = $("code-input");
+  const lines = input.value.split("\n");
+  const offset = lines.slice(0, wanted - 1).reduce((total, value) => total + value.length + 1, 0);
+  input.focus();
+  input.setSelectionRange(offset, Math.min(input.value.length, offset + (lines[wanted - 1]?.length ?? 0)));
+  input.scrollTop = Math.max(0, (wanted - 4) * 18.6);
+}
+
+function codeFamily(file) {
+  const match = String(file ?? "").match(
+    /^(gml_Object_.+)_(Create|Destroy|CleanUp|Step|Draw|Alarm|Other|Collision|Keyboard|KeyPress|KeyRelease|Mouse|Gesture|PreCreate|RoomStart|RoomEnd|AnimationEnd|Async|UserEvent)_\d+$/
+  );
+  return match?.[1] ?? file;
+}
+
+function renderRelatedCodeEntries() {
+  const list = $("code-related-list");
+  const family = codeFamily(codeState.file);
+  const related = entries
+    .filter((entry) => codeFamily(entry.file) === family)
+    .sort((a, b) => entryFileOrder(a, b));
+  if (!related.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "Aucun texte localisé référencé dans ce fichier.";
+    list.replaceChildren(empty);
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const entry of related) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `code-related-item${entry.key === selectedKey ? " current" : ""}`;
+    const meta = document.createElement("small");
+    const eventName = entry.file === codeState.file
+      ? "ce fichier"
+      : entry.file.slice(family.length + 1).replaceAll("_", " ");
+    meta.textContent = `${eventName} · ligne ${entry.line} · ${entry.channel ?? "code"}`;
+    const text = document.createElement("span");
+    text.textContent = stripTags(entry.fr || entry.en || entry.key).slice(0, 80) || "∅";
+    button.append(meta, text);
+    button.dataset.tooltip = `${entry.en ?? ""}\n→ ${entry.fr}`;
+    button.onclick = async () => {
+      if (entry.file !== codeState.file && !(await loadCodeFile(entry.file, entry.line))) return;
+      selectKey(entry.key);
+      renderRelatedCodeEntries();
+      jumpToCodeLine(entry.line);
+    };
+    fragment.appendChild(button);
+  }
+  list.replaceChildren(fragment);
+}
+
+function entryFileOrder(a, b) {
+  return a.file.localeCompare(b.file, "fr", { numeric: true }) || a.line - b.line;
+}
+
+async function refreshCodeFileResults(query, selected = null) {
+  const files = await window.api.listCodeFiles(query);
+  const select = $("code-file-results");
+  select.replaceChildren();
+  const values = selected && !files.includes(selected) ? [selected, ...files] : files;
+  for (const file of values) {
+    const option = document.createElement("option");
+    option.value = file;
+    option.textContent = file;
+    select.appendChild(option);
+  }
+  if (selected) select.value = selected;
+}
+
+async function loadCodeFile(file, targetLine = null) {
+  if (!file) return false;
+  if (codeState.dirty && !confirm("Abandonner les modifications GML non enregistrées ?")) return false;
+  const result = await window.api.readCodeFile(file);
+  if (!result.ok) {
+    alert(`Impossible de lire ce code.\n\n${result.error}`);
+    return false;
+  }
+  Object.assign(codeState, {
+    file: result.file,
+    content: result.content,
+    original: result.original,
+    saved: result.content,
+    modified: result.modified,
+    editing: false,
+    dirty: false,
+    needsApply: false,
+    targetLine: Number(targetLine) || null,
+    findIndex: -1,
+  });
+  $("code-file-name").textContent = `${result.file}.gml${result.modified ? " · override local" : " · original extrait"}`;
+  $("code-file-query").value = result.file;
+  $("code-input").classList.add("hidden");
+  $("code-readonly").classList.remove("hidden");
+  renderCodeSource();
+  renderRelatedCodeEntries();
+  await refreshCodeFileResults(result.file, result.file);
+  updateCodeButtons();
+  return true;
+}
+
+async function openCodeModal() {
+  if (!appReady) {
+    alert("Importe d’abord le data.win d’un chapitre.");
+    return;
+  }
+  $("code-modal").classList.remove("hidden");
+  const ref = reference[selectedKey];
+  if (ref?.file) {
+    await loadCodeFile(ref.file, ref.line);
+    return;
+  }
+  const files = await window.api.listCodeFiles("");
+  await refreshCodeFileResults("");
+  if (files[0]) await loadCodeFile(files[0]);
+}
+
+function closeCodeModal() {
+  if (codeState.dirty && !confirm("Fermer sans enregistrer les modifications GML ?")) return false;
+  if (codeState.dirty) {
+    codeState.content = codeState.saved;
+    codeState.dirty = false;
+    codeState.editing = false;
+  }
+  $("code-modal").classList.add("hidden");
+  return true;
+}
+
+function toggleCodeEditing() {
+  if (!codeState.file) return;
+  if (codeState.editing) {
+    codeState.content = $("code-input").value;
+    codeState.editing = false;
+    $("code-input").classList.add("hidden");
+    $("code-readonly").classList.remove("hidden");
+    renderCodeSource();
+  } else {
+    codeState.editing = true;
+    $("code-input").value = codeState.content;
+    $("code-readonly").classList.add("hidden");
+    $("code-input").classList.remove("hidden");
+    jumpToCodeLine(codeState.targetLine || 1);
+  }
+  updateCodeButtons();
+}
+
+async function saveCodeOverride() {
+  if (!codeState.file) return false;
+  const content = codeText();
+  const result = await window.api.saveCodeFile(codeState.file, content);
+  if (!result.ok) {
+    alert(`Impossible d’enregistrer l’override GML.\n\n${result.error}`);
+    return false;
+  }
+  codeState.content = content;
+  codeState.saved = content;
+  codeState.modified = result.modified;
+  codeState.dirty = false;
+  codeState.needsApply = true;
+  $("code-file-name").textContent = `${codeState.file}.gml${result.modified ? " · override local" : " · original extrait"}`;
+  updateCodeButtons();
+  return true;
+}
+
+async function resetCodeOverride() {
+  if (!codeState.file) return;
+  if (!confirm("Supprimer l’override de ce fichier et revenir au code extrait original ?")) return;
+  const result = await window.api.resetCodeFile(codeState.file);
+  if (!result.ok) {
+    alert(`Impossible de restaurer le code original.\n\n${result.error}`);
+    return;
+  }
+  Object.assign(codeState, {
+    content: result.content,
+    saved: result.content,
+    original: result.content,
+    modified: false,
+    dirty: false,
+    needsApply: true,
+    editing: false,
+  });
+  $("code-file-name").textContent = `${codeState.file}.gml · original extrait`;
+  $("code-input").classList.add("hidden");
+  $("code-readonly").classList.remove("hidden");
+  renderCodeSource();
+  updateCodeButtons();
+}
+
+function findInCode(direction) {
+  const query = $("code-find").value;
+  if (!query) return;
+  const text = codeText();
+  const haystack = text.toLocaleLowerCase("fr");
+  const needle = query.toLocaleLowerCase("fr");
+  let start;
+  if (codeState.editing) {
+    start = direction > 0 ? $("code-input").selectionEnd : $("code-input").selectionStart - 1;
+  } else {
+    start = codeState.findIndex + direction;
+  }
+  let index = direction > 0 ? haystack.indexOf(needle, Math.max(0, start)) : haystack.lastIndexOf(needle, start);
+  if (index < 0) index = direction > 0 ? haystack.indexOf(needle) : haystack.lastIndexOf(needle);
+  if (index < 0) {
+    setCodeStatus(`« ${query} » est introuvable dans ce fichier.`, true);
+    return;
+  }
+  codeState.findIndex = index;
+  if (codeState.editing) {
+    const input = $("code-input");
+    input.focus();
+    input.setSelectionRange(index, index + query.length);
+    const line = text.slice(0, index).split("\n").length;
+    input.scrollTop = Math.max(0, (line - 4) * 18.6);
+  } else {
+    jumpToCodeLine(text.slice(0, index).split("\n").length);
+  }
+}
+
+async function applyCodeToGame() {
+  if (!codeState.file || codeApplyRunning) return;
+  if (codeState.dirty && !(await saveCodeOverride())) return;
+  if (!confirm("Recompiler le data.win actif avec tous les overrides GML enregistrés ?\n\nLe jeu doit être fermé pendant l’opération.")) return;
+
+  codeApplyRunning = true;
+  const progress = $("code-progress");
+  progress.textContent = "";
+  progress.classList.remove("hidden");
+  setCodeStatus("Recompilation UTMT en cours…", true);
+  updateCodeButtons();
+  let appliedAt = null;
+  try {
+    if (dirty && !(await save())) return;
+    const result = await window.api.applyCodeOverrides();
+    if (!result.ok) {
+      alert(`Le code n’a pas été appliqué. Le data.win actif est resté intact.\n\n${result.error}`);
+      return;
+    }
+    codeState.needsApply = false;
+    appliedAt = result.appliedAt;
+  } catch (error) {
+    alert(`Le code n’a pas été appliqué.\n\n${error.message ?? error}`);
+  } finally {
+    codeApplyRunning = false;
+    updateCodeButtons();
+    if (appliedAt) {
+      setCodeStatus(`Code appliqué au jeu à ${new Date(appliedAt).toLocaleTimeString()}.`);
+    }
+  }
+}
+
+function bindCodeModal() {
+  if (codeModalBound) return;
+  codeModalBound = true;
+  $("btn-code").onclick = openCodeModal;
+  $("btn-close-code").onclick = closeCodeModal;
+  $("btn-code-edit").onclick = toggleCodeEditing;
+  $("btn-code-save").onclick = saveCodeOverride;
+  $("btn-code-reset").onclick = resetCodeOverride;
+  $("btn-code-apply").onclick = applyCodeToGame;
+  $("btn-code-find-prev").onclick = () => findInCode(-1);
+  $("btn-code-find-next").onclick = () => findInCode(1);
+  $("code-file-query").addEventListener(
+    "input",
+    debounce(() => refreshCodeFileResults($("code-file-query").value), 180)
+  );
+  $("code-file-results").addEventListener("change", () => loadCodeFile($("code-file-results").value));
+  $("code-find").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    findInCode(event.shiftKey ? -1 : 1);
+  });
+  $("code-input").addEventListener("input", () => {
+    codeState.dirty = $("code-input").value !== codeState.saved;
+    codeState.findIndex = -1;
+    updateCodeButtons();
+  });
+  $("code-modal").addEventListener("mousedown", (event) => {
+    if (event.target === $("code-modal")) closeCodeModal();
+  });
+  window.addEventListener("keydown", (event) => {
+    if ($("code-modal").classList.contains("hidden")) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCodeModal();
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      $("code-find").focus();
+      $("code-find").select();
+    }
+  });
+  window.api.onCodeProgress((line) => {
+    const progress = $("code-progress");
+    progress.classList.remove("hidden");
+    progress.textContent += `${line}\n`;
+    progress.scrollTop = progress.scrollHeight;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Édition / sauvegarde
 // ---------------------------------------------------------------------------
 function onEdit(historyEntry = null) {
@@ -1230,10 +1615,20 @@ async function saveAndGotoNext() {
   const keyToLeave = selectedKey;
   try {
     onEdit();
-    if ((await save()) && selectedKey === keyToLeave) gotoTodo(1);
+    if ((await save()) && selectedKey === keyToLeave && !gotoNextDialogue()) gotoTodo(1);
   } finally {
     saveAndNextRunning = false;
   }
+}
+
+function gotoNextDialogue() {
+  const seq = sequences.get(selectedKey);
+  const index = seq?.findIndex((entry) => entry.key === selectedKey) ?? -1;
+  const next = index >= 0 ? seq[index + 1] : null;
+  if (!next) return false;
+  selectKey(next.key);
+  scrollToSelected();
+  return true;
 }
 
 function backupIfModified() {
@@ -1258,6 +1653,7 @@ async function handleCloseRequest() {
   if (closePromptOpen) return;
   closePromptOpen = true;
   try {
+    if (codeState.dirty && !confirm("Quitter sans enregistrer les modifications GML ?")) return;
     const choice = await window.api.confirmClose(unsavedKeys.size);
     if (choice === "cancel") return;
     if (choice === "save" && !(await save())) return;
@@ -1351,7 +1747,10 @@ function bindEvents() {
   $("btn-save").onclick = save;
   $("btn-backups").onclick = () => window.api.openBackups();
   $("btn-reload").onclick = async () => {
-    if (dirty && !confirm("Des modifications non sauvegardées seront perdues. Recharger ?"))
+    if (
+      (dirty || codeState.dirty) &&
+      !confirm("Des modifications non sauvegardées seront perdues. Recharger ?")
+    )
       return;
     location.reload();
   };
@@ -1414,6 +1813,7 @@ function bindEvents() {
   };
 
   window.addEventListener("keydown", (ev) => {
+    if (!$("code-modal").classList.contains("hidden")) return;
     if (ev.ctrlKey && ev.key === "Enter") {
       if (!ev.defaultPrevented) {
         ev.preventDefault();
@@ -1431,7 +1831,13 @@ function bindEvents() {
     }
   });
 
-  window.api.onSaveRequested(() => save());
+  window.api.onSaveRequested(() => {
+    if (!$("code-modal").classList.contains("hidden") && codeState.dirty) {
+      void saveCodeOverride();
+    } else {
+      void save();
+    }
+  });
 }
 
 function debounce(fn, ms) {

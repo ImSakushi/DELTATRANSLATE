@@ -105,6 +105,16 @@ Après l’import initial, le bouton **⚙ data.win** permet de changer de chapi
 - décor contextuel 640×480 avec nom de room et choix manuel lorsque plusieurs scènes sont possibles ;
 - comparaison rapide de la preview française avec le texte anglais.
 
+### Sprites traduits
+
+- onglet dédié avec recherche, filtres et liste virtualisée de tous les sprites du chapitre ;
+- détection automatique des variantes portant le suffixe `_fr` ;
+- comparaison pixelisée de l'original et de la version utilisée en français, frame par frame ;
+- export de la frame originale en PNG pour la retoucher dans l'éditeur d'images de son choix ;
+- import d'un PNG par clic ou glisser-déposer, avec contrôle strict des dimensions ;
+- si une variante `_fr` existe, elle est modifiée ; sinon l'image source est remplacée uniquement dans la copie recompilée ;
+- annulation indépendante de chaque frame et réapplication automatique des imports lors des recompilations suivantes.
+
 ## Sauvegarde et sécurité
 
 Le mode de sauvegarde est sélectionné automatiquement selon le chapitre :
@@ -179,11 +189,13 @@ Ces données sont placées dans le dossier utilisateur de l’application. Les a
 main.js                       Processus principal Electron, IPC et sauvegardes
 preload.js                    API sécurisée exposée au renderer
 src/app.js                    Interface, navigation et état de l’éditeur
+src/sprites.js                Catalogue, comparaison et import des sprites traduits
 src/engine/writer.js          Word-wrap et interprétation des codes de contrôle
 src/engine/preview.js         Rendu canvas des différents modes de texte
 src/engine/bitmapfont.js      Chargement et teinte des polices bitmap
 extraction/import-datawin.mjs Pipeline d’import complet via UTMT
 extraction/import-lib.mjs     Analyse du GML et construction du catalogue
+extraction/export-sprite.mjs  Extraction à la demande des aperçus de sprites
 extraction/patch-datawin.mjs  Recompilation sécurisée des traductions
 ```
 

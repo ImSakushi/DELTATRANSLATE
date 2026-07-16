@@ -152,6 +152,165 @@ function backupFile(file, nextContent) {
   return backupContent(file, currentContent);
 }
 
+function codePaths(file) {
+  const config = getConfig();
+  const input = String(file ?? "");
+  const name = input.endsWith(".gml") ? input : `${input}.gml`;
+  if (!input || path.basename(name) !== name || !name.endsWith(".gml")) {
+    throw new Error("Nom de fichier GML invalide.");
+  }
+  if (!config.extractedDir) throw new Error("Aucune extraction de chapitre n'est chargée.");
+  const source = path.join(config.extractedDir, "CodeEntries", name);
+  const overridesDir = path.join(config.extractedDir, "CodeOverrides");
+  if (!fs.existsSync(source)) throw new Error(`Code GML introuvable : ${name}`);
+  return { config, name, source, overridesDir, override: path.join(overridesDir, name) };
+}
+
+function readSpriteMetadata(config = getConfig()) {
+  const metadata = new Map();
+  const listPath = path.join(config.extractedDir ?? "", "sprites_list.txt");
+  if (!fs.existsSync(listPath)) return metadata;
+  for (const line of fs.readFileSync(listPath, "utf8").split(/\r?\n/)) {
+    const [name, frames, width, height, originX = "0", originY = "0"] = line.split(";");
+    if (!name || !/^[A-Za-z0-9_]+$/.test(name)) continue;
+    metadata.set(name, {
+      name,
+      frames: Math.max(0, Number(frames) || 0),
+      width: Math.max(0, Number(width) || 0),
+      height: Math.max(0, Number(height) || 0),
+      originX: Number(originX) || 0,
+      originY: Number(originY) || 0,
+    });
+  }
+  return metadata;
+}
+
+function spriteOverrideRoot(config = getConfig()) {
+  if (!config.extractedDir) throw new Error("Aucune extraction de chapitre n'est chargée.");
+  return path.join(config.extractedDir, "SpriteOverrides");
+}
+
+function buildSpriteEntry(item, metadata, root) {
+  const variant = metadata.get(`${item.name}_fr`) ?? null;
+  const targetName = variant?.name ?? item.name;
+  const directory = path.join(root, targetName);
+  const overrideFrames = fs.existsSync(directory)
+    ? fs
+        .readdirSync(directory)
+        .map((name) => name.match(/^(\d+)\.png$/i)?.[1])
+        .filter((frame) => frame != null)
+        .map(Number)
+        .filter((frame) => Number.isInteger(frame) && frame >= 0)
+        .sort((a, b) => a - b)
+    : [];
+  return {
+    ...item,
+    variant,
+    targetName,
+    overrideFrames,
+    translated: Boolean(variant || overrideFrames.length),
+  };
+}
+
+function spriteCatalog(config = getConfig()) {
+  const metadata = readSpriteMetadata(config);
+  const root = spriteOverrideRoot(config);
+  const result = [];
+  for (const item of metadata.values()) {
+    if (item.name.endsWith("_fr")) continue;
+    result.push(buildSpriteEntry(item, metadata, root));
+  }
+  return result.sort((a, b) => a.name.localeCompare(b.name, "fr", { numeric: true }));
+}
+
+function spriteEntry(baseName, config = getConfig()) {
+  const safeName = String(baseName ?? "");
+  if (!/^[A-Za-z0-9_]+$/.test(safeName) || safeName.endsWith("_fr")) {
+    throw new Error("Nom de sprite invalide.");
+  }
+  const metadata = readSpriteMetadata(config);
+  const item = metadata.get(safeName);
+  if (!item) throw new Error(`Sprite introuvable : ${safeName}`);
+  return buildSpriteEntry(item, metadata, spriteOverrideRoot(config));
+}
+
+function pngDimensions(file) {
+  const header = Buffer.alloc(24);
+  const descriptor = fs.openSync(file, "r");
+  try {
+    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) {
+      throw new Error("PNG incomplet.");
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  if (!header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    throw new Error("Le fichier sélectionné n'est pas un PNG valide.");
+  }
+  return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+}
+
+function imageDataUrl(file) {
+  return `data:image/png;base64,${fs.readFileSync(file).toString("base64")}`;
+}
+
+const spriteExtractionPromises = new Map();
+async function ensureSpriteCached(entry, event) {
+  const config = getConfig();
+  const cache = path.join(config.extractedDir, "SpriteEditorCache");
+  const names = [entry.name, entry.variant?.name].filter(Boolean);
+  const expected = names.flatMap((name) => {
+    const count = name === entry.name ? entry.frames : entry.variant.frames;
+    return Array.from({ length: count }, (_unused, frame) => path.join(cache, `${name}_${frame}.png`));
+  });
+  if (expected.length && expected.every((file) => fs.existsSync(file))) return cache;
+
+  const key = `${config.sourceDataWinPath ?? config.dataWinPath}|${names.join("|")}`;
+  if (!spriteExtractionPromises.has(key)) {
+    const promise = (async () => {
+      const utmt = getUtmtStatus();
+      if (!utmt.ready) throw new Error("UTMT CLI est requis pour extraire l'aperçu.");
+      const source = config.sourceDataWinPath ?? config.dataWinPath;
+      if (!source || !fs.existsSync(source)) throw new Error("Le data.win source est introuvable.");
+      if (!event.sender.isDestroyed()) {
+        event.sender.send("sprite-progress", `Extraction de ${entry.name}…`);
+      }
+      const lines = [];
+      const result = await runNodeScript(
+        path.join(ROOT, "extraction", "export-sprite.mjs"),
+        ["--datawin", source, "--cli", utmt.cliPath, "--output", cache, "--names", names.join("|")],
+        (line) => lines.push(line)
+      );
+      if (result.code !== 0) {
+        throw new Error(`L'extraction du sprite a échoué.\n${lines.slice(-5).join("\n")}`);
+      }
+      return cache;
+    })().finally(() => spriteExtractionPromises.delete(key));
+    spriteExtractionPromises.set(key, promise);
+  }
+  return spriteExtractionPromises.get(key);
+}
+
+function ensureImmutableDataWinSource(config) {
+  if (!config.dataWinPath || !fs.existsSync(config.dataWinPath)) {
+    throw new Error("Le data.win actif est introuvable.");
+  }
+  const configuredSource = config.sourceDataWinPath;
+  if (
+    configuredSource &&
+    fs.existsSync(configuredSource) &&
+    path.resolve(configuredSource) !== path.resolve(config.dataWinPath)
+  ) {
+    return config;
+  }
+
+  const snapshot = path.join(path.dirname(config.dataWinPath), "data-deltatranslate-original.win");
+  // Un nouvel import remet sourceDataWinPath sur le data.win actif : on rafraîchit
+  // alors ce snapshot pour ne jamais recompiler une ancienne version du jeu.
+  fs.copyFileSync(config.dataWinPath, snapshot);
+  return updateConfig({ sourceDataWinPath: snapshot });
+}
+
 function runNodeScript(script, args, onLine = () => {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [script, ...args], {
@@ -178,6 +337,23 @@ function runNodeScript(script, args, onLine = () => {}) {
 }
 
 function replaceDataWinSafely(generated, target) {
+  const previous = `${target}.deltatranslate-previous`;
+  fs.rmSync(previous, { force: true });
+  fs.renameSync(target, previous);
+  try {
+    fs.renameSync(generated, target);
+    fs.rmSync(previous, { force: true });
+  } catch (error) {
+    if (!fs.existsSync(target) && fs.existsSync(previous)) fs.renameSync(previous, target);
+    throw error;
+  }
+}
+
+function replaceWorkspaceFileSafely(generated, target) {
+  if (!fs.existsSync(target)) {
+    fs.renameSync(generated, target);
+    return;
+  }
   const previous = `${target}.deltatranslate-previous`;
   fs.rmSync(previous, { force: true });
   fs.renameSync(target, previous);
@@ -318,6 +494,7 @@ ipcMain.handle("load-data", () => {
   };
   const spritesDir = path.join(config.extractedDir, "sprites");
   result.spriteFiles = fs.existsSync(spritesDir) ? fs.readdirSync(spritesDir) : [];
+  result.spriteCatalog = spriteCatalog(config);
   result.spriteMeta = {};
   const spriteListPath = path.join(config.extractedDir, "sprites_list.txt");
   if (fs.existsSync(spriteListPath)) {
@@ -342,6 +519,127 @@ ipcMain.handle("load-data", () => {
     }
   }
   return result;
+});
+
+ipcMain.handle("get-sprite-frame", async (event, baseName, role = "original", frame = 0) => {
+  try {
+    const config = getConfig();
+    const entry = spriteEntry(baseName, config);
+    const index = Math.max(0, Number(frame) || 0);
+    const translated = role === "translated";
+    const targetName = translated ? entry.targetName : entry.name;
+    const frameCount = translated ? (entry.variant?.frames ?? entry.frames) : entry.frames;
+    if (index >= frameCount) throw new Error(`La frame ${index} n'existe pas pour ${targetName}.`);
+
+    if (translated) {
+      const override = path.join(spriteOverrideRoot(config), entry.targetName, `${index}.png`);
+      if (fs.existsSync(override)) {
+        return { ok: true, dataUrl: imageDataUrl(override), source: "override" };
+      }
+    }
+
+    const extracted = path.join(config.extractedDir, "sprites", `${targetName}_${index}.png`);
+    const cache = path.join(config.extractedDir, "SpriteEditorCache", `${targetName}_${index}.png`);
+    let image = fs.existsSync(extracted) ? extracted : fs.existsSync(cache) ? cache : null;
+    if (!image) {
+      const cacheDirectory = await ensureSpriteCached(entry, event);
+      image = path.join(cacheDirectory, `${targetName}_${index}.png`);
+    }
+    if (!fs.existsSync(image)) throw new Error(`Impossible d'extraire ${targetName}, frame ${index}.`);
+    return { ok: true, dataUrl: imageDataUrl(image), source: translated && entry.variant ? "variant" : "original" };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("export-sprite-frame", async (event, baseName, frame = 0) => {
+  try {
+    const config = getConfig();
+    const entry = spriteEntry(baseName, config);
+    const index = Math.max(0, Number(frame) || 0);
+    if (index >= entry.frames) throw new Error(`La frame ${index} n'existe pas pour ${entry.name}.`);
+    const extracted = path.join(config.extractedDir, "sprites", `${entry.name}_${index}.png`);
+    const cache = path.join(config.extractedDir, "SpriteEditorCache", `${entry.name}_${index}.png`);
+    let image = fs.existsSync(extracted) ? extracted : fs.existsSync(cache) ? cache : null;
+    if (!image) {
+      const cacheDirectory = await ensureSpriteCached(entry, event);
+      image = path.join(cacheDirectory, `${entry.name}_${index}.png`);
+    }
+    if (!fs.existsSync(image)) throw new Error("La frame originale n'a pas pu être extraite.");
+    const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: "Exporter la frame originale",
+      defaultPath: `${entry.name}_${index}.png`,
+      filters: [{ name: "Image PNG", extensions: ["png"] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+    fs.copyFileSync(image, result.filePath);
+    return { ok: true, filePath: result.filePath };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("import-sprite-frame", (_event, baseName, frame, sourceFile) => {
+  let temporary = null;
+  try {
+    const config = getConfig();
+    const entry = spriteEntry(baseName, config);
+    const index = Math.max(0, Number(frame) || 0);
+    const frameCount = entry.variant?.frames ?? entry.frames;
+    if (index >= frameCount) throw new Error(`La frame ${index} n'existe pas pour ce sprite.`);
+    const source = path.resolve(String(sourceFile ?? ""));
+    if (!fs.existsSync(source) || path.extname(source).toLowerCase() !== ".png") {
+      throw new Error("Choisis une image PNG existante.");
+    }
+    const size = pngDimensions(source);
+    const expected = entry.variant ?? entry;
+    if (size.width !== expected.width || size.height !== expected.height) {
+      throw new Error(
+        `Dimensions incorrectes : ${size.width}×${size.height}. ` +
+          `La frame doit mesurer exactement ${expected.width}×${expected.height} px.`
+      );
+    }
+    const directory = path.join(spriteOverrideRoot(config), entry.targetName);
+    fs.mkdirSync(directory, { recursive: true });
+    const destination = path.join(directory, `${index}.png`);
+    if (backupsEnabled() && fs.existsSync(destination)) {
+      backupContent(destination, fs.readFileSync(destination));
+    }
+    temporary = `${destination}.tmp-${process.pid}`;
+    fs.copyFileSync(source, temporary);
+    replaceWorkspaceFileSafely(temporary, destination);
+    return { ok: true, entry: spriteEntry(baseName, config), dataUrl: imageDataUrl(destination) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    if (temporary) fs.rmSync(temporary, { force: true });
+  }
+});
+
+ipcMain.handle("reset-sprite-frame", (_event, baseName, frame) => {
+  try {
+    const config = getConfig();
+    const entry = spriteEntry(baseName, config);
+    const index = Math.max(0, Number(frame) || 0);
+    const override = path.join(spriteOverrideRoot(config), entry.targetName, `${index}.png`);
+    if (backupsEnabled() && fs.existsSync(override)) {
+      backupContent(override, fs.readFileSync(override));
+    }
+    fs.rmSync(override, { force: true });
+    const directory = path.dirname(override);
+    if (fs.existsSync(directory) && fs.readdirSync(directory).length === 0) {
+      fs.rmdirSync(directory);
+    }
+    return { ok: true, entry: spriteEntry(baseName, config) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("open-sprite-overrides", () => {
+  const directory = spriteOverrideRoot();
+  fs.mkdirSync(directory, { recursive: true });
+  return shell.openPath(directory);
 });
 
 let saveRunning = false;
@@ -400,6 +698,10 @@ ipcMain.handle("save-lang", async (event, langObj) => {
         path.join(config.extractedDir, "reference.json"),
         "--translation",
         translationTemp,
+        "--overrides",
+        path.join(config.extractedDir, "CodeOverrides"),
+        "--sprites",
+        path.join(config.extractedDir, "SpriteOverrides"),
       ],
       (line) => {
         lines.push(line);
@@ -446,6 +748,170 @@ ipcMain.handle("backup-lang", (_event, langObj) => {
     return { ok: false, error: error.message };
   }
 });
+
+ipcMain.handle("list-code-files", (_event, query = "") => {
+  try {
+    const config = getConfig();
+    const directory = path.join(config.extractedDir ?? "", "CodeEntries");
+    if (!fs.existsSync(directory)) return [];
+    const searched = String(query).trim().toLocaleLowerCase("fr");
+    return fs
+      .readdirSync(directory)
+      .filter((name) => name.endsWith(".gml") && (!searched || name.toLocaleLowerCase("fr").includes(searched)))
+      .sort((a, b) => a.localeCompare(b, "fr", { numeric: true }))
+      .slice(0, 200)
+      .map((name) => name.slice(0, -4));
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle("read-code-file", (_event, file) => {
+  try {
+    const paths = codePaths(file);
+    const original = fs.readFileSync(paths.source, "utf8");
+    const modified = fs.existsSync(paths.override);
+    return {
+      ok: true,
+      file: paths.name.slice(0, -4),
+      content: modified ? fs.readFileSync(paths.override, "utf8") : original,
+      original,
+      modified,
+    };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("save-code-file", (_event, file, content) => {
+  let temporary = null;
+  let previous = null;
+  try {
+    const paths = codePaths(file);
+    const text = String(content ?? "");
+    if (Buffer.byteLength(text, "utf8") > 10 * 1024 * 1024) {
+      throw new Error("Ce fichier GML dépasse la limite de sécurité de 10 Mo.");
+    }
+    const original = fs.readFileSync(paths.source, "utf8");
+    if (text === original) {
+      if (fs.existsSync(paths.override)) {
+        if (backupsEnabled()) backupContent(paths.override, fs.readFileSync(paths.override, "utf8"));
+        fs.rmSync(paths.override, { force: true });
+      }
+      return { ok: true, modified: false, backupCreated: false };
+    }
+    fs.mkdirSync(paths.overridesDir, { recursive: true });
+    const backup =
+      backupsEnabled() && fs.existsSync(paths.override)
+        ? backupContent(paths.override, fs.readFileSync(paths.override, "utf8"))
+        : null;
+    temporary = `${paths.override}.tmp-${process.pid}`;
+    fs.writeFileSync(temporary, text, "utf8");
+    previous = `${paths.override}.previous-${process.pid}`;
+    fs.rmSync(previous, { force: true });
+    if (fs.existsSync(paths.override)) fs.renameSync(paths.override, previous);
+    try {
+      fs.renameSync(temporary, paths.override);
+      fs.rmSync(previous, { force: true });
+    } catch (error) {
+      if (!fs.existsSync(paths.override) && fs.existsSync(previous)) {
+        fs.renameSync(previous, paths.override);
+      }
+      throw error;
+    }
+    return { ok: true, modified: true, backupCreated: Boolean(backup) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    if (temporary) fs.rmSync(temporary, { force: true });
+  }
+});
+
+ipcMain.handle("reset-code-file", (_event, file) => {
+  try {
+    const paths = codePaths(file);
+    const backup =
+      backupsEnabled() && fs.existsSync(paths.override)
+        ? backupContent(paths.override, fs.readFileSync(paths.override, "utf8"))
+        : null;
+    fs.rmSync(paths.override, { force: true });
+    return {
+      ok: true,
+      content: fs.readFileSync(paths.source, "utf8"),
+      backupCreated: Boolean(backup),
+    };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+let codeApplyRunning = false;
+async function applyWorkspaceOverrides(event, progressChannel, progressLabel) {
+  if (codeApplyRunning || saveRunning) {
+    return { ok: false, error: "Une recompilation est déjà en cours." };
+  }
+  codeApplyRunning = true;
+  let dataWinTemp = null;
+  try {
+    let config = ensureImmutableDataWinSource(getConfig());
+    const utmt = getUtmtStatus();
+    if (!utmt.ready) throw new Error("UTMT CLI est requis pour appliquer les modifications au jeu.");
+    const required = [config.dataWinPath, config.sourceDataWinPath, config.extractedDir];
+    if (required.some((item) => !item)) throw new Error("Configuration data.win incomplète.");
+
+    dataWinTemp = `${config.dataWinPath}.deltatranslate-code-${process.pid}`;
+    fs.rmSync(dataWinTemp, { force: true });
+    const args = [
+      "--source",
+      config.sourceDataWinPath,
+      "--output",
+      dataWinTemp,
+      "--cli",
+      utmt.cliPath,
+      "--code",
+      path.join(config.extractedDir, "CodeEntries"),
+      "--reference",
+      path.join(config.extractedDir, "reference.json"),
+      "--overrides",
+      path.join(config.extractedDir, "CodeOverrides"),
+      "--sprites",
+      path.join(config.extractedDir, "SpriteOverrides"),
+    ];
+    if (config.storageMode === "datawin") {
+      args.push("--translation", config.langFrPath);
+    } else {
+      args.push("--overrides-only");
+    }
+    const lines = [];
+    event.sender.send(progressChannel, progressLabel);
+    const result = await runNodeScript(
+      path.join(ROOT, "extraction", "patch-datawin.mjs"),
+      args,
+      (line) => {
+        lines.push(line);
+        if (!event.sender.isDestroyed()) event.sender.send(progressChannel, line);
+      }
+    );
+    if (result.code !== 0) {
+      throw new Error(`La compilation UTMT a échoué (code ${result.code}).\n${lines.slice(-8).join("\n")}`);
+    }
+    replaceDataWinSafely(dataWinTemp, config.dataWinPath);
+    return { ok: true, appliedAt: new Date().toISOString() };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    if (dataWinTemp) fs.rmSync(dataWinTemp, { force: true });
+    codeApplyRunning = false;
+  }
+}
+
+ipcMain.handle("apply-code-overrides", (event) =>
+  applyWorkspaceOverrides(event, "code-progress", "Compilation du code GML et des sprites via UTMT…")
+);
+
+ipcMain.handle("apply-sprite-overrides", (event) =>
+  applyWorkspaceOverrides(event, "sprite-progress", "Application des sprites au jeu via UTMT…")
+);
 
 ipcMain.handle("save-prefs", (_event, prefs) => {
   fs.writeFileSync(prefsPath(), JSON.stringify(prefs, null, 2), "utf8");

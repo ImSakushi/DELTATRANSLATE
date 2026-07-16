@@ -44,7 +44,7 @@ function extractionMatches(manifestPath, source) {
 }
 
 function clearGeneratedExtraction(outDir) {
-  for (const directory of ["CodeEntries", "fonts", "sprites", "room-scenes"]) {
+  for (const directory of ["CodeEntries", "fonts", "sprites", "SpriteEditorCache", "room-scenes"]) {
     fs.rmSync(path.join(outDir, directory), { recursive: true, force: true });
   }
   for (const file of [
