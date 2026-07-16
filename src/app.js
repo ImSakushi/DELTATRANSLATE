@@ -136,6 +136,48 @@ function setupTooltips() {
 }
 
 // ---------------------------------------------------------------------------
+// Mise à jour de DELTATRANSLATE
+// ---------------------------------------------------------------------------
+let updateInstallRunning = false;
+
+function renderUpdateStatus(status) {
+  const button = $("btn-update");
+  const visible = status?.phase === "downloading" || status?.phase === "downloaded";
+  button.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  if (status.phase === "downloading") {
+    button.disabled = true;
+    button.textContent = `↓ Mise à jour ${status.percent ?? 0} %`;
+    button.dataset.tooltip = `Téléchargement de DELTATRANSLATE ${status.version ?? ""}`.trim();
+  } else {
+    button.disabled = false;
+    button.textContent = `↻ Installer ${status.version}`;
+    button.dataset.tooltip = "Sauvegarder le travail, installer la mise à jour et redémarrer";
+  }
+}
+
+async function installDownloadedUpdate() {
+  if (updateInstallRunning) return;
+  updateInstallRunning = true;
+  try {
+    if (codeState.dirty && !(await saveCodeOverride())) return;
+    if (dirty && !(await save())) return;
+    const result = await window.api.installUpdate();
+    if (!result.ok) alert(`Impossible d’installer la mise à jour.\n\n${result.error}`);
+  } finally {
+    updateInstallRunning = false;
+  }
+}
+
+async function setupUpdates() {
+  $("btn-update").addEventListener("click", installDownloadedUpdate);
+  window.api.onUpdateStatus(renderUpdateStatus);
+  window.api.onUpdateInstallRequested(installDownloadedUpdate);
+  renderUpdateStatus(await window.api.getUpdateStatus());
+}
+
+// ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
 let appConfig = {};
@@ -2012,5 +2054,6 @@ async function startImport(selectedPath = null) {
 }
 
 setupTooltips();
+setupUpdates().catch((error) => console.error("Initialisation des mises à jour impossible :", error));
 window.api.onCloseRequested(handleCloseRequest);
 init();

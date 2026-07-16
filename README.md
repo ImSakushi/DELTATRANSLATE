@@ -63,6 +63,8 @@ npm start
 
 L’application utilise [UndertaleModTool CLI](https://github.com/UnderminersTeam/UndertaleModTool/releases/) pour lire les données du jeu. Au premier lancement, vous pourrez soit lier une installation existante, soit laisser DELTATRANSLATE télécharger la version adaptée à Windows, macOS ou Linux.
 
+Les versions installées vérifient aussi les nouvelles releases GitHub au démarrage. Lorsqu’une version supérieure est disponible, DELTATRANSLATE propose de la télécharger, sauvegarde le travail en cours avant l’installation, puis redémarre automatiquement. Les lancements depuis le code source avec `npm start` ne déclenchent pas cette vérification.
+
 ## Premier démarrage
 
 1. Lancez l’application avec `npm start`.
@@ -187,6 +189,7 @@ Ces données sont placées dans le dossier utilisateur de l’application. Les a
 
 ```text
 main.js                       Processus principal Electron, IPC et sauvegardes
+updater.js                    Détection, téléchargement et installation des releases GitHub
 preload.js                    API sécurisée exposée au renderer
 src/app.js                    Interface, navigation et état de l’éditeur
 src/sprites.js                Catalogue, comparaison et import des sprites traduits
@@ -200,6 +203,12 @@ extraction/patch-datawin.mjs  Recompilation sécurisée des traductions
 ```
 
 Le processus principal et le preload sont en CommonJS. Le renderer et les scripts d’extraction utilisent les modules ESM.
+
+### Releases et mises à jour
+
+Le tag GitHub doit toujours correspondre à la version de `package.json` (`v1.1.0` pour la version `1.1.0`) ; le workflow refuse sinon de publier. Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
+
+Les releases doivent être lisibles publiquement pour que les installations puissent les consulter sans secret. Ne jamais embarquer de token GitHub dans l’application. Sur macOS, les mises à jour automatiques nécessitent également une application signée.
 
 ### Commandes utiles
 

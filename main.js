@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { findUtmtCli, installLatestUtmt } = require("./utmt-manager.js");
+const { createUpdaterController } = require("./updater.js");
 
 const ROOT = __dirname;
 const APP_ICON_PATH = path.join(ROOT, "src", "assets", "deltatranslate-icon.png");
@@ -23,6 +24,15 @@ const DEFAULT_CONFIG = {
 };
 
 app.setName("DELTATRANSLATE");
+
+const updater = createUpdaterController({
+  app,
+  BrowserWindow,
+  dialog,
+  allowWindowsToClose: () => {
+    for (const win of BrowserWindow.getAllWindows()) windowsAllowedToClose.add(win);
+  },
+});
 
 function loadJson(file, fallback) {
   try {
@@ -383,6 +393,7 @@ function createWindow() {
     },
     title: "DELTATRANSLATE",
   });
+  updater.start(win);
   win.setMenuBarVisibility(false);
   win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     if (level >= 2) console.log(`[renderer] ${message} (${sourceId}:${line})`);
@@ -419,6 +430,8 @@ app.on("window-all-closed", () => {
 ipcMain.handle("get-config", () => getConfig());
 ipcMain.handle("set-config", (_event, patch) => updateConfig(patch));
 ipcMain.handle("get-utmt-status", () => getUtmtStatus());
+ipcMain.handle("get-update-status", () => updater.getState());
+ipcMain.handle("install-update", () => updater.install());
 
 ipcMain.handle("set-title-bar-theme", (event, theme) => {
   if (process.platform !== "win32") return;

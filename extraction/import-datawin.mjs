@@ -8,7 +8,12 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
-import { buildReference, buildReferenceFromLangJson, makeCsx } from "./import-lib.mjs";
+import {
+  buildReference,
+  buildReferenceFromLangJson,
+  makeCsx,
+  makeFontsCsx,
+} from "./import-lib.mjs";
 import { scopeReferenceToChapter } from "./chapter-scope.mjs";
 import {
   attachRoomContexts,
@@ -53,6 +58,7 @@ function clearGeneratedExtraction(outDir) {
     "room-context.json",
     "chapter-scope.json",
     "extraction-source.json",
+    "font-extraction-source.json",
   ]) {
     fs.rmSync(path.join(outDir, file), { force: true });
   }
@@ -136,6 +142,53 @@ if (alreadyExtracted && !force) {
   fs.writeFileSync(
     extractionManifestPath,
     JSON.stringify(sourceFingerprint(sourceDataWin)),
+    "utf8"
+  );
+}
+
+// English code stays tied to the immutable snapshot, but font previews must
+// reflect the data.win the user actually selected. A translated build can have
+// extra glyphs which are deliberately absent from the English snapshot.
+const fontDir = path.join(outDir, "fonts");
+const fontExtractionManifestPath = path.join(outDir, "font-extraction-source.json");
+const sameExtractionSource = path.resolve(dataWin) === path.resolve(sourceDataWin);
+const fontsMatchSelectedDataWin =
+  fs.existsSync(fontDir) &&
+  fs.readdirSync(fontDir).some((name) => name.startsWith("glyphs_") && name.endsWith(".csv")) &&
+  extractionMatches(fontExtractionManifestPath, dataWin);
+
+if (sameExtractionSource) {
+  fs.writeFileSync(
+    fontExtractionManifestPath,
+    JSON.stringify(sourceFingerprint(dataWin)),
+    "utf8"
+  );
+} else if (fontsMatchSelectedDataWin && !force) {
+  log("  polices du data.win sélectionné : déjà extraites.");
+} else {
+  log("  extraction des polices depuis le data.win sélectionné…");
+  fs.rmSync(fontDir, { recursive: true, force: true });
+  fs.mkdirSync(fontDir, { recursive: true });
+  const fontCsxPath = path.join(os.tmpdir(), `deltatranslate_fonts_${Date.now()}.csx`);
+  fs.writeFileSync(fontCsxPath, makeFontsCsx(outDir), "utf8");
+  const fontResult = spawnSync(cli, ["load", dataWin, "-s", fontCsxPath], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  fs.rmSync(fontCsxPath, { force: true });
+  for (const line of (fontResult.stdout || "").split(/\r?\n/)) {
+    if (line.trim().startsWith("FONTS_")) log(`  ${line.trim()}`);
+  }
+  if (fontResult.error || fontResult.status !== 0 || !fs.existsSync(fontDir)) {
+    console.error("ERREUR: l'extraction des polices du data.win sélectionné a échoué.");
+    console.error(fontResult.error?.message || "");
+    console.error((fontResult.stdout || "").slice(-2000));
+    console.error((fontResult.stderr || "").slice(-2000));
+    process.exit(1);
+  }
+  fs.writeFileSync(
+    fontExtractionManifestPath,
+    JSON.stringify(sourceFingerprint(dataWin)),
     "utf8"
   );
 }

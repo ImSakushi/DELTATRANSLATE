@@ -21,6 +21,8 @@ jobs:
             artifact: windows
             files: |
               dist/*.exe
+              dist/latest.yml
+              dist/*.blockmap
           - name: macOS
             os: macos-latest
             command: npm run dist:mac
@@ -28,6 +30,8 @@ jobs:
             files: |
               dist/*.dmg
               dist/*.zip
+              dist/latest-mac.yml
+              dist/*.blockmap
           - name: Linux
             os: ubuntu-latest
             command: npm run dist:linux
@@ -35,6 +39,7 @@ jobs:
             files: |
               dist/*.AppImage
               dist/*.deb
+              dist/latest-linux.yml
 
     runs-on: ${{ matrix.os }}
 
@@ -50,6 +55,12 @@ jobs:
 
       - name: Installer les dépendances
         run: npm ci
+
+      - name: Vérifier la version du tag
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          test "v${PACKAGE_VERSION}" = "${GITHUB_REF_NAME}"
 
       - name: Construire les livrables
         shell: bash
@@ -86,9 +97,9 @@ jobs:
       - name: Créer la release
         uses: softprops/action-gh-release@v2
         with:
-          name: DELTATRANSLATE 1.0.0
+          name: DELTATRANSLATE ${{ github.ref_name }}
           body: |
-            Première release publique de DELTATRANSLATE.
+            Nouvelle version de DELTATRANSLATE.
 
             - Windows : installateur et version portable x64
             - macOS : DMG et archive ZIP universels (Intel et Apple Silicon)
@@ -96,6 +107,6 @@ jobs:
 
             Aucun fichier ni aucune donnée extraite de DELTARUNE n’est inclus. L’application extrait localement les ressources depuis le `data.win` fourni par l’utilisateur.
 
-            Les binaires ne sont pas signés ni notariés pour cette première version.
+            DELTATRANSLATE vérifiera automatiquement les prochaines releases au démarrage.
           files: release-assets/*
           fail_on_unmatched_files: true

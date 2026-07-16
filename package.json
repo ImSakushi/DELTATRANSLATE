@@ -9,6 +9,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
+    "test": "node --test updater.test.js extraction/chapter-scope.test.mjs extraction/code-overrides.test.mjs",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac --universal --publish never",
@@ -19,6 +20,7 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "extract-zip": "^2.0.1"
   },
   "build": {
@@ -28,13 +30,22 @@
     "directories": {
       "output": "dist"
     },
+    "electronUpdaterCompatibility": ">=2.16",
     "files": [
       "main.js",
       "preload.js",
+      "updater.js",
       "utmt-manager.js",
       "extraction/**/*",
       "src/**/*",
       "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ImSakushi",
+        "repo": "DELTATRANSLATE"
+      }
     ],
     "extraMetadata": {
       "main": "main.js"
