@@ -1,15 +1,17 @@
 import { loadFonts } from "./engine/bitmapfont.js";
 import { Preview } from "./engine/preview.js";
 import { C_TAG, FC_NAMES, F_TAG, encodeFe } from "./engine/typers.js";
-import { substituteArgs } from "./engine/writer.js";
+import { extractTags, substituteArgs } from "./engine/writer.js";
 import { SpriteEditor } from "./sprites.js";
 
 // ---------------------------------------------------------------------------
 // État global
 // ---------------------------------------------------------------------------
 let lang = {}; // objet complet du lang_fr.json (ordre des clés préservé)
-let reference = {}; // id -> {en, call, channel, file, line, face, substitutions, smallFace, speakerOverlay}
-let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme, backupsEnabled, listSort }
+let japanese = {}; // lang_ja.json du chapitre, utilisé comme référence de balises
+let reference = {}; // id -> {en, call, channel, file, line, speaker, face, substitutions, smallFace, speakerOverlay}
+let runedeltaAttributions = {}; // id -> dernier auteur Git de la ligne Runedelta
+let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme, backupsEnabled, listSort, speakerFilter }
 let entries = []; // index pour la liste
 let entriesByKey = new Map();
 let filtered = [];
@@ -58,15 +60,55 @@ const DIALOGUE_TYPE_NAMES = {
   device: "Appareil",
   plain: "Menu / texte libre",
 };
-const SMALL_FACE_SPEAKER_NAMES = {
+const SPEAKER_NAMES = {
   susie: "Susie",
   ralsei: "Ralsei",
   noelle: "Noelle",
+  toriel: "Toriel",
   lancer: "Lancer",
-  queen: "Queen",
+  sans: "Sans",
+  undyne: "Undyne",
+  asgore: "Asgore",
+  alphys: "Alphys",
+  berdly: "Berdly",
+  catti: "Catti",
+  jockington: "Jockington",
+  rudy: "Rudy",
+  catty: "Catty",
+  bratty: "Bratty",
   rouxls: "Rouxls",
+  burgerpants: "Burgerpants",
+  king: "King",
+  queen: "Queen",
+  carol: "Carol",
   flowery: "Flowery",
+  bluef: "Blue (papillon)",
+  tenna: "Tenna",
+  jackenstein: "Jackenstein",
+  spamton: "Spamton",
+  napstablook: "Napstablook",
+  starwalker: "Starwalker",
+  k_k: "K_K",
+  floradinn: "Floradinn",
+  aqua: "Aqua",
+  seth: "Seth",
+  yellow: "Yellow",
+  orange: "Orange",
+  blue: "Blue",
+  green: "Green",
+  pink: "Pink",
+  opuppet: "Opuppet",
+  temmie: "Temmie",
+  jevil: "Jevil",
 };
+const FC_SPEAKER_KEYS = {
+  1: "susie", 2: "ralsei", 3: "noelle", 4: "toriel", 5: "lancer", 6: "sans",
+  9: "undyne", 10: "asgore", 11: "alphys", 12: "berdly", 13: "catti",
+  14: "jockington", 15: "rudy", 16: "catty", 17: "bratty", 18: "rouxls",
+  19: "burgerpants", 20: "king", 21: "queen", 22: "carol", 23: "flowery",
+  24: "flowery", 25: "bluef",
+};
+const UNIDENTIFIED_SPEAKER = "__unidentified__";
 
 // ---------------------------------------------------------------------------
 // Infobulles
@@ -204,6 +246,7 @@ async function init() {
   if (!prefs.faceOverrides) prefs.faceOverrides = {};
   if (!prefs.sceneOverrides) prefs.sceneOverrides = {};
   prefs.listSort = LIST_SORTS.has(prefs.listSort) ? prefs.listSort : "source";
+  prefs.speakerFilter = typeof prefs.speakerFilter === "string" ? prefs.speakerFilter : "all";
   $("sel-list-sort").value = prefs.listSort;
   const backupsToggle = $("chk-backups");
   backupsToggle.checked = prefs.backupsEnabled !== false;
@@ -213,6 +256,7 @@ async function init() {
   });
   applyTheme(prefs.theme === "classic" ? "classic" : "deltarune");
   $("btn-theme").onclick = toggleTheme;
+  await refreshRunedeltaStatus(null, data.runedeltaSync);
 
   if (!data.ready) {
     openImportModal(true);
@@ -221,7 +265,14 @@ async function init() {
 
   appReady = true;
   lang = data.lang;
+  japanese = data.japanese ?? {};
   reference = data.reference;
+  runedeltaAttributions = data.runedeltaSync?.attributions ?? {};
+  if (appConfig.runedelta?.enabled && Object.keys(runedeltaAttributions).length === 0) {
+    const attributionData = await window.api.getRunedeltaAttributions();
+    if (attributionData.ok) runedeltaAttributions = attributionData.attributions;
+    else console.warn(`Attributions Runedelta indisponibles : ${attributionData.error}`);
+  }
   spriteEditor.init(data.spriteCatalog);
 
   const fonts = await loadFonts(data.extractedDir, parseFontCsvs(data.fonts));
@@ -234,6 +285,7 @@ async function init() {
   );
 
   buildIndex();
+  buildSpeakerFilterOptions();
   savedTranslations = new Map(entries.map((entry) => [entry.key, entry.fr]));
   buildSequences();
   buildFaceSelectors();
@@ -342,6 +394,7 @@ function buildIndex() {
       key,
       fr,
       en,
+      ja: japanese[key] ?? null,
       channel: ref.channel,
       file: ref.file,
       line: ref.line,
@@ -385,15 +438,64 @@ function buildSequences() {
 // ---------------------------------------------------------------------------
 // Liste virtuelle
 // ---------------------------------------------------------------------------
-function speakerName(e) {
+function speakerLabel(key) {
+  if (key === UNIDENTIFIED_SPEAKER) return "Sans personnage identifié";
+  if (SPEAKER_NAMES[key]) return SPEAKER_NAMES[key];
+  return key
+    .split(/[_ ]+/)
+    .filter(Boolean)
+    .map((part) => part[0].toLocaleUpperCase("fr") + part.slice(1))
+    .join(" ");
+}
+
+function speakerIdentity(e) {
   const ref = reference[e.key];
-  const fc = prefs.faceOverrides[e.key]?.fc ?? ref?.face?.fc;
-  if (fc && FC_NAMES[fc]) return FC_NAMES[fc];
-  const smallFaceSpeaker = String(ref?.smallFace?.speaker ?? "").toLowerCase();
-  if (SMALL_FACE_SPEAKER_NAMES[smallFaceSpeaker]) {
-    return SMALL_FACE_SPEAKER_NAMES[smallFaceSpeaker];
+  const overrideFc = prefs.faceOverrides[e.key]?.fc;
+  if (overrideFc && FC_SPEAKER_KEYS[overrideFc]) {
+    const key = FC_SPEAKER_KEYS[overrideFc];
+    return { key, label: speakerLabel(key) };
   }
-  return "Sans personnage identifié";
+  const detected = String(ref?.speaker ?? "").toLowerCase();
+  if (detected) return { key: detected, label: speakerLabel(detected) };
+  const fc = ref?.face?.fc;
+  if (fc && FC_SPEAKER_KEYS[fc]) {
+    const key = FC_SPEAKER_KEYS[fc];
+    return { key, label: speakerLabel(key) };
+  }
+  const smallFaceSpeaker = String(ref?.smallFace?.speaker ?? "").toLowerCase();
+  if (SPEAKER_NAMES[smallFaceSpeaker]) {
+    return { key: smallFaceSpeaker, label: speakerLabel(smallFaceSpeaker) };
+  }
+  return { key: UNIDENTIFIED_SPEAKER, label: speakerLabel(UNIDENTIFIED_SPEAKER) };
+}
+
+function speakerName(e) {
+  return speakerIdentity(e).label;
+}
+
+function buildSpeakerFilterOptions() {
+  const select = $("sel-speaker-filter");
+  const counts = new Map();
+  for (const entry of entries) {
+    const identity = speakerIdentity(entry);
+    const current = counts.get(identity.key) ?? { label: identity.label, count: 0 };
+    current.count++;
+    counts.set(identity.key, current);
+  }
+
+  const options = [...counts.entries()].sort(([keyA, a], [keyB, b]) => {
+    if (keyA === UNIDENTIFIED_SPEAKER) return 1;
+    if (keyB === UNIDENTIFIED_SPEAKER) return -1;
+    return SORT_COLLATOR.compare(a.label, b.label);
+  });
+  select.replaceChildren();
+  select.add(new Option("Tous les personnages", "all"));
+  for (const [key, { label, count }] of options) {
+    select.add(new Option(`${label} (${count.toLocaleString("fr-FR")})`, key));
+  }
+  if (!counts.has(prefs.speakerFilter)) prefs.speakerFilter = "all";
+  select.value = prefs.speakerFilter;
+  $("speaker-filter-row").classList.toggle("hidden", prefs.listSort !== "speaker");
 }
 
 function dialogueTypeName(e) {
@@ -406,6 +508,22 @@ function activeSortLabel(e) {
   if (prefs.listSort === "speaker") return speakerName(e);
   if (prefs.listSort === "type") return dialogueTypeName(e);
   return "";
+}
+
+function translatedAttribution(e) {
+  if (!e || e.en == null || e.fr === e.en) return null;
+  return runedeltaAttributions[e.key] ?? null;
+}
+
+function attributionTooltip(attribution) {
+  if (!attribution) return "";
+  const details = [`Traduit par ${attribution.name}`];
+  if (attribution.timestamp) {
+    details.push(new Date(attribution.timestamp).toLocaleString("fr-FR"));
+  }
+  if (attribution.summary) details.push(attribution.summary);
+  if (attribution.commit) details.push(`Commit ${attribution.commit.slice(0, 10)}`);
+  return details.join("\n");
 }
 
 function compareEntries(a, b) {
@@ -431,17 +549,25 @@ function applyFilter() {
     if (f === "noref" && !e.noref) return false;
     if (f === "dialogue" && !(e.channel && e.channel !== "string")) return false;
     if (f === "string" && e.channel !== "string") return false;
+    if (
+      prefs.listSort === "speaker" &&
+      prefs.speakerFilter !== "all" &&
+      speakerIdentity(e).key !== prefs.speakerFilter
+    ) return false;
     if (q && !e.searchable.includes(q)) return false;
     return true;
   });
   if (prefs.listSort !== "source") filtered.sort(compareEntries);
   $("list-spacer").style.height = filtered.length * ROW_H + "px";
-  const sortSuffix =
+  let sortSuffix =
     prefs.listSort === "speaker"
       ? " · triées par personnage"
       : prefs.listSort === "type"
         ? " · triées par type"
         : "";
+  if (prefs.listSort === "speaker" && prefs.speakerFilter !== "all") {
+    sortSuffix += ` · ${speakerLabel(prefs.speakerFilter)} uniquement`;
+  }
   $("list-status").textContent = `${filtered.length} lignes affichées${sortSuffix}`;
   renderList();
 }
@@ -473,9 +599,19 @@ function renderList() {
       (e.key === selectedKey ? " selected" : "");
     const dot = e.noref ? "noref" : e.todo ? "todo" : "ok";
     const sortLabel = activeSortLabel(e);
+    const attribution = translatedAttribution(e);
+    const listMeta =
+      sortLabel || attribution
+        ? `<span class="li-meta">` +
+          (sortLabel ? `<span class="li-sort-label">${escapeHtml(sortLabel)}</span>` : "") +
+          (attribution
+            ? `<span class="li-author" data-tooltip="${escapeHtml(attributionTooltip(attribution))}">✎ ${escapeHtml(attribution.name)}</span>`
+            : "") +
+          `</span>`
+        : "";
     div.innerHTML =
       `<div class="li-key"><span class="li-key-main"><span class="li-dot ${dot}"></span>${escapeHtml(shortKey(e.key))}</span>` +
-      (sortLabel ? `<span class="li-sort-label">${escapeHtml(sortLabel)}</span>` : "") +
+      listMeta +
       `</div>` +
       `<div class="li-en">${escapeHtml(e.en ?? "(pas de référence)")}</div>` +
       `<div class="li-fr">${escapeHtml(e.fr)}</div>`;
@@ -501,6 +637,11 @@ function selectKey(key) {
   $("key-meta").textContent = e.noref
     ? "aucune référence trouvée dans le code du chapitre 5 (clé d'un autre chapitre ?)"
     : `${e.file}:${e.line} · ${e.channel} · ${reference[key].call}`;
+  const attribution = translatedAttribution(e);
+  const author = $("key-author");
+  author.classList.toggle("hidden", !attribution);
+  author.textContent = attribution ? `✎ Traduit par ${attribution.name}` : "";
+  author.dataset.tooltip = attribution ? attributionTooltip(attribution) : "";
   $("en-display").innerHTML = e.en != null ? highlight(e.en) : "<i>—</i>";
   $("fr-input").value = e.fr;
   refreshHighlight();
@@ -615,7 +756,9 @@ function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function refreshHighlight() {
@@ -956,6 +1099,7 @@ function applyFaceOverride() {
     };
   window.api.savePrefs(prefs);
   if (prefs.listSort === "speaker") {
+    buildSpeakerFilterOptions();
     applyFilter();
     scrollToSelected();
   }
@@ -1081,7 +1225,7 @@ function setupTagWheel() {
   const ring = $("tag-wheel-ring");
   const value = $("tag-wheel-value");
   const label = $("tag-wheel-label");
-  const tools = [
+  const quickTools = [
     { tag: "^1", label: "pause courte", kind: "pause" },
     { tag: "^3", label: "pause légère", kind: "pause" },
     { tag: "^6", label: "pause longue", kind: "pause" },
@@ -1092,40 +1236,126 @@ function setupTagWheel() {
     { tag: "%", label: "message suivant", kind: "flow" },
     { tag: "/%", label: "fin de séquence", kind: "flow" },
   ];
+  let tools = [];
+  let buttons = [];
   let pointerX = innerWidth / 2;
   let pointerY = innerHeight / 2;
   let open = false;
+  let wheelMode = "quick";
+  let triggerCode = null;
   let activeIndex = -1;
   let centerX = 0;
   let centerY = 0;
   let savedSelection = null;
+  let wheelRadius = 110;
 
-  const buttons = tools.map((tool, index) => {
-    const button = document.createElement("button");
-    const angle = index * (360 / tools.length);
-    button.type = "button";
-    button.className = `tag-wheel-item ${tool.kind}`;
-    button.style.setProperty("--angle", `${angle}deg`);
-    button.dataset.index = index;
-    button.setAttribute("role", "menuitem");
-    button.setAttribute("aria-label", `${tool.tag}, ${tool.label}`);
-    button.innerHTML = `<span>${tool.tag === "&" ? "&amp;" : tool.tag}</span><small>${tool.kind === "pause" ? "pause" : "flux"}</small>`;
-    button.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-      setActive(index);
-      commit();
+  function describeTag(tag) {
+    if (tag.startsWith("^")) return { label: `pause ${tag.slice(1)}`, kind: "pause" };
+    if (tag.startsWith("~")) return { label: "substitution", kind: "misc" };
+    if (/^\{[0-9]+\}$/.test(tag)) return { label: "variable", kind: "misc" };
+    if (tag.startsWith("`")) return { label: "caractère échappé", kind: "misc" };
+    const flowLabels = {
+      "&": "saut de ligne",
+      "|": "espace d’alignement",
+      "#": "saut de ligne menu",
+      "/": "attendre",
+      "%": "message suivant",
+      "/%": "fin de séquence",
+      "%%": "double fin de message",
+    };
+    if (flowLabels[tag]) return { label: flowLabels[tag], kind: "flow" };
+    if (tag.startsWith("\\")) {
+      const type = tag[1];
+      const descriptions = {
+        E: "expression",
+        F: "portrait",
+        M: "visage",
+        m: "mini-visage",
+        c: "couleur",
+        T: "voix / style",
+        C: "choix",
+        I: "icône",
+        O: "objet animé",
+        "*": "touche manette",
+      };
+      const kind = ["E", "F", "M", "m"].includes(type)
+        ? "face"
+        : type === "c"
+          ? "color"
+          : "misc";
+      return { label: descriptions[type] ?? "balise spéciale", kind };
+    }
+    return { label: "balise spéciale", kind: "misc" };
+  }
+
+  function sourceTools() {
+    const entry = entriesByKey.get(selectedKey);
+    if (!entry) return [];
+    const found = new Map();
+    for (const [source, text] of [["EN", entry.en], ["JP", entry.ja]]) {
+      for (const { tag } of extractTags(text)) {
+        if (!found.has(tag)) found.set(tag, new Set());
+        found.get(tag).add(source);
+      }
+    }
+    return [...found].map(([tag, sources]) => {
+      const description = describeTag(tag);
+      return {
+        tag,
+        kind: description.kind,
+        label: `${description.label} · ${[...sources].join("+")}`,
+      };
     });
-    ring.appendChild(button);
-    return button;
-  });
+  }
+
+  function renderTools(nextTools) {
+    tools = nextTools;
+    // Force le rafraîchissement du centre même si la roue précédente avait
+    // déjà été refermée sans secteur actif.
+    activeIndex = -2;
+    ring.replaceChildren();
+    const count = tools.length;
+    const distance = count > 9
+      ? Math.ceil(42 / (2 * Math.sin(Math.PI / count)) + 8)
+      : 74;
+    wheelRadius = Math.max(110, distance + 42);
+    wheel.style.setProperty("--wheel-size", `${wheelRadius * 2}px`);
+    buttons = tools.map((tool, index) => {
+      const button = document.createElement("button");
+      const angle = index * (360 / count);
+      button.type = "button";
+      button.className = `tag-wheel-item ${tool.kind}`;
+      button.style.setProperty("--angle", `${angle}deg`);
+      button.style.setProperty("--distance", `${distance}px`);
+      button.dataset.index = index;
+      button.setAttribute("role", "menuitem");
+      button.setAttribute("aria-label", `${tool.tag}, ${tool.label}`);
+      const tag = document.createElement("span");
+      tag.textContent = tool.tag;
+      const detail = document.createElement("small");
+      detail.textContent = tool.label;
+      button.append(tag, detail);
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        setActive(index);
+        commit();
+      });
+      ring.appendChild(button);
+      return button;
+    });
+  }
 
   function setActive(index) {
     if (index === activeIndex) return;
     activeIndex = index;
     buttons.forEach((button, i) => button.classList.toggle("active", i === index));
     if (index < 0) {
-      value.textContent = "ALT";
-      label.textContent = "Glisser";
+      value.textContent = wheelMode === "source" ? "ALT G" : "ALT D";
+      label.textContent = wheelMode === "source"
+        ? tools.length > 0
+          ? `${tools.length} balise${tools.length > 1 ? "s" : ""} EN/JP`
+          : "aucune balise EN/JP"
+        : "Glisser";
     } else {
       value.textContent = tools[index].tag;
       label.textContent = tools[index].label;
@@ -1140,14 +1370,23 @@ function setupTagWheel() {
       return;
     }
     const angle = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
-    setActive(Math.round(angle / (360 / tools.length)) % tools.length);
+    if (tools.length > 0) {
+      setActive(Math.round(angle / (360 / tools.length)) % tools.length);
+    }
   }
 
-  function show() {
+  function show(mode, code) {
     const ta = $("fr-input");
     if (open || document.activeElement !== ta || !selectedKey) return;
+    wheelMode = mode;
+    triggerCode = code;
+    renderTools(mode === "source" ? sourceTools() : quickTools);
+    ring.setAttribute(
+      "aria-label",
+      mode === "source" ? "Balises du dialogue anglais et japonais" : "Insertion rapide d’un tag"
+    );
     savedSelection = { start: ta.selectionStart, end: ta.selectionEnd };
-    const margin = 112;
+    const margin = wheelRadius + 2;
     centerX = Math.max(margin, Math.min(pointerX, innerWidth - margin));
     centerY = Math.max(margin, Math.min(pointerY, innerHeight - margin));
     wheel.style.left = `${centerX}px`;
@@ -1163,6 +1402,7 @@ function setupTagWheel() {
     wheel.classList.remove("open");
     wheel.setAttribute("aria-hidden", "true");
     open = false;
+    triggerCode = null;
     setActive(-1);
   }
 
@@ -1184,16 +1424,20 @@ function setupTagWheel() {
     if (open) updateActiveFromPointer(pointerX, pointerY);
   }, { passive: true });
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Alt" && !event.ctrlKey && !event.metaKey) {
+    const isLeftAlt = event.code === "AltLeft" ||
+      (event.key === "Alt" && event.location === KeyboardEvent.DOM_KEY_LOCATION_LEFT);
+    const isRightAlt = event.code === "AltRight" || event.key === "AltGraph" ||
+      (event.key === "Alt" && event.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+    if ((isLeftAlt || isRightAlt) && !event.metaKey) {
       event.preventDefault();
-      if (!event.repeat) show();
+      if (!event.repeat) show(isRightAlt ? "quick" : "source", event.code || event.key);
     } else if (event.key === "Escape" && open) {
       event.preventDefault();
       hide();
     }
   }, true);
   window.addEventListener("keyup", (event) => {
-    if (event.key !== "Alt" || !open) return;
+    if (!open || (event.code || event.key) !== triggerCode) return;
     event.preventDefault();
     commit();
   }, true);
@@ -1618,14 +1862,27 @@ function save() {
   savePromise = (async () => {
     try {
       const langSnapshot = { ...lang };
-      const r = await window.api.saveLang(langSnapshot);
+      let r = await window.api.saveLang(langSnapshot);
+      if (!r.ok && r.conflict) {
+        const resolution = askRunedeltaConflictResolution(r);
+        if (!resolution) return false;
+        r = await window.api.syncRunedelta(langSnapshot, resolution);
+      }
       if (!r.ok) {
         alert(`La sauvegarde a échoué.\n\n${r.error ?? "Erreur inconnue"}`);
         return false;
       }
-      savedTranslations = new Map(
-        entries.map((entry) => [entry.key, langSnapshot[entry.key]])
-      );
+      const savedLanguage = r.language ?? langSnapshot;
+      lang = savedLanguage;
+      if (r.attributions) runedeltaAttributions = r.attributions;
+      for (const entry of entries) {
+        if (Object.hasOwn(savedLanguage, entry.key)) {
+          entry.fr = savedLanguage[entry.key];
+          entry.todo = computeTodo(entry);
+          entry.searchable = buildSearchable(entry);
+        }
+      }
+      savedTranslations = new Map(entries.map((entry) => [entry.key, savedLanguage[entry.key]]));
       unsavedKeys.clear();
       for (const entry of entries) {
         if (entry.fr !== savedTranslations.get(entry.key)) unsavedKeys.add(entry.key);
@@ -1633,13 +1890,17 @@ function save() {
       setDirty(unsavedKeys.size > 0);
       if (!dirty) {
         const st = $("save-state");
-        st.className = "saved";
-        st.textContent =
-          `✔ Sauvegardé à ${new Date(r.savedAt).toLocaleTimeString()}` +
-          (r.backupCreated ? " (backup créé)" : "");
+        st.className = r.syncWarning ? "dirty" : "saved";
+        st.textContent = r.syncWarning
+          ? `⚠ Sauvegardé localement, push GitHub en attente : ${r.syncWarning.split("\n")[0]}`
+          : `✔ Sauvegardé à ${new Date(r.savedAt).toLocaleTimeString()}` +
+            (r.backupCreated ? " (backup créé)" : "");
       }
+      if (r.mode === "runedelta") await refreshRunedeltaStatus(r);
       updateProgress();
       renderList();
+      if (selectedKey) selectKey(selectedKey);
+      if (r.remoteChanges > 0) setTimeout(() => location.reload(), 350);
       return true;
     } catch (error) {
       alert(`La sauvegarde a échoué.\n\n${error.message ?? error}`);
@@ -1747,6 +2008,13 @@ function bindEvents() {
   $("search").addEventListener("input", debounce(applyFilter, 200));
   $("sel-list-sort").addEventListener("change", () => {
     prefs.listSort = $("sel-list-sort").value;
+    window.api.savePrefs(prefs);
+    $("speaker-filter-row").classList.toggle("hidden", prefs.listSort !== "speaker");
+    $("list-container").scrollTop = 0;
+    applyFilter();
+  });
+  $("sel-speaker-filter").addEventListener("change", () => {
+    prefs.speakerFilter = $("sel-speaker-filter").value;
     window.api.savePrefs(prefs);
     $("list-container").scrollTop = 0;
     applyFilter();
@@ -1897,6 +2165,136 @@ let importing = false;
 let installingUtmt = false;
 let utmtReady = false;
 let importModalBound = false;
+let runedeltaBusy = false;
+
+function askRunedeltaConflictResolution(result) {
+  const choice = prompt(
+    `${result.error}\n\nTape LOCAL pour conserver et pousser tes versions, ` +
+      "ou GITHUB pour prendre les versions distantes sur les clés en conflit."
+  );
+  if (choice == null) return null;
+  const normalized = choice.trim().toLowerCase();
+  if (normalized === "local" || normalized === "github") {
+    return normalized === "github" ? "remote" : "local";
+  }
+  alert("Réponse non reconnue. Tape exactement LOCAL ou GITHUB.");
+  return null;
+}
+
+function renderRunedeltaStatus(status = {}, sync = null) {
+  const label = $("runedelta-status");
+  const topButton = $("btn-runedelta");
+  const enabled = Boolean(status.enabled ?? appConfig.runedelta?.enabled);
+  const warning = sync?.error || sync?.pushError || status.error || status.dirtyFiles?.length;
+  topButton.classList.toggle("sync-ready", enabled && !warning);
+  topButton.classList.toggle("sync-warning", Boolean(warning));
+
+  if (!status.available) {
+    label.className = "setup-status missing";
+    label.textContent = "Git est introuvable. Installe Git pour connecter Runedelta.";
+  } else if (warning) {
+    label.className = "setup-status missing";
+    label.textContent = `⚠ ${sync?.error || sync?.pushError || status.error || `Modifications Git non commitées : ${status.dirtyFiles.join(", ")}`}`;
+  } else if (enabled) {
+    const pending = Number(status.ahead ?? sync?.ahead ?? 0);
+    label.className = "setup-status ready";
+    label.textContent =
+      `✓ Runedelta connecté — chapitre ${status.chapter ?? sync?.chapter ?? "?"}, branche ${status.branch ?? sync?.branch ?? "?"}` +
+      (pending > 0 ? ` — ${pending} commit${pending > 1 ? "s" : ""} à pousser` : " — synchronisé");
+  } else if (status.configured && status.connected) {
+    label.className = "setup-status";
+    label.textContent = `Dépôt connecté — le chapitre ${status.chapter ?? "courant"} doit encore être installé.`;
+  } else if (status.connected) {
+    label.className = "setup-status";
+    label.textContent = "Dépôt Runedelta présent localement, mais déconnecté de ce chapitre.";
+  } else {
+    label.className = "setup-status";
+    label.textContent = `Git détecté (${status.version}). Runedelta n’est pas encore connecté.`;
+  }
+
+  const remoteInput = $("runedelta-remote");
+  remoteInput.value = status.remoteUrl ?? appConfig.runedelta?.remoteUrl ?? remoteInput.value;
+  remoteInput.disabled = enabled || runedeltaBusy;
+  const connectButton = $("btn-connect-runedelta");
+  connectButton.classList.toggle("hidden", enabled);
+  connectButton.disabled = !status.available || !appConfig.dataWinPath || runedeltaBusy;
+  $("btn-sync-runedelta").disabled = !enabled || runedeltaBusy;
+  $("btn-open-runedelta").disabled = !status.connected || runedeltaBusy;
+  $("btn-disconnect-runedelta").disabled = !(status.configured || enabled) || runedeltaBusy;
+}
+
+async function refreshRunedeltaStatus(sync = null, startupSync = null) {
+  try {
+    const status = await window.api.getRunedeltaStatus();
+    renderRunedeltaStatus(status, sync ?? startupSync);
+    return status;
+  } catch (error) {
+    renderRunedeltaStatus(
+      { available: true, enabled: appConfig.runedelta?.enabled },
+      { error: error.message ?? String(error) }
+    );
+    return null;
+  }
+}
+
+async function connectRunedelta() {
+  if (runedeltaBusy) return;
+  if (!appConfig.dataWinPath) {
+    alert("Importe d’abord le data.win du chapitre à traduire.");
+    return;
+  }
+  if (
+    !confirm(
+      "Le catalogue Runedelta du chapitre va être installé sous lang/lang_fr.json. " +
+        "Le fichier existant sera sauvegardé avant remplacement. Continuer ?"
+    )
+  ) {
+    return;
+  }
+
+  runedeltaBusy = true;
+  renderRunedeltaStatus({ available: true, enabled: false });
+  const button = $("btn-connect-runedelta");
+  button.disabled = true;
+  button.textContent = "⏳ Clone et installation…";
+  const result = await window.api.connectRunedelta($("runedelta-remote").value);
+  runedeltaBusy = false;
+  button.disabled = false;
+  button.textContent = "Connecter et installer";
+  if (!result.ok) {
+    renderRunedeltaStatus({ available: true, enabled: false }, result);
+    alert(`Connexion à Runedelta impossible.\n\n${result.error}`);
+    return;
+  }
+  appConfig = result.config;
+  location.reload();
+}
+
+async function synchronizeRunedeltaNow() {
+  if (runedeltaBusy) return;
+  if (dirty && !(await save())) return;
+  runedeltaBusy = true;
+  renderRunedeltaStatus({ available: true, enabled: true });
+  let result = await window.api.syncRunedelta();
+  runedeltaBusy = false;
+  if (!result.ok && result.conflict) {
+    const resolution = askRunedeltaConflictResolution(result);
+    if (resolution) result = await window.api.syncRunedelta(lang, resolution);
+  }
+  if (!result.ok) {
+    await refreshRunedeltaStatus(result);
+    alert(`Synchronisation Runedelta impossible.\n\n${result.error}`);
+    return;
+  }
+  await refreshRunedeltaStatus(result);
+  if (result.pushError) {
+    alert(
+      "Les fichiers sont sauvegardés et commités localement, mais GitHub a refusé le push. " +
+        `Le prochain essai reprendra ce commit.\n\n${result.pushError}`
+    );
+  }
+  if (result.remoteChanges > 0) location.reload();
+}
 
 function appendImportLog(line) {
   const log = $("import-log");
@@ -1943,12 +2341,32 @@ function openImportModal(required = false) {
   $("btn-close-import").classList.toggle("hidden", required);
   $("import-modal").classList.remove("hidden");
   refreshUtmtStatus();
+  refreshRunedeltaStatus();
 }
 
 function bindImportModal() {
   if (importModalBound) return;
   importModalBound = true;
   $("btn-import").onclick = () => openImportModal(false);
+  $("btn-runedelta").onclick = () => {
+    openImportModal(false);
+    $("runedelta-section").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  $("btn-connect-runedelta").onclick = connectRunedelta;
+  $("btn-sync-runedelta").onclick = synchronizeRunedeltaNow;
+  $("btn-open-runedelta").onclick = () => window.api.openRunedelta();
+  $("btn-disconnect-runedelta").onclick = async () => {
+    if (runedeltaBusy) return;
+    if (
+      !confirm(
+        "Déconnecter Runedelta ? Le dépôt local et lang_fr.json seront conservés, mais les prochaines sauvegardes ne seront plus poussées."
+      )
+    ) {
+      return;
+    }
+    appConfig = await window.api.disconnectRunedelta();
+    await refreshRunedeltaStatus();
+  };
   $("btn-close-import").onclick = () => {
     if (!importing) $("import-modal").classList.add("hidden");
   };

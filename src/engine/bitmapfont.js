@@ -91,7 +91,8 @@ export async function loadFonts(extractedDir, fontCsvs) {
   const fonts = {};
   await Promise.all(
     wanted.map(async (short) => {
-      const full = "fnt_" + short;
+      const french = "fnt_" + short + "_fr";
+      const full = fontCsvs[french] ? french : "fnt_" + short;
       const csv = fontCsvs[full];
       if (!csv) return;
       const img = new Image();

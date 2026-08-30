@@ -335,9 +335,12 @@ export function layoutText(formattedText, opts) {
 // ---------------------------------------------------------------------------
 export function extractTags(text) {
   const tags = [];
-  const re = /\\[A-Za-z*+\-_][^]?|\^[0-9]|~[0-9]+|[&%/|]|%%/g;
+  // Les codes \\xY occupent toujours trois caractères dans obj_writer. Les
+  // autres formes viennent de substringargs et des contrôles de flux traités
+  // avant ou pendant le rendu.
+  const re = /\\[A-Za-z*+\-_][^]|\^[0-9]|~[0-9]+|`[^]|\{[0-9]+\}|\/%|%%|[&%/|#]/g;
   let m;
-  while ((m = re.exec(text))) {
+  while ((m = re.exec(String(text ?? "")))) {
     tags.push({ tag: m[0], index: m.index });
   }
   return tags;

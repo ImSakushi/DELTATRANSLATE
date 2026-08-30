@@ -22,6 +22,7 @@
     </div>
     <div class="top-actions">
       <button id="btn-update" class="hidden" type="button">Mise à jour</button>
+      <button id="btn-runedelta" type="button" data-tooltip="Connecter et synchroniser le projet Runedelta">⇅ Runedelta</button>
       <button id="btn-theme" class="theme-toggle" type="button" data-tooltip="Passer au design classique" aria-label="Passer au design classique">
         <span class="theme-icon theme-icon-classic" aria-hidden="true">▣</span>
         <span class="theme-icon theme-icon-dr" aria-hidden="true">♥</span>
@@ -57,6 +58,26 @@
         <div><b>data.win :</b> <span id="cur-datawin">—</span></div>
           <div><b>Traductions :</b> <span id="cur-langfr">—</span></div>
           <div><b>Extraction locale :</b> <span id="cur-extracted">—</span></div>
+        </div>
+      </section>
+
+      <section id="runedelta-section">
+        <h3>Projet Runedelta</h3>
+        <div id="runedelta-status" class="setup-status">Vérification de Git…</div>
+        <label class="runedelta-remote" for="runedelta-remote">
+          Dépôt GitHub
+          <input id="runedelta-remote" type="url" value="https://github.com/Traducteurs-Aurifiques/Runedelta.git" spellcheck="false" />
+        </label>
+        <p class="modal-hint">
+          DELTATRANSLATE clone le dépôt, installe le fichier du chapitre sous
+          <code>lang/lang_fr.json</code>, puis fusionne, commit et push les sauvegardes.
+          L’accès en écriture utilise uniquement les identifiants Git déjà configurés sur cette machine.
+        </p>
+        <div class="modal-actions runedelta-actions">
+          <button id="btn-connect-runedelta" class="primary" type="button">Connecter et installer</button>
+          <button id="btn-sync-runedelta" type="button">⇅ Synchroniser</button>
+          <button id="btn-open-runedelta" type="button">🗁 Dépôt local</button>
+          <button id="btn-disconnect-runedelta" type="button">Déconnecter</button>
         </div>
       </section>
 
@@ -253,6 +274,12 @@
           <option value="type">Type de dialogue</option>
         </select>
       </div>
+      <div id="speaker-filter-row" class="hidden">
+        <label for="sel-speaker-filter">Afficher</label>
+        <select id="sel-speaker-filter">
+          <option value="all">Tous les personnages</option>
+        </select>
+      </div>
       <div id="list-container">
         <div id="list-spacer"></div>
         <div id="list-items"></div>
@@ -265,6 +292,7 @@
       <div id="key-context">
         <div id="key-name">—</div>
         <div id="key-meta"></div>
+        <div id="key-author" class="hidden"></div>
         <button id="btn-validate" type="button" data-tooltip="Marquer cette ligne comme volontairement identique à l'anglais, puis passer à la suivante (Ctrl+D)">
           <span id="validate-label">✓ OK tel quel</span>
           <kbd>Ctrl+D</kbd>
@@ -367,7 +395,7 @@
 
   <footer id="statusbar">
     <span id="save-state">Aucune modification</span>
-    <span id="hint">Alt : roue des tags · Ctrl+Entrée : sauvegarder et passer au dialogue suivant · Ctrl+↓/↑ : ligne suivante/précédente à traduire</span>
+    <span id="hint">Alt gauche : balises EN/JP · Alt droit : roue rapide · Ctrl+Entrée : sauvegarder et passer au dialogue suivant · Ctrl+↓/↑ : ligne suivante/précédente à traduire</span>
   </footer>
 
   <div id="tag-wheel" aria-hidden="true">
