@@ -4,6 +4,15 @@ const fs = require("fs");
 const path = require("path");
 const { findUtmtCli, installLatestUtmt } = require("./utmt-manager.js");
 const { createUpdaterController } = require("./updater.js");
+const {
+  DEFAULT_RUNEDDELTA_REMOTE,
+  detectChapter,
+  installRunedelta,
+  languageAttributions,
+  languageRelativePath,
+  runedeltaStatus,
+  synchronizeRunedelta,
+} = require("./runedelta-sync.js");
 
 const ROOT = __dirname;
 const APP_ICON_PATH = path.join(ROOT, "src", "assets", "deltatranslate-icon.png");
@@ -21,6 +30,7 @@ const DEFAULT_CONFIG = {
   sourceDataWinPath: null,
   storageMode: null,
   utmtDir: null,
+  runedelta: null,
 };
 
 app.setName("DELTATRANSLATE");
@@ -73,6 +83,56 @@ function backupsEnabled() {
   return loadJson(prefsPath(), {}).backupsEnabled !== false;
 }
 
+function runedeltaSettings(config = getConfig()) {
+  return {
+    directory: config.runedelta?.directory ?? runtimeDirectory("runedelta"),
+    remoteUrl: config.runedelta?.remoteUrl ?? DEFAULT_RUNEDDELTA_REMOTE,
+  };
+}
+
+function runedeltaBackup(file, content) {
+  return backupsEnabled() ? backupFile(file, content) : null;
+}
+
+function runedeltaEnabledForCurrentChapter(config) {
+  if (!config.runedelta?.enabled) return false;
+  const installed = config.runedelta.installedChapters;
+  if (!installed) return true;
+  const chapter = detectChapter(config);
+  return Boolean(chapter && installed[String(chapter)]);
+}
+
+function formatRunedeltaConflict(result) {
+  const keys = result.conflicts.slice(0, 12);
+  const remaining = result.conflicts.length - keys.length;
+  const examples = (result.conflictDetails ?? [])
+    .slice(0, 3)
+    .map(
+      (item) =>
+        `\n\n${item.key}\nLOCAL : ${item.local ?? "<clé supprimée>"}\nGITHUB : ${item.remote ?? "<clé supprimée>"}`
+    )
+    .join("");
+  return (
+    `Runedelta et le fichier local ont modifié ${result.conflicts.length} même${result.conflicts.length > 1 ? "s" : ""} clé${result.conflicts.length > 1 ? "s" : ""} différemment :\n` +
+    keys.join("\n") +
+    (remaining > 0 ? `\n… et ${remaining} autre${remaining > 1 ? "s" : ""}.` : "") +
+    examples
+  );
+}
+
+async function syncConfiguredRunedelta(config, language = null, conflictResolution = null) {
+  const settings = runedeltaSettings(config);
+  return synchronizeRunedelta({
+    config,
+    ...settings,
+    language,
+    conflictResolution,
+    push: config.runedelta?.autoPush !== false,
+    serializeLanguage,
+    backupFile: runedeltaBackup,
+  });
+}
+
 function getConfig() {
   return Object.assign({}, DEFAULT_CONFIG, loadJson(configPath(), {}));
 }
@@ -98,6 +158,16 @@ function isUsableExtraction(directory) {
 function resolveExtractionDirectory(config) {
   const candidates = [config.extractedDir, path.join(ROOT, "extracted")];
   return candidates.find(isUsableExtraction) ?? config.extractedDir;
+}
+
+function resolveJapaneseLanguagePath(config) {
+  const candidates = [
+    config.langFrPath && path.join(path.dirname(config.langFrPath), "lang_ja.json"),
+    config.dataWinPath && path.join(path.dirname(config.dataWinPath), "lang", "lang_ja.json"),
+    config.sourceDataWinPath &&
+      path.join(path.dirname(config.sourceDataWinPath), "lang", "lang_ja.json"),
+  ].filter(Boolean);
+  return [...new Set(candidates)].find((file) => fs.existsSync(file)) ?? null;
 }
 
 function getUtmtStatus() {
@@ -432,6 +502,101 @@ ipcMain.handle("set-config", (_event, patch) => updateConfig(patch));
 ipcMain.handle("get-utmt-status", () => getUtmtStatus());
 ipcMain.handle("get-update-status", () => updater.getState());
 ipcMain.handle("install-update", () => updater.install());
+ipcMain.handle("get-runedelta-status", async () => {
+  const config = getConfig();
+  const settings = runedeltaSettings(config);
+  return runedeltaStatus(config, settings.directory, settings.remoteUrl);
+});
+
+ipcMain.handle("get-runedelta-attributions", async () => {
+  try {
+    const config = getConfig();
+    if (!runedeltaEnabledForCurrentChapter(config)) {
+      return { ok: true, attributions: {} };
+    }
+    const chapter = detectChapter(config);
+    const settings = runedeltaSettings(config);
+    const relativePath = languageRelativePath(chapter);
+    return {
+      ok: true,
+      attributions: await languageAttributions(settings.directory, relativePath),
+    };
+  } catch (error) {
+    return { ok: false, attributions: {}, error: error.message };
+  }
+});
+
+ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
+  try {
+    const config = getConfig();
+    const previous = runedeltaSettings(config);
+    const remoteUrl = String(requestedRemote ?? "").trim() || DEFAULT_RUNEDDELTA_REMOTE;
+    const result = await installRunedelta({
+      config,
+      directory: previous.directory,
+      remoteUrl,
+      serializeLanguage,
+      backupFile: runedeltaBackup,
+    });
+    const nextConfig = updateConfig({
+      langFrPath: result.targetPath,
+      storageMode: "lang-json",
+      runedelta: {
+        ...config.runedelta,
+        enabled: true,
+        autoPush: true,
+        remoteUrl,
+        directory: previous.directory,
+        installedChapters: {
+          ...(config.runedelta?.installedChapters ?? {}),
+          [String(result.chapter)]: true,
+        },
+      },
+    });
+    return { ...result, config: nextConfig };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("sync-runedelta", async (_event, language = null, conflictResolution = null) => {
+  try {
+    const config = getConfig();
+    if (!runedeltaEnabledForCurrentChapter(config)) {
+      return { ok: false, error: "Runedelta n’est pas installé pour ce chapitre." };
+    }
+    const result = await syncConfiguredRunedelta(config, language, conflictResolution);
+    if (result.conflict) return { ...result, error: formatRunedeltaConflict(result) };
+    if (result.ok && result.targetPath !== config.langFrPath) {
+      updateConfig({ langFrPath: result.targetPath, storageMode: "lang-json" });
+    }
+    return result.ok
+      ? {
+          ...result,
+          savedAt: new Date().toISOString(),
+          mode: "runedelta",
+          syncWarning: result.pushError,
+        }
+      : result;
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("disconnect-runedelta", () => {
+  const config = getConfig();
+  return updateConfig({
+    runedelta: config.runedelta
+      ? { ...config.runedelta, enabled: false }
+      : { enabled: false, remoteUrl: DEFAULT_RUNEDDELTA_REMOTE },
+  });
+});
+
+ipcMain.handle("open-runedelta", () => {
+  const directory = runedeltaSettings().directory;
+  fs.mkdirSync(directory, { recursive: true });
+  return shell.openPath(directory);
+});
 
 ipcMain.handle("set-title-bar-theme", (event, theme) => {
   if (process.platform !== "win32") return;
@@ -469,8 +634,24 @@ ipcMain.handle("close-window", (event) => {
   return true;
 });
 
-ipcMain.handle("load-data", () => {
+ipcMain.handle("load-data", async () => {
   let config = getConfig();
+  let runedeltaSync = null;
+  if (runedeltaEnabledForCurrentChapter(config) && config.dataWinPath) {
+    try {
+      runedeltaSync = await syncConfiguredRunedelta(config);
+      if (runedeltaSync.conflict) {
+        runedeltaSync.error = formatRunedeltaConflict(runedeltaSync);
+      } else if (runedeltaSync.ok && runedeltaSync.targetPath !== config.langFrPath) {
+        config = updateConfig({
+          langFrPath: runedeltaSync.targetPath,
+          storageMode: "lang-json",
+        });
+      }
+    } catch (error) {
+      runedeltaSync = { ok: false, error: error.message };
+    }
+  }
   const detectedExtraction = resolveExtractionDirectory(config);
   if (detectedExtraction && detectedExtraction !== config.extractedDir) {
     config = updateConfig({ extractedDir: detectedExtraction });
@@ -492,6 +673,7 @@ ipcMain.handle("load-data", () => {
       prefs,
       setupReason: "Aucun chapitre extrait n'est disponible.",
       utmt: getUtmtStatus(),
+      runedeltaSync,
     };
   }
 
@@ -501,9 +683,11 @@ ipcMain.handle("load-data", () => {
     prefs,
     utmt: getUtmtStatus(),
     lang: JSON.parse(fs.readFileSync(config.langFrPath, "utf8")),
+    japanese: loadJson(resolveJapaneseLanguagePath(config), {}),
     reference: loadJson(referencePath, {}),
     extractedDir: config.extractedDir,
     fonts: {},
+    runedeltaSync,
   };
   const spritesDir = path.join(config.extractedDir, "sprites");
   result.spriteFiles = fs.existsSync(spritesDir) ? fs.readdirSync(spritesDir) : [];
@@ -664,6 +848,20 @@ ipcMain.handle("save-lang", async (event, langObj) => {
   let translationTemp = null;
   let dataWinTemp = null;
   try {
+    if (runedeltaEnabledForCurrentChapter(config)) {
+      const result = await syncConfiguredRunedelta(config, langObj);
+      if (result.conflict) {
+        return { ...result, ok: false, error: formatRunedeltaConflict(result) };
+      }
+      return {
+        ...result,
+        ok: true,
+        savedAt: new Date().toISOString(),
+        mode: "runedelta",
+        syncWarning: result.pushError,
+      };
+    }
+
     if (config.storageMode !== "datawin") {
       const backup = backupsEnabled()
         ? backupFile(config.langFrPath, serialized)

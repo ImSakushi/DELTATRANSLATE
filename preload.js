@@ -6,6 +6,13 @@ contextBridge.exposeInMainWorld("api", {
   getUtmtStatus: () => ipcRenderer.invoke("get-utmt-status"),
   getUpdateStatus: () => ipcRenderer.invoke("get-update-status"),
   installUpdate: () => ipcRenderer.invoke("install-update"),
+  getRunedeltaStatus: () => ipcRenderer.invoke("get-runedelta-status"),
+  getRunedeltaAttributions: () => ipcRenderer.invoke("get-runedelta-attributions"),
+  connectRunedelta: (remoteUrl) => ipcRenderer.invoke("connect-runedelta", remoteUrl),
+  syncRunedelta: (language, conflictResolution) =>
+    ipcRenderer.invoke("sync-runedelta", language, conflictResolution),
+  disconnectRunedelta: () => ipcRenderer.invoke("disconnect-runedelta"),
+  openRunedelta: () => ipcRenderer.invoke("open-runedelta"),
   setTitleBarTheme: (theme) => ipcRenderer.invoke("set-title-bar-theme", theme),
   loadData: () => ipcRenderer.invoke("load-data"),
   saveLang: (langObj) => ipcRenderer.invoke("save-lang", langObj),

@@ -9,7 +9,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test updater.test.js extraction/chapter-scope.test.mjs extraction/code-overrides.test.mjs",
+    "test": "node --test updater.test.js runedelta-sync.test.js extraction/chapter-scope.test.mjs extraction/code-overrides.test.mjs extraction/speaker-detection.test.mjs",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac --universal --publish never",
@@ -34,6 +34,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "runedelta-sync.js",
       "updater.js",
       "utmt-manager.js",
       "extraction/**/*",

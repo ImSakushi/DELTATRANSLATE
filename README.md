@@ -24,6 +24,7 @@ DELTATRANSLATE est une application de bureau conçue pour traduire les textes de
 - [Installation](#installation)
 - [Premier démarrage](#premier-démarrage)
 - [Fonctionnalités](#fonctionnalités)
+- [Travailler avec Runedelta](#travailler-avec-runedelta)
 - [Sauvegarde et sécurité](#sauvegarde-et-sécurité)
 - [Raccourcis et codes de contrôle](#raccourcis-et-codes-de-contrôle)
 - [Données locales et confidentialité](#données-locales-et-confidentialité)
@@ -51,6 +52,7 @@ Traduire une ligne sans la voir dans sa textbox réelle rend les problèmes de l
 - une copie installée de DELTARUNE ;
 - le fichier `data.win` du chapitre à traduire ;
 - une connexion Internet au premier lancement si vous choisissez l’installation automatique d’UTMT.
+- [Git](https://git-scm.com/) si vous souhaitez synchroniser le projet Runedelta.
 
 ### Depuis le dépôt
 
@@ -73,6 +75,10 @@ Les versions installées vérifient aussi les nouvelles releases GitHub au déma
 4. Patientez pendant l’extraction. Selon la machine et le chapitre, cette étape peut prendre quelques minutes.
 5. Sélectionnez une ligne, saisissez sa traduction et contrôlez immédiatement son rendu dans la preview.
 6. Enregistrez avec `Ctrl+S`. DELTATRANSLATE écrit dans la cible adaptée au chapitre et crée une sauvegarde avant remplacement.
+
+Pour rejoindre Runedelta après l’import, ouvre **⇅ Runedelta**, conserve l’URL proposée et clique sur
+**Connecter et installer**. Le catalogue du chapitre est alors installé dans le jeu sous le nom
+`lang/lang_fr.json`.
 
 L’import génère localement :
 
@@ -117,6 +123,44 @@ Après l’import initial, le bouton **⚙ data.win** permet de changer de chapi
 - si une variante `_fr` existe, elle est modifiée ; sinon l'image source est remplacée uniquement dans la copie recompilée ;
 - annulation indépendante de chaque frame et réapplication automatique des imports lors des recompilations suivantes.
 
+## Travailler avec Runedelta
+
+DELTATRANSLATE sait utiliser directement le dépôt
+[Traducteurs-Aurifiques/Runedelta](https://github.com/Traducteurs-Aurifiques/Runedelta) comme source de
+traduction pour les chapitres 1 à 5. Les fichiers `strings/strings_chapitre_N.json` du dépôt possèdent le
+même schéma que les catalogues du jeu ; l’application installe donc une copie active nommée
+`lang_fr.json` sans convertir ni réordonner les clés.
+
+1. Importe le `data.win` du chapitre dans DELTATRANSLATE.
+2. Ouvre **⇅ Runedelta**, puis clique sur **Connecter et installer**.
+3. Traduis normalement et sauvegarde avec `Ctrl+S`.
+
+Cette installation est confirmée une fois par chapitre : changer de `data.win` ne mélange donc jamais
+automatiquement le catalogue d’un autre projet avec Runedelta.
+
+À la connexion, le `lang_fr.json` éventuellement présent est sauvegardé avant d’être remplacé par le
+catalogue Runedelta. Ensuite, chaque sauvegarde :
+
+- récupère les nouveaux commits GitHub ;
+- fusionne les changements clé par clé avec le travail local ;
+- écrit le résultat dans `lang/lang_fr.json` et dans le fichier du dépôt ;
+- crée un commit `trad: synchroniser le chapitre N` ;
+- pousse le commit si l’utilisateur Git configuré possède les droits d’écriture.
+
+Pour chaque valeur différente de l’anglais, la liste et l’éditeur affichent aussi le dernier auteur Git de
+la ligne. L’infobulle indique la date, le message et le commit issus de `git blame`.
+
+Deux personnes peuvent ainsi modifier des clés différentes sans conflit. Si la même clé a reçu deux
+traductions différentes, aucune version n’est écrasée : DELTATRANSLATE affiche les deux valeurs et demande
+de choisir `LOCAL` ou `GITHUB`. Sans réseau ou sans droit de push, la sauvegarde locale et le commit sont
+conservés ; le bouton Runedelta reste en avertissement et une synchronisation ultérieure reprend le commit.
+
+L’application ne stocke aucun token GitHub. Elle utilise Git et son gestionnaire d’identifiants déjà
+configuré sur la machine. Les membres sans droit d’écriture peuvent cloner et installer le projet, mais le
+push restera en attente jusqu’à l’utilisation d’un compte autorisé ou d’un fork accessible en écriture.
+Si aucun nom ou e-mail Git n’existe, DELTATRANSLATE configure uniquement dans son clone une identité
+générique `Traducteur Runedelta`, sans modifier la configuration Git globale.
+
 ## Sauvegarde et sécurité
 
 Le mode de sauvegarde est sélectionné automatiquement selon le chapitre :
@@ -124,6 +168,7 @@ Le mode de sauvegarde est sélectionné automatiquement selon le chapitre :
 | Situation détectée | Cible utilisée | Protection appliquée |
 | --- | --- | --- |
 | `lang/lang_fr.json` existe | Le fichier français existant | Backup horodaté avant écriture |
+| Runedelta est connecté | `lang/lang_fr.json` + `strings_chapitre_N.json` | Fusion clé par clé, commit local, puis push |
 | Le chapitre lit ses textes depuis `lang_en.json` | `lang_en.json` | Conservation de `lang_en.json.original` comme référence anglaise |
 | Les textes doivent être recompilés dans le jeu | `data.win` actif | Conservation de `data-original.win`, génération temporaire et remplacement atomique |
 
@@ -180,6 +225,7 @@ Les fichiers générés lors d’un import restent sur votre machine :
 - préférences par clé ;
 - sauvegardes horodatées ;
 - installation UTMT gérée par l’application, le cas échéant.
+- clone Git local de Runedelta, si la synchronisation a été activée.
 
 Ces données sont placées dans le dossier utilisateur de l’application. Les anciennes installations qui possèdent déjà `config.json`, `prefs.json`, `backups/` ou `extracted-imports/` à côté du code continuent d’utiliser ces emplacements afin de ne pas perdre le travail existant.
 
@@ -190,6 +236,7 @@ Ces données sont placées dans le dossier utilisateur de l’application. Les a
 ```text
 main.js                       Processus principal Electron, IPC et sauvegardes
 updater.js                    Détection, téléchargement et installation des releases GitHub
+runedelta-sync.js             Clone, fusion à trois versions, commit et push Runedelta
 preload.js                    API sécurisée exposée au renderer
 src/app.js                    Interface, navigation et état de l’éditeur
 src/sprites.js                Catalogue, comparaison et import des sprites traduits
