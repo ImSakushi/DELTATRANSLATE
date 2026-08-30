@@ -321,6 +321,88 @@ const SPEAKER_FC = {
   none: 0, x: 0, no_name: 0, "no name": 0, silent: 0,
 };
 
+// Identité logique du personnage, distincte du portrait : plusieurs speakers
+// (Tenna, Jackenstein, les fleurs colorées...) règlent uniquement le typer et
+// laissent volontairement global.fc à 0 dans scr_speaker/scr_anyface.
+const SPEAKER_ALIASES = {
+  sus: "susie",
+  ral: "ralsei",
+  noe: "noelle",
+  tor: "toriel",
+  lan: "lancer",
+  san: "sans",
+  und: "undyne",
+  asg: "asgore",
+  alp: "alphys",
+  alph: "alphys",
+  ber: "berdly",
+  joc: "jockington",
+  jock: "jockington",
+  rud: "rudy",
+  caddy: "catty",
+  bra: "bratty",
+  rou: "rouxls",
+  rurus: "rouxls",
+  bur: "burgerpants",
+  kin: "king",
+  que: "queen",
+  queen2: "queen",
+  que2: "queen",
+  queen_2: "queen",
+  que_2: "queen",
+  flowery_s: "flowery",
+  flowery_noface: "flowery",
+  purple: "seth",
+  sneo: "spamton",
+};
+
+const NO_SPEAKER_NAMES = new Set([
+  "none",
+  "x",
+  "no_name",
+  "no name",
+  "noone",
+  "no_one",
+  "no one",
+  "noname",
+  "silent",
+  "normal",
+  "balloon",
+  "enemy",
+]);
+
+const FC_SPEAKERS = {
+  1: "susie",
+  2: "ralsei",
+  3: "noelle",
+  4: "toriel",
+  5: "lancer",
+  6: "sans",
+  9: "undyne",
+  10: "asgore",
+  11: "alphys",
+  12: "berdly",
+  13: "catti",
+  14: "jockington",
+  15: "rudy",
+  16: "catty",
+  17: "bratty",
+  18: "rouxls",
+  19: "burgerpants",
+  20: "king",
+  21: "queen",
+  22: "carol",
+  23: "flowery",
+  24: "flowery",
+  25: "bluef",
+};
+
+function canonicalSpeaker(raw) {
+  const speaker = String(raw ?? "").trim().toLowerCase();
+  if (!speaker || NO_SPEAKER_NAMES.has(speaker)) return null;
+  return SPEAKER_ALIASES[speaker] ?? speaker;
+}
+
 // Typers dont la couleur ou la police diffère du writer sombre par défaut.
 // scr_speaker et scr_anyface(_next) utilisent les mêmes valeurs via les tags
 // \T4…\T9 ; les conserver dans la référence est indispensable quand le tag est
@@ -521,6 +603,50 @@ function findFace(lines, lineIdx) {
             : 0;
           return withFaceVariant(lines, lineIdx, { fc, fe });
         }
+      }
+    }
+  }
+  return null;
+}
+
+// Cherche l'identité du speaker indépendamment du portrait. Comme global.fc,
+// le speaker persiste jusqu'à la prochaine commande de dialogue. Une commande
+// « sans nom » constitue donc une frontière et doit arrêter la remontée.
+export function findSpeaker(lines, lineIdx) {
+  const from = Math.max(0, lineIdx - 120);
+  for (let i = lineIdx; i >= from; i--) {
+    const line = lines[i];
+    const calls = [];
+    const speakerCallRe =
+      /(?:c_(?:facenext|face|msgface|speaker)|scr_(?:anyface_next|anyface|speaker))\s*\(\s*["']([\w ]+)["']/g;
+    let match;
+    while ((match = speakerCallRe.exec(line))) {
+      calls.push({ index: match.index, speaker: canonicalSpeaker(match[1]) });
+    }
+
+    const faceCallRe = /\b(scr_\w*face)\s*\(/g;
+    while ((match = faceCallRe.exec(line))) {
+      const fc = FACE_FN_FC[match[1]];
+      if (fc) calls.push({ index: match.index, speaker: FC_SPEAKERS[fc] });
+    }
+
+    if (i !== lineIdx) {
+      for (const tag of line.matchAll(/\\\\F(.)/g)) {
+        if (!(tag[1] in F_TAG_FC)) continue;
+        const fc = F_TAG_FC[tag[1]];
+        calls.push({ index: tag.index, speaker: fc === 0 ? null : FC_SPEAKERS[fc] ?? null });
+      }
+    }
+
+    if (calls.length) return calls.sort((a, b) => b.index - a.index)[0].speaker;
+
+    // Quelques scènes pilotent directement le writer sans passer par les
+    // helpers. Le mapping fc reste alors la seule identité disponible.
+    if (i !== lineIdx) {
+      const fcAssignments = [...line.matchAll(/global\.fc\s*=\s*(\d+)/g)];
+      if (fcAssignments.length) {
+        const fc = Number(fcAssignments.at(-1)[1]);
+        return fc === 0 ? null : FC_SPEAKERS[fc] ?? null;
       }
     }
   }
@@ -992,6 +1118,8 @@ export function buildReference(codeDir, log = () => {}) {
       entry.previewMode === "battletext";
     if (isDialogue) {
       if (lines) {
+        const speaker = findSpeaker(lines, e.line - 1);
+        if (speaker) entry.speaker = speaker;
         const face = findFace(lines, e.line - 1);
         if (face) {
           entry.face = face;
@@ -1108,6 +1236,8 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
           );
           if (miniFaceBank) entry.miniFaceBank = miniFaceBank;
         }
+        const speaker = findSpeaker(lines, site.line - 1);
+        if (speaker) entry.speaker = speaker;
         const face = findFace(lines, site.line - 1);
         if (face) {
           entry.face = face;
