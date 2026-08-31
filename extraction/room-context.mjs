@@ -3,7 +3,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const OBJECT_FILE_RE = /^gml_Object_(.+)_(?:Create|Step|Draw|Other|Alarm|Destroy|CleanUp|PreCreate)_\d+$/;
+export const ROOM_CONTEXT_VERSION = 4;
+
+const OBJECT_FILE_RE =
+  /^gml_Object_(.+)_(?:(?:Create|Step|Draw|Other|Alarm|Destroy|CleanUp|PreCreate)_\d+|Collision_.+)$/;
 const INSTANCE_CREATE_RE = /\binstance_create(?:_layer|_depth)?\s*\([\s\S]{0,500}?\b(obj_[A-Za-z0-9_]+)\s*\)/g;
 const ROOM_RE = /\broom_[A-Za-z0-9_]+\b/g;
 const STATIC_CAMERA_RE =
@@ -19,7 +22,11 @@ export function objectFromCodeFile(file) {
 function wantsRoomContext(entry) {
   if (entry.channel !== "string") return true;
   if (entry.smallFace) return true;
-  return entry.previewMode === "shop" || entry.previewMode === "darkbox";
+  return (
+    entry.previewMode === "shop" ||
+    entry.previewMode === "darkbox" ||
+    entry.previewMode === "platform"
+  );
 }
 
 function scanCreationGraph(codeDir) {

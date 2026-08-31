@@ -22,7 +22,7 @@ JObject objectResults = new JObject();
 JObject roomResults = new JObject();
 JObject sceneResults = new JObject();
 JObject cameraResults = new JObject();
-root["version"] = 1;
+root["version"] = 4;
 root["objects"] = objectResults;
 root["rooms"] = roomResults;
 root["scenes"] = sceneResults;
@@ -59,6 +59,33 @@ TextureWorker worker = new TextureWorker();
 Dictionary<UndertaleTexturePageItem, IMagickImage<byte>> textureCache =
     new Dictionary<UndertaleTexturePageItem, IMagickImage<byte>>();
 Dictionary<string, IMagickImage<byte>> tileCache = new Dictionary<string, IMagickImage<byte>>();
+
+// Les caches créés par une ancienne version ne contiennent pas forcément les
+// ressources des modes plateformer et procès. L'export de rooms les remet à
+// niveau sans imposer une décompilation complète du chapitre.
+string spriteFolder = Path.Combine(outRoot, "sprites");
+Directory.CreateDirectory(spriteFolder);
+foreach (string name in new[] {
+    "spr_gradient_triangle_dialoguer_plat", "spr_gradient20",
+    "spr_trial_podium", "spr_kris_lawyer", "spr_kris_lawyer_alt",
+    "spr_susie_lawyer", "spr_ralsei_lawyer", "spr_trial_spotlight",
+    "spr_aqua_walk_down", "spr_seth_walk_down", "spr_enemy_green_walk",
+    "spr_yellow_walk_down", "spr_blue_poses", "spr_heart_centered",
+    "spr_sneo_bullet_arrow", "spr_empty",
+    "spr_dw_fcastle_top_ascent_susieface",
+    "spr_dw_fcastle_top_ascent_ralseiface"
+})
+{
+    var sprite = Data.Sprites.ByName(name);
+    if (sprite == null) continue;
+    for (int frame = 0; frame < sprite.Textures.Count; frame++)
+    {
+        if (sprite.Textures[frame]?.Texture == null) continue;
+        worker.ExportAsPNG(
+            sprite.Textures[frame].Texture,
+            Path.Combine(spriteFolder, name + "_" + frame + ".png"), null, true);
+    }
+}
 
 void ClearImageCaches()
 {
@@ -181,6 +208,37 @@ void DrawBackgroundLayer(MagickImage canvas, UndertaleRoom room, UndertaleRoom.L
         DrawTexture(canvas, texture, x, y, cameraX, cameraY, scaleX, scaleY, 0, (byte)(data.Color >> 24));
 }
 
+bool IsEditorOnlyInstance(UndertaleRoom.GameObject item)
+{
+    string objectName = item.ObjectDefinition?.Name?.Content ?? "";
+    string spriteName = item.ObjectDefinition?.Sprite?.Name?.Content ?? "";
+    if (spriteName.IndexOf("debug", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    if (spriteName.StartsWith("spr_dbg", StringComparison.OrdinalIgnoreCase)) return true;
+    if (spriteName == "spr_plat_grid" || spriteName == "spr_plat_thinplat") return true;
+    return objectName == "obj_plat_cam_clampzone" ||
+           objectName == "obj_plat_attacktrigger" ||
+           objectName == "obj_plat_text_at_bottom_zone" ||
+           objectName == "obj_plat_sequence_marker";
+}
+
+bool PointInsideObject(UndertaleRoom room, int x, int y, string requested)
+{
+    foreach (var item in room.GameObjects)
+    {
+        bool direct;
+        if (!MatchesObject(item.ObjectDefinition, requested, out direct)) continue;
+        var sprite = item.ObjectDefinition?.Sprite;
+        if (sprite == null) continue;
+        double x0 = item.X - sprite.OriginXWrapper * item.ScaleX;
+        double y0 = item.Y - sprite.OriginYWrapper * item.ScaleY;
+        double x1 = x0 + sprite.Width * item.ScaleX;
+        double y1 = y0 + sprite.Height * item.ScaleY;
+        if (x >= Math.Min(x0, x1) && x <= Math.Max(x0, x1) &&
+            y >= Math.Min(y0, y1) && y <= Math.Max(y0, y1)) return true;
+    }
+    return false;
+}
+
 void RenderRoom(UndertaleRoom room, int cameraX, int cameraY, string output)
 {
     uint background = room.BGColorLayer?.BackgroundData?.Color ?? room.BackgroundColor;
@@ -214,6 +272,9 @@ void RenderRoom(UndertaleRoom room, int cameraX, int cameraY, string output)
         {
             foreach (var item in layer.InstancesData.Instances)
             {
+                // Ces sprites ne sont que des repères de collision visibles
+                // dans l'éditeur de room ; leurs objets les masquent au runtime.
+                if (IsEditorOnlyInstance(item)) continue;
                 var sprite = item.ObjectDefinition?.Sprite;
                 var texture = sprite?.Textures.ElementAtOrDefault(item.WrappedImageIndex)?.Texture;
                 DrawTexture(canvas, texture,
@@ -256,7 +317,14 @@ JObject SceneAt(UndertaleRoom room, int cameraX, int cameraY, int focusX, int fo
 
 JObject SceneFor(UndertaleRoom room, int focusX, int focusY)
 {
-    return SceneAt(room, focusX - 320, focusY - 240, focusX, focusY);
+    JObject scene = SceneAt(room, focusX - 320, focusY - 240, focusX, focusY);
+    // L'émetteur est souvent un décor haut (arbre, cloche...) alors que le
+    // joueur se tient à ses pieds. Les deux sondes couvrent cette différence
+    // sans figer une room particulière.
+    bool bottom = PointInsideObject(room, focusX, focusY, "obj_plat_text_at_bottom_zone") ||
+                  PointInsideObject(room, focusX, focusY + 80, "obj_plat_text_at_bottom_zone");
+    scene["platformSide"] = bottom ? 1 : 0;
+    return scene;
 }
 
 foreach (string requested in requestedObjects)

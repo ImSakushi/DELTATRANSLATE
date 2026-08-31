@@ -318,6 +318,12 @@ const SPEAKER_FC = {
   seth: 0, purple: 0,
   yellow: 0, orange: 0, blue: 0, green: 0, pink: 0,
   opuppet: 0,
+  // scr_speaker remet fc=0 et ne pose aucun visage pour ces personnages
+  spamton: 0,
+  napstablook: 0,
+  starwalker: 0,
+  k_k: 0,
+  floradinn: 0,
   none: 0, x: 0, no_name: 0, "no name": 0, silent: 0,
 };
 
@@ -464,9 +470,26 @@ function decodeEmotion(raw) {
 }
 
 // Certaines scènes remplacent la banque de portraits sans changer fc/fe.
+// obj_face Draw_0 : Ralsei choisit spr_face_r_dark quand le flag 1311 vaut 1,
+// sinon spr_face_r_nohat à partir du chapitre 2. Les cutscenes reflètent cet
+// état dans ses sprites d'acteur : spr_ralsei_* sans chapeau, spr_ralsei[drlu]
+// avec chapeau. On utilise le dernier indice explicite avant le dialogue.
+function findRalseiFaceVariant(lines, lineIdx) {
+  for (let i = lineIdx; i >= Math.max(0, lineIdx - 80); i--) {
+    const flag = lines[i].match(
+      /(?:scr_flag_set\(\s*1311\s*,|global\.flag\[1311\]\s*=)\s*([01])/
+    );
+    if (flag) return flag[1] === "1" ? "ralsei-hat" : "ralsei-nohat";
+    if (/\bc_sprite\(\s*spr_ralsei_\w+/.test(lines[i])) return "ralsei-nohat";
+    if (/\bc_sprite\(\s*spr_ralsei[drlu](?:\b|_)/.test(lines[i])) return "ralsei-hat";
+  }
+  return null;
+}
+
 // obj_face Draw_0 : Noelle utilise spr_face_n_matome_extended quand
 // global.tempflag[63] vaut 1 ; obj_ch5_LW20 alimente ce flag via face_extended.
 function findFaceVariant(lines, lineIdx, fc) {
+  if (fc === 2) return findRalseiFaceVariant(lines, lineIdx);
   if (fc !== 3) return null;
   for (let i = lineIdx; i >= 0; i--) {
     const m = lines[i].match(
@@ -487,6 +510,17 @@ function staticSmallFaceArg(arg) {
   if (arg.string != null) return arg.string;
   const raw = arg.raw.trim();
   return /^-?\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : null;
+}
+
+function readSpriteNamesById(codeDir) {
+  try {
+    return fs
+      .readFileSync(path.join(codeDir, "..", "sprites_list.txt"), "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.split(";", 1)[0] || null);
+  } catch {
+    return [];
+  }
 }
 
 // scr_smallface prépare un portrait secondaire qui sera créé plus tard par un
@@ -532,14 +566,25 @@ function findSmallFace(lines, lineIdx, id) {
 // Cherche le visage actif pour la ligne `lineIdx` (0-based) en remontant.
 // Le visage persiste de message en message jusqu'à changement explicite,
 // d'où une fenêtre de scan large. Le plus proche match gagne.
-function findFace(lines, lineIdx) {
+export function findFace(lines, lineIdx) {
   const from = Math.max(0, lineIdx - 120);
   let pendingFe = null; // dernier global.fe rencontré en remontant
   for (let i = lineIdx; i >= from; i--) {
     const l = lines[i];
 
+    // scr_cutscene_commands, commande "fe" : c_fefc(fe, fc) remplace les
+    // deux globals après c_speaker. c_fefc(0, 0) sert notamment aux scènes
+    // sans portrait de Noelle, Susie et Flowery ; cette remise à zéro doit
+    // donc gagner sur le speaker rencontré plus haut.
+    let m = l.match(/\bc_fefc\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)/);
+    if (m && i !== lineIdx) {
+      const fe = Number(m[1]);
+      const fc = Number(m[2]);
+      return fc === 0 ? null : withFaceVariant(lines, lineIdx, { fc, fe });
+    }
+
     // Cutscenes qui règlent le writer directement : global.fc = 2 / global.fe = 1
-    let m = l.match(/global\.fe\s*=\s*(\d+)/);
+    m = l.match(/global\.fe\s*=\s*(\d+)/);
     if (m && i !== lineIdx && pendingFe == null) pendingFe = Number(m[1]);
     m = l.match(/global\.fc\s*=\s*(\d+)/);
     if (m && i !== lineIdx) {
@@ -950,10 +995,16 @@ function endsWithWriterClose(text) {
   return true;
 }
 
+function isShopOwner(file) {
+  return /^gml_Object_obj_shop\w*_(?:Create|Draw|Other)_\d+$/.test(
+    String(file).replace(/\.gml$/, "")
+  );
+}
+
 function isLargeShopDialogue(file, text) {
   const source = String(text);
   return (
-    /gml_Object_obj_shop\w*_(?:Create|Draw|Other)_\d+/.test(file) &&
+    isShopOwner(file) &&
     /(?:\/%|[/%])$/.test(source) &&
     startsWithWriterAsterisk(source)
   );
@@ -970,17 +1021,342 @@ function findBattleTextOwners(codeDir) {
   return owners;
 }
 
-function inferPreviewMode(file, text, battleTextOwners, contextLine = "", channel = null) {
+// obj_dialoguer_plat est créé soit par d_make_plat, soit par la commande de
+// cutscene `talk` quand obj_plat_player existe (scr_cutscene_commands).
+// Certains événements mélangent d_make et d_make_plat : les lignes proches du
+// constructeur sont alors suivies séparément pour ne pas requalifier le reste.
+function findPlatformDialogueFlow(codeDir) {
+  const files = new Set();
+  const cutsceneFiles = new Set();
+  const lines = new Set();
+  const ownersWithPlatform = new Set();
+  const ownersWithRegular = new Set();
+  for (const file of fs.readdirSync(codeDir).filter((name) => name.endsWith(".gml"))) {
+    const source = fs.readFileSync(path.join(codeDir, file), "utf8");
+    const sourceLines = source.split(/\r?\n/);
+    const cleanFile = file.replace(/\.gml$/, "");
+    const owner = codeOwner(file);
+    const hasPlatformMake = /\bd_make_plat\s*\(/.test(source);
+    const hasRegularMake = /\bd_make\s*\(/.test(source);
+    if (hasPlatformMake) {
+      ownersWithPlatform.add(owner);
+      if (!hasRegularMake) files.add(cleanFile);
+
+      for (let i = 0; i < sourceLines.length; i++) {
+        if (!/\bd_make_plat\s*\(/.test(sourceLines[i])) continue;
+        for (let j = i - 1; j >= Math.max(0, i - 40); j--) {
+          if (/\bd_make(?:_plat)?\s*\(/.test(sourceLines[j])) break;
+          if (/(?:msg(?:set|next)|stringset)(?:sub)?loc\s*\(/.test(sourceLines[j]))
+            lines.add(`${cleanFile}:${j + 1}`);
+        }
+      }
+    }
+    if (hasRegularMake) ownersWithRegular.add(owner);
+
+    const platformRuntimeSignal =
+      /\bc_plat_|\bscr_setup_plat_actor\b|\bscr_get_plat_followers\b|\bobj_dialoguer_plat\b|\bobj_plat_player\b|\bglobal\.pause_plat\b|\bscr_plat(?:swap)?_/.test(
+        source
+      );
+    if (platformRuntimeSignal && /\bc_(?:msg|talk)/.test(source)) {
+      cutsceneFiles.add(cleanFile);
+      ownersWithPlatform.add(owner);
+    }
+  }
+  return {
+    files,
+    cutsceneFiles,
+    lines,
+    exclusiveOwners: new Set(
+      [...ownersWithPlatform].filter((owner) => !ownersWithRegular.has(owner))
+    ),
+  };
+}
+
+const BATTLE_FILE_RE = /enemy|battle|blcon|_attack|encounter|boss|trashy_trio/i;
+const TRIAL_CASE_RE = /\bcase_info\s*\[\s*(\d+)\s*\]\s*=/;
+
+function trialCaseFromLine(contextLine) {
+  const match = String(contextLine).match(TRIAL_CASE_RE);
+  return match ? Number(match[1]) : null;
+}
+
+// c_msgside alimente scr_cutscene_commands.msgside avant la commande `talk`.
+// Sans forçage, la position dépend du joueur et ne peut pas être reconstruite
+// statiquement ; le bas est le placement représentatif des cutscenes plat.
+function findCutscenePlatformSide(lines, lineIdx) {
+  for (let i = lineIdx; i >= Math.max(0, lineIdx - 250); i--) {
+    const match = lines[i].match(/\bc_msgside\s*\(\s*"(top|bottom|any)"/);
+    if (!match) continue;
+    if (match[1] === "top") return 0;
+    if (match[1] === "bottom") return 1;
+    return 1;
+  }
+  return 1;
+}
+
+// Les choix modernes sont dessinés par obj_choicer_neo à partir de deux à
+// quatre chaînes distinctes. Le catalogue les expose séparément : on relie ici
+// les options qui alimentent un même \C2/\C3/\C4 ou scr_readychoicer().
+function findChoiceGroups(entriesByFile, getLines) {
+  const groups = [];
+  for (const [file, entries] of entriesByFile) {
+    const lines = getLines(file);
+    if (!lines) continue;
+    const entriesByLine = new Map();
+    for (const entry of entries) {
+      if (!entriesByLine.has(entry.line)) entriesByLine.set(entry.line, []);
+      entriesByLine.get(entry.line).push(entry);
+    }
+
+    const localizedOptionAt = (lineNumber, expectedText = null) => {
+      const candidates = entriesByLine.get(lineNumber) ?? [];
+      if (expectedText != null) {
+        const exact = candidates.find((entry) => entry.english === expectedText);
+        if (exact) return { key: exact.id, text: exact.english };
+      }
+      const candidate = candidates.find((entry) => entry.channel === "string");
+      return candidate ? { key: candidate.id, text: candidate.english } : null;
+    };
+
+    const globalAssignment = (lineNumber) => {
+      const line = lines[lineNumber - 1] ?? "";
+      const match = line.match(/global\.choicemsg\s*\[\s*([0-3])\s*\]\s*=\s*(.+?);?\s*$/);
+      if (!match) return null;
+      const localized = localizedOptionAt(lineNumber);
+      return {
+        index: Number(match[1]),
+        option: localized ?? { key: null, text: literalString(match[2]) ?? "" },
+      };
+    };
+
+    // Affectations global.choicemsg[] suivies d'un message technique \C2..4.
+    for (let trigger = 1; trigger <= lines.length; trigger++) {
+      const countMatch = (lines[trigger - 1] ?? "").match(/\\+C([2-4])/);
+      if (!countMatch) continue;
+      const count = Number(countMatch[1]);
+      const options = Array(count).fill(null);
+      for (let lineNumber = trigger - 1; lineNumber >= Math.max(1, trigger - 40); lineNumber--) {
+        const assignment = globalAssignment(lineNumber);
+        if (!assignment || assignment.index >= count || options[assignment.index]) continue;
+        options[assignment.index] = assignment.option;
+        if (options.every(Boolean)) break;
+      }
+      if (options.every(Boolean) && options.some((option) => option.key)) {
+        groups.push({ file, triggerLine: trigger, options });
+      }
+    }
+
+    // Variables locales (opt1, option2...) passées à scr_readychoicer().
+    let previousReadyLine = 0;
+    for (let trigger = 1; trigger <= lines.length; trigger++) {
+      const line = lines[trigger - 1] ?? "";
+      const call = /\bscr_readychoicer\s*\(/g.exec(line);
+      if (!call) continue;
+      const parsed = parseArgs(line, call.index + call[0].length);
+      if (!parsed || parsed.args.length < 2) continue;
+      const rawOptions = parsed.args.slice(0, 4);
+      let count = 2;
+      for (let index = 2; index < rawOptions.length; index++) {
+        const raw = rawOptions[index].raw.trim();
+        if (!raw || raw === "undefined" || literalString(raw) === "") break;
+        count = index + 1;
+      }
+
+      const options = [];
+      for (let index = 0; index < count; index++) {
+        const arg = rawOptions[index];
+        if (!arg) {
+          options.push({ key: null, text: "" });
+          continue;
+        }
+        const directText = literalString(arg.raw);
+        let option = localizedOptionAt(trigger, directText);
+        const variable = arg.raw.trim().match(/^[A-Za-z_]\w*$/)?.[0];
+        if (!option && variable) {
+          const assignRe = new RegExp(
+            `(?:\\bvar\\s+)?\\b${variable}\\s*(?<![=!<>+\\-*/])=(?!=)\\s*(.+?);?\\s*$`
+          );
+          for (
+            let lineNumber = trigger - 1;
+            lineNumber > Math.max(previousReadyLine, trigger - 100);
+            lineNumber--
+          ) {
+            const assignment = (lines[lineNumber - 1] ?? "").match(assignRe);
+            if (!assignment) continue;
+            const localized = localizedOptionAt(lineNumber);
+            if (localized) {
+              option = localized;
+              break;
+            }
+            const fallback = literalString(assignment[1]);
+            if (fallback != null) {
+              option = { key: null, text: fallback };
+              break;
+            }
+          }
+        }
+        options.push(option ?? { key: null, text: directText ?? "" });
+      }
+      if (options.some((option) => option.key)) {
+        groups.push({ file, triggerLine: trigger, options });
+      }
+      previousReadyLine = trigger;
+    }
+  }
+  return groups;
+}
+
+function choicePreviewMode(file, triggerLine, battleTextOwners, battleFlowOwners, platformFlow) {
   const cleanFile = file.replace(/\.gml$/, "");
+  const owner = codeOwner(cleanFile);
+  if (
+    battleTextOwners.has(owner) ||
+    battleFlowOwners.has(owner) ||
+    BATTLE_FILE_RE.test(cleanFile)
+  ) {
+    return "battletext";
+  }
+  if (
+    platformFlow.lines.has(`${cleanFile}:${triggerLine}`) ||
+    platformFlow.files.has(cleanFile) ||
+    platformFlow.cutsceneFiles.has(cleanFile) ||
+    platformFlow.exclusiveOwners.has(owner)
+  ) {
+    return "platform";
+  }
+  return "darkbox";
+}
+
+function attachChoiceMetadata(
+  ref,
+  entriesByFile,
+  getLines,
+  battleTextOwners,
+  battleFlowOwners,
+  platformFlow
+) {
+  let count = 0;
+  for (const group of findChoiceGroups(entriesByFile, getLines)) {
+    const lines = getLines(group.file);
+    const mode = choicePreviewMode(
+      group.file,
+      group.triggerLine,
+      battleTextOwners,
+      battleFlowOwners,
+      platformFlow
+    );
+    const side = mode === "platform" ? 1 : findCutscenePlatformSide(lines, group.triggerLine - 1);
+    const options = group.options.map((option) => ({
+      ...(option.key ? { key: option.key } : {}),
+      ...(!option.key || !ref[option.key] ? { text: option.text } : {}),
+    }));
+    group.options.forEach((option, index) => {
+      if (!option.key || !ref[option.key]) return;
+      const previous = ref[option.key].choice;
+      if (previous && previous.options.length >= options.length) return;
+      ref[option.key].previewMode = mode;
+      ref[option.key].choice = { options, index, side };
+      if (!previous) count++;
+    });
+  }
+  return count;
+}
+
+// Certains scripts globaux alimentent le panneau de combat sans le trahir dans
+// leur nom (scr_spelltext : global.msg[0] = "* ~1 cast RUDE BUSTER!/%", appelé
+// par obj_spellphase). On propage le contexte combat aux scripts globaux dont
+// TOUS les appelants sont eux-mêmes en contexte combat.
+function findBattleFlowScripts(codeDir, battleTextOwners) {
+  const defined = new Map(); // "scr_x" → propriétaire du GlobalScript
+  const callers = new Map(); // "scr_x" → Set<propriétaires appelants>
+  for (const file of fs.readdirSync(codeDir).filter((name) => name.endsWith(".gml"))) {
+    const owner = codeOwner(file);
+    const definition = file.match(/^gml_GlobalScript_(scr_\w+)\.gml$/);
+    if (definition) defined.set(definition[1], owner);
+    const source = fs.readFileSync(path.join(codeDir, file), "utf8");
+    for (const call of source.matchAll(/\b(scr_\w+)\s*\(/g)) {
+      if (!callers.has(call[1])) callers.set(call[1], new Set());
+      callers.get(call[1]).add(owner);
+    }
+  }
+  const battleFlow = new Set();
+  for (const [fn, owner] of defined) {
+    const callingOwners = [...(callers.get(fn) ?? [])].filter((c) => c !== owner);
+    if (!callingOwners.length) continue;
+    const allBattle = callingOwners.every(
+      (c) => battleTextOwners.has(c) || BATTLE_FILE_RE.test(c)
+    );
+    if (allBattle) battleFlow.add(owner);
+  }
+  return battleFlow;
+}
+
+function inferPreviewMode(
+  file,
+  text,
+  battleTextOwners,
+  contextLine = "",
+  channel = null,
+  battleFlowOwners = new Set(),
+  platformFlow = {
+    files: new Set(),
+    cutsceneFiles: new Set(),
+    lines: new Set(),
+    exclusiveOwners: new Set(),
+  },
+  lineNumber = 0
+) {
+  const cleanFile = file.replace(/\.gml$/, "");
+  // obj_yellow_trial_manager Draw_0 dessine case_info[trial_counter]
+  // directement dans l'interface du procès, sans obj_writer ni textbox.
+  if (trialCaseFromLine(contextLine) != null) return "trial";
+  const owner = codeOwner(cleanFile);
+  const exactPlatformLine = platformFlow.lines.has(`${cleanFile}:${lineNumber}`);
+  const cutsceneChannel = String(channel ?? "").startsWith("cutscene-");
+  if (cutsceneChannel) {
+    // scr_cutscene_commands, commande `talk` : le moteur choisit précisément
+    // obj_dialoguer_plat lorsqu'un obj_plat_player est actif.
+    if (
+      exactPlatformLine ||
+      platformFlow.cutsceneFiles.has(cleanFile) ||
+      platformFlow.exclusiveOwners.has(owner)
+    ) {
+      return "platform";
+    }
+    return null;
+  }
+  const platformSource =
+    exactPlatformLine ||
+    platformFlow.files.has(cleanFile) ||
+    platformFlow.exclusiveOwners.has(owner);
+  if (
+    platformSource &&
+    (channel !== "string" || endsWithWriterClose(text) || /\bglobal\.msg\s*\[/.test(contextLine))
+  ) {
+    return "platform";
+  }
+  // Dans les objets obj_shop*, les appels msg* et les affectations directes de
+  // global.msg sont rendus par leur obj_writer dans l'interface de boutique.
+  // Le texte n'a pas forcément de / ou de % : obj_shop_ch5 conserve notamment
+  // son message d'accueil dans _intro_text avant de le copier dans global.msg.
+  if (
+    isShopOwner(cleanFile) &&
+    (channel !== "string" || /\bglobal\.msg\s*\[[^\]]+\]\s*=/.test(contextLine))
+  ) {
+    return "shop";
+  }
+  // Filet de compatibilité pour les textes de conversation stockés dans un
+  // tableau ou une structure que l'analyse de flux statique ne sait pas suivre.
   if (isLargeShopDialogue(cleanFile, text)) return "shop";
-  // c_msgsetloc/c_msgnextloc passent par la file de cinématique puis par
-  // obj_dialoguer : même dans un objet qui contient aussi un combat, ce ne
-  // sont jamais les lignes du panneau de combat du bas.
-  if (String(channel ?? "").startsWith("cutscene-")) return null;
   const inBattleOwner =
-    battleTextOwners.has(codeOwner(cleanFile)) ||
+    battleTextOwners.has(owner) ||
+    battleFlowOwners.has(owner) ||
     /scr_encountersetup|obj_battlecontroller/.test(cleanFile);
   if (startsWithWriterAsterisk(text) && inBattleOwner) return "battletext";
+  // Fragments concaténés au message du panneau de combat (scr_spelltext :
+  // spelltext += " became enraptured!&"...) : `&` final = saut de ligne writer.
+  if (battleFlowOwners.has(owner) && channel === "string" && /&\s*$/.test(String(text)))
+    return "battletext";
   if (channel !== "string") return null;
   // Les stringsetloc qui alimentent la file du writer sont des dialogues, pas
   // des libellés : global.battlemsg[] → recopié dans global.msg[0] par
@@ -994,8 +1370,7 @@ function inferPreviewMode(file, text, battleTextOwners, contextLine = "", channe
   // cutscenes de boss…), global.msg et les variables intermédiaires peuvent
   // alimenter des bulles (obj_battleblcon) : on laisse l'heuristique
   // bubble/battletext de l'app trancher.
-  if (inBattleOwner || /enemy|battle|blcon|_attack|encounter|boss|trashy_trio/i.test(cleanFile))
-    return null;
+  if (inBattleOwner || BATTLE_FILE_RE.test(cleanFile)) return null;
   if (/\bmsg\s*\[[^\]]*\]\s*=/.test(contextLine) || /\bmsgset\s*\(/.test(contextLine))
     return "darkbox";
   if (/global\.choicemsg\s*\[/.test(contextLine) || /\bscr_readychoicer\s*\(/.test(contextLine))
@@ -1006,15 +1381,169 @@ function inferPreviewMode(file, text, battleTextOwners, contextLine = "", channe
   return null;
 }
 
+// scr_auto_convo("toriel", stringsetloc(...)) : constructeur du ch5 consommé
+// par obj_ch5_LW01W Step_0 via scr_speaker(_convo.speaker) puis
+// msgset(0, _convo.dialogue) → boîte de dialogue, visage de scr_speaker.
+function findAutoConvo(id, contextLine) {
+  const idPos = contextLine.indexOf(`"${id}"`);
+  if (idPos < 0) return null;
+  let speaker = null;
+  for (const m of contextLine.matchAll(/new\s+scr_auto_convo\s*\(\s*"([\w ]+)"/g)) {
+    if (m.index > idPos) break;
+    speaker = m[1];
+  }
+  if (!speaker) return null;
+  const fc = SPEAKER_FC[speaker.toLowerCase()] ?? 0;
+  return {
+    mode: "darkbox",
+    speaker: canonicalSpeaker(speaker),
+    face: fc ? { fc, fe: 0 } : null,
+  };
+}
+
+// Textes affectés à une variable puis transmis au writer ailleurs dans le même
+// objet : msgset(n, v) / msgset_add(v, x, y, ...) (outros d'ennemis, bulles du
+// procès du ch5...). obj_trial_perp Create_0 (testimony_balloon) lit aussi le
+// champ testimony[] du manager : msgset + scr_enemyblcon, typer 50.
+function findVariableMessage(id, contextLine, ownerSource, file) {
+  const idPos = contextLine.indexOf(`"${id}"`);
+  if (idPos < 0 || !ownerSource) return null;
+  let variable = null;
+  for (const m of contextLine.matchAll(
+    /(?:\bvar\s+)?\b([A-Za-z_]\w*)\s*=\s*(?:stringsetloc|stringsetsubloc)\s*\(/g
+  )) {
+    if (m.index > idPos) break;
+    variable = m[1];
+  }
+  if (!variable) return null;
+
+  if (new RegExp(`testimony:\\s*\\[[^\\]]*\\b${variable}\\b`).test(ownerSource)) {
+    const speakerToken = variable.match(/^t\d+_([a-z]+)_test$/);
+    return {
+      mode: "bubble",
+      typer: 50, // obj_trial_perp Create_0, testimony_balloon
+      speaker: speakerToken ? canonicalSpeaker(speakerToken[1]) : null,
+    };
+  }
+
+  const reference = `(?:\\w+\\.)?${variable}`;
+  const queuedToGlobalMessage = new RegExp(
+    `\\bglobal\\.msg\\s*\\[[^\\]]+\\]\\s*=\\s*${reference}\\s*;`
+  ).test(ownerSource);
+  const queued =
+    queuedToGlobalMessage ||
+    new RegExp(`\\bmsgset\\s*\\(\\s*[^,()]+,\\s*${reference}\\s*[),]`).test(ownerSource) ||
+    new RegExp(`\\bmsgset_add\\s*\\(\\s*${reference}\\s*[),]`).test(ownerSource);
+  if (queued) {
+    // msgset seul remplit la file d'obj_writer (textbox) ; la présence de
+    // bulles chez le même propriétaire (scr_enemyblcon / msgset_add avec
+    // coordonnées) signe un affichage en bulle.
+    const bubbles = /\bscr_enemyblcon\s*\(|\bmsgset_add\s*\(/.test(ownerSource);
+    return { mode: isShopOwner(file) ? "shop" : bubbles ? "bubble" : "darkbox" };
+  }
+
+  // Fermeture writer ajoutée au runtime : scr_itemget_anytype_text construit
+  // itemgetstring = "* (...)" puis itemgetstring += "/%".
+  if (new RegExp(`\\b${variable}\\s*\\+=\\s*"(?:/%|%)"`).test(ownerSource))
+    return { mode: "darkbox" };
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Acteur d'une bulle de combat : obj_battleblcon ne connaît pas son locuteur,
+// l'ancrage est purement par coordonnées. On retrouve donc statiquement qui
+// parle : l'appel scr_heroblcon/scr_enemyblcon/msgset_add le plus proche SOUS
+// le msgsetloc désigne le locuteur (les ennemis appellent typiquement
+// scr_enemyblcon(x - 10, y + 40, 10) après avoir rempli la file).
+// ---------------------------------------------------------------------------
+
+// Sprites idle de combat des héros (obj_heroparent Create_0, échelle 2).
+// Ralsei : spr_ralsei_idle par défaut, spr_ralseib_idle si le flag 1311 est
+// posé — on garde les deux candidats, la preview prend le premier disponible.
+const HERO_BUBBLE_SPRITES = {
+  kris: ["spr_krisb_idle"],
+  susie: ["spr_susieb_idle"],
+  ralsei: ["spr_ralsei_idle", "spr_ralseib_idle"],
+  noelle: ["spr_noelleb_idle"],
+};
+
+// Arguments acceptés par scr_heroblcon (1/"kris"/"kr", 2/"susie"/"su"…).
+const HERO_BLCON_TOKENS = {
+  1: "kris", kris: "kris", kr: "kris",
+  2: "susie", susie: "susie", su: "susie",
+  3: "ralsei", ralsei: "ralsei", ra: "ralsei",
+  4: "noelle", noelle: "noelle", no: "noelle",
+};
+
+// idlesprite = spr_xxx le plus proche AU-DESSUS du texte dans le même fichier
+// (les ennemis réassignent parfois leur pose juste avant de parler), sinon la
+// première affectation du Create_0 (pose de base, scr_enemy_drawidle_generic).
+function findEnemyIdleSprite(lines, lineIdx, createLines) {
+  const IDLE_RE = /\bidlesprite\s*=\s*(spr_\w+)/;
+  for (let i = Math.min(lineIdx, lines.length - 1); i >= 0; i--) {
+    const m = lines[i].match(IDLE_RE);
+    if (m) return m[1];
+  }
+  for (const line of createLines ?? []) {
+    const m = line.match(IDLE_RE);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function enemyBubbleActor(file, lines, lineIdx, getLines) {
+  const owner = codeOwner(file.replace(/\.gml$/, ""));
+  const objectName = owner.match(/^gml_Object_(obj_\w*_enemy)$/)?.[1];
+  if (!objectName) return null;
+  const sprite = findEnemyIdleSprite(lines, lineIdx, getLines(`${owner}_Create_0.gml`));
+  if (!sprite) return null;
+  return {
+    kind: "enemy",
+    name: objectName.replace(/^obj_/, "").replace(/_enemy$/, ""),
+    sprites: [sprite],
+  };
+}
+
+export function findBubbleActor(file, lines, lineIdx, getLines = () => null) {
+  const to = Math.min(lines.length - 1, lineIdx + 25);
+  for (let i = lineIdx; i <= to; i++) {
+    const hero = lines[i].match(/\bscr_heroblcon\s*\(\s*["']?([A-Za-z0-9_]+)["']?/);
+    if (hero) {
+      const name = HERO_BLCON_TOKENS[hero[1].toLowerCase()];
+      if (!name) return null;
+      return { kind: "hero", name, sprites: [...HERO_BUBBLE_SPRITES[name]] };
+    }
+    if (/\bscr_enemyblcon\s*\(|\bmsgset_add\s*\(/.test(lines[i]))
+      return enemyBubbleActor(file, lines, lineIdx, getLines);
+  }
+  // Repli : texte déclaré dans Create et envoyé en bulle depuis un autre
+  // événement (outros d'ennemis via msgset_add) — le propriétaire parle.
+  return enemyBubbleActor(file, lines, lineIdx, getLines);
+}
+
+// L'acteur n'a de sens que pour une entrée susceptible d'être rendue en bulle :
+// previewMode bubble explicite, ou entrée de combat que l'heuristique
+// bubble/battletext de l'app peut faire basculer.
+function isBubbleActorCandidate(entry, file, battleTextOwners) {
+  if (String(entry.channel ?? "").startsWith("cutscene-")) return false;
+  if (entry.previewMode === "bubble") return true;
+  if (entry.previewMode != null && entry.previewMode !== "battletext") return false;
+  const cleanFile = file.replace(/\.gml$/, "");
+  return battleTextOwners.has(codeOwner(cleanFile)) || BATTLE_FILE_RE.test(cleanFile);
+}
+
 // ---------------------------------------------------------------------------
 // Construit reference.json à partir du dossier CodeEntries
 // ---------------------------------------------------------------------------
 export function buildReference(codeDir, log = () => {}) {
   const entries = scanCatalog(codeDir, log);
   const battleTextOwners = findBattleTextOwners(codeDir);
+  const battleFlowOwners = findBattleFlowScripts(codeDir, battleTextOwners);
+  const platformFlow = findPlatformDialogueFlow(codeDir);
   const miniFaceBanks = findMiniFaceBanks(codeDir);
   const pinkSpeakerOwners = findPinkSpeakerOwners(codeDir);
   const ownerTypers = findOwnerTypers(codeDir);
+  const spriteNamesById = readSpriteNamesById(codeDir);
   log(`  ${entries.length} appels localisés trouvés`);
   const entriesByFile = new Map();
   for (const entry of entries) {
@@ -1035,11 +1564,33 @@ export function buildReference(codeDir, log = () => {}) {
     }
     return fileCache.get(file);
   };
+  // Source concaténée de tous les événements d'un objet, pour suivre une
+  // variable de texte déclarée dans Create et consommée dans Step/Draw.
+  const ownerFiles = new Map();
+  for (const file of fs.readdirSync(codeDir).filter((f) => f.endsWith(".gml"))) {
+    const owner = codeOwner(file);
+    if (!ownerFiles.has(owner)) ownerFiles.set(owner, []);
+    ownerFiles.get(owner).push(file);
+  }
+  const ownerSourceCache = new Map();
+  const getOwnerSource = (file) => {
+    const owner = codeOwner(file);
+    if (!ownerSourceCache.has(owner)) {
+      ownerSourceCache.set(
+        owner,
+        (ownerFiles.get(owner) ?? [])
+          .map((f) => getLines(f)?.join("\n") ?? "")
+          .join("\n")
+      );
+    }
+    return ownerSourceCache.get(owner);
+  };
 
   const ref = {};
   let faceCount = 0;
   let smallFaceCount = 0;
   let linkedSmallFaceCount = 0;
+  let bubbleActorCount = 0;
   for (const e of entries) {
     if (ref[e.id]) continue;
     const entry = {
@@ -1056,14 +1607,35 @@ export function buildReference(codeDir, log = () => {}) {
       e.english,
       battleTextOwners,
       contextLine,
-      e.channel
+      e.channel,
+      battleFlowOwners,
+      platformFlow,
+      e.line
     );
     if (previewMode) entry.previewMode = previewMode;
+    if (previewMode === "platform" && String(e.channel).startsWith("cutscene-") && lines)
+      entry.platformSide = findCutscenePlatformSide(lines, e.line - 1);
+    const trialCase = trialCaseFromLine(contextLine);
+    if (previewMode === "trial" && trialCase != null) entry.trialCase = trialCase;
+    if (!entry.previewMode && e.channel === "string") {
+      const autoConvo = findAutoConvo(e.id, contextLine);
+      const varMessage =
+        autoConvo ?? findVariableMessage(e.id, contextLine, getOwnerSource(e.file), e.file);
+      if (varMessage) {
+        entry.previewMode = varMessage.mode;
+        if (varMessage.typer != null) entry.typer = varMessage.typer;
+        if (varMessage.speaker) entry.speaker = varMessage.speaker;
+        if (varMessage.face) {
+          entry.face = varMessage.face;
+          faceCount++;
+        }
+      }
+    }
     if (e.substitutions?.length) entry.substitutions = e.substitutions;
     if (e.substitutionSamples?.length) entry.substitutionSamples = e.substitutionSamples;
     if (lines) {
       const typer = findTyper(lines, e.line - 1, ownerTypers.get(codeOwner(e.file)) ?? null);
-      if (typer != null) entry.typer = typer;
+      if (typer != null && entry.typer == null) entry.typer = typer;
       const deviceStyle = findDeviceStyle(e, lines, e.line - 1, typer);
       if (deviceStyle) {
         entry.previewMode = "device";
@@ -1099,7 +1671,10 @@ export function buildReference(codeDir, log = () => {}) {
         );
         entry.smallFace = {
           slot: smallFace.slot,
-          speaker: smallFace.speaker,
+          speaker:
+            typeof smallFace.speaker === "number"
+              ? spriteNamesById[smallFace.speaker] ?? smallFace.speaker
+              : smallFace.speaker,
           expression: smallFace.expression,
           x: smallFace.x,
           y: smallFace.y,
@@ -1114,24 +1689,43 @@ export function buildReference(codeDir, log = () => {}) {
     const isDialogue =
       e.channel !== "string" ||
       entry.previewMode === "darkbox" ||
+      entry.previewMode === "shop" ||
       entry.previewMode === "device" ||
-      entry.previewMode === "battletext";
+      entry.previewMode === "battletext" ||
+      entry.previewMode === "platform" ||
+      entry.previewMode === "bubble";
     if (isDialogue) {
       if (lines) {
         const speaker = findSpeaker(lines, e.line - 1);
-        if (speaker) entry.speaker = speaker;
+        if (speaker && !entry.speaker) entry.speaker = speaker;
         const face = findFace(lines, e.line - 1);
-        if (face) {
+        if (face && !entry.face) {
           entry.face = face;
           faceCount++;
         }
       }
     }
+    if (lines && isBubbleActorCandidate(entry, e.file, battleTextOwners)) {
+      const bubbleActor = findBubbleActor(e.file, lines, e.line - 1, getLines);
+      if (bubbleActor) {
+        entry.bubbleActor = bubbleActor;
+        bubbleActorCount++;
+      }
+    }
     ref[e.id] = entry;
   }
+  const choiceCount = attachChoiceMetadata(
+    ref,
+    entriesByFile,
+    getLines,
+    battleTextOwners,
+    battleFlowOwners,
+    platformFlow
+  );
   log(
     `  ${Object.keys(ref).length} ids uniques, ${faceCount} visages détectés, ` +
-      `${smallFaceCount} textes secondaires (${linkedSmallFaceCount} reliés)`
+      `${smallFaceCount} textes secondaires (${linkedSmallFaceCount} reliés), ` +
+      `${bubbleActorCount} acteurs de bulle, ${choiceCount} options de choix reliées`
   );
   return ref;
 }
@@ -1146,10 +1740,13 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
   const ids = new Set(Object.keys(enJson).filter((k) => k !== "date"));
   const files = fs.readdirSync(codeDir).filter((f) => f.endsWith(".gml"));
   const battleTextOwners = findBattleTextOwners(codeDir);
+  const battleFlowOwners = findBattleFlowScripts(codeDir, battleTextOwners);
+  const platformFlow = findPlatformDialogueFlow(codeDir);
   const miniFaceBanks = findMiniFaceBanks(codeDir);
   const pinkSpeakerOwners = findPinkSpeakerOwners(codeDir);
   const ownerTypers = findOwnerTypers(codeDir);
   const sites = new Map(); // id → {file, line, context}
+  const entriesByFile = new Map();
   const STR_RE = /"((?:[^"\\]|\\.)+)"/g;
   let scanned = 0;
   for (const file of files) {
@@ -1191,16 +1788,23 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
       entry.line = site.line;
       const lines = getLines(site.file);
       const ctx = lines ? lines[site.line - 1] ?? "" : "";
+      if (/\bc_(?:msgset|msgnext)/.test(ctx)) entry.channel = "cutscene-message";
+      else if (/global\.msg\[|msgset|msgnext/.test(ctx)) entry.channel = "message";
       const previewMode = inferPreviewMode(
         site.file,
         entry.en,
         battleTextOwners,
         ctx,
-        entry.channel
+        entry.channel,
+        battleFlowOwners,
+        platformFlow,
+        site.line
       );
       if (previewMode) entry.previewMode = previewMode;
-      if (/global\.msg\[|msgset|msgnext/.test(ctx)) entry.channel = "message";
-      else if (/c_cmd|cutscene/.test(ctx)) entry.channel = "cutscene-message";
+      if (previewMode === "platform" && String(entry.channel).startsWith("cutscene-") && lines)
+        entry.platformSide = findCutscenePlatformSide(lines, site.line - 1);
+      const trialCase = trialCaseFromLine(ctx);
+      if (previewMode === "trial" && trialCase != null) entry.trialCase = trialCase;
       if (entry.channel !== "string" && lines) {
         const typer = findTyper(
           lines,
@@ -1244,13 +1848,40 @@ export function buildReferenceFromLangJson(codeDir, enJson, log = () => {}) {
           faceCount++;
         }
       }
+      if (lines && isBubbleActorCandidate(entry, site.file, battleTextOwners)) {
+        const bubbleActor = findBubbleActor(site.file, lines, site.line - 1, getLines);
+        if (bubbleActor) entry.bubbleActor = bubbleActor;
+      }
     } else {
       entry.file = null;
       entry.line = 0;
     }
     ref[id] = entry;
   }
-  log(`  ${Object.keys(ref).length} ids, ${faceCount} visages détectés`);
+  for (const [id, site] of sites) {
+    const candidate = {
+      id,
+      english: enJson[id],
+      call: "lang_string",
+      channel: "string",
+      file: site.file,
+      line: site.line,
+    };
+    if (!entriesByFile.has(site.file)) entriesByFile.set(site.file, []);
+    entriesByFile.get(site.file).push(candidate);
+  }
+  const choiceCount = attachChoiceMetadata(
+    ref,
+    entriesByFile,
+    getLines,
+    battleTextOwners,
+    battleFlowOwners,
+    platformFlow
+  );
+  log(
+    `  ${Object.keys(ref).length} ids, ${faceCount} visages détectés, ` +
+      `${choiceCount} options de choix reliées`
+  );
   return ref;
 }
 
@@ -1347,6 +1978,13 @@ string[] prefixes = new string[] {
 };
 string[] previewNames = new string[] {
     "bg_seam_shop_ch2", "bg_battleback1", "spr_npc_trashy",
+    "spr_gradient_triangle_dialoguer_plat", "spr_gradient20",
+    "spr_trial_podium", "spr_kris_lawyer", "spr_kris_lawyer_alt",
+    "spr_susie_lawyer", "spr_ralsei_lawyer", "spr_trial_spotlight",
+    "spr_aqua_walk_down", "spr_seth_walk_down", "spr_enemy_green_walk",
+    "spr_yellow_walk_down", "spr_blue_poses", "spr_heart_centered", "spr_heartsmall_white",
+    "spr_sneo_bullet_arrow",
+    "spr_empty",
     "IMAGE_DEPTH", "IMAGE_GONERHEAD", "IMAGE_GONERBODY", "IMAGE_GONERLEGS", "IMAGE_SOUL_BLUR",
     "spr_npc_nubert_super_burrow", "spr_ballperson_battle",
     "spr_ballperson_battle_wig", "spr_bullet_trash", "spr_trashy_hoop",
@@ -1364,7 +2002,8 @@ using (TextureWorker worker = new())
         string name = spr.Name.Content;
         bool localizedPair =
             name.EndsWith("_fr") || Data.Sprites.Any(candidate => candidate?.Name?.Content == name + "_fr");
-        if (!prefixes.Any(p => name.StartsWith(p)) && !previewNames.Contains(name) && !localizedPair) continue;
+        bool faceLike = name.IndexOf("face", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (!prefixes.Any(p => name.StartsWith(p)) && !previewNames.Contains(name) && !localizedPair && !faceLike) continue;
         for (int i = 0; i < spr.Textures.Count; i++)
         {
             if (spr.Textures[i]?.Texture is null) continue;

@@ -16,10 +16,12 @@ import {
 } from "./import-lib.mjs";
 import { scopeReferenceToChapter } from "./chapter-scope.mjs";
 import {
+  ROOM_CONTEXT_VERSION,
   attachRoomContexts,
   collectRoomContextRequests,
   makeRoomContextCsx,
 } from "./room-context.mjs";
+import { ensureBattleActorSprites } from "./battle-actors.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -57,6 +59,7 @@ function clearGeneratedExtraction(outDir) {
     "reference.json",
     "room-context.json",
     "chapter-scope.json",
+    "battle-actors.json",
     "extraction-source.json",
     "font-extraction-source.json",
   ]) {
@@ -244,7 +247,12 @@ fs.writeFileSync(
 // --- 2b. rooms + vues contextuelles ---
 const roomContextPath = path.join(outDir, "room-context.json");
 const roomScenesDir = path.join(outDir, "room-scenes");
+let roomContextVersion = 0;
+try {
+  roomContextVersion = JSON.parse(fs.readFileSync(roomContextPath, "utf8")).version ?? 0;
+} catch {}
 const hasRoomContext =
+  roomContextVersion >= ROOM_CONTEXT_VERSION &&
   fs.existsSync(roomContextPath) &&
   fs.existsSync(roomScenesDir) &&
   fs.readdirSync(roomScenesDir).some((name) => name.endsWith(".png"));
@@ -272,6 +280,17 @@ if (hasRoomContext && !force) {
   }
 }
 attachRoomContexts(ref, codeDir, outDir, log);
+
+// --- 2c. sprites des acteurs de combat (personnage qui parle en bulle) ---
+ensureBattleActorSprites({
+  reference: ref,
+  outDir,
+  dataWin: sourceDataWin,
+  cli,
+  force,
+  log,
+});
+
 const referencePath = path.join(outDir, "reference.json");
 fs.writeFileSync(referencePath, JSON.stringify(ref), "utf8");
 
