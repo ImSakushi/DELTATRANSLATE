@@ -147,8 +147,9 @@ catalogue Runedelta. Ensuite, chaque sauvegarde :
 - crée un commit `trad: synchroniser le chapitre N` ;
 - pousse le commit si l’utilisateur Git configuré possède les droits d’écriture.
 
-Pour chaque valeur différente de l’anglais, la liste et l’éditeur affichent aussi le dernier auteur Git de
-la ligne. L’infobulle indique la date, le message et le commit issus de `git blame`.
+Pour chaque valeur différente de l’anglais, la liste et l’éditeur affichent tous les contributeurs Git ayant
+modifié la ligne, dans l’ordre de leur première intervention et sans compter le commit initial d’import.
+L’infobulle indique la date, le message et le commit de la dernière modification.
 
 Deux personnes peuvent ainsi modifier des clés différentes sans conflit. Si la même clé a reçu deux
 traductions différentes, aucune version n’est écrasée : DELTATRANSLATE affiche les deux valeurs et demande

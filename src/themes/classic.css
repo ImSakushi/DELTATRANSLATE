@@ -150,11 +150,27 @@ select { cursor: pointer; }
   cursor: pointer;
 }
 #btn-save.dirty { border-color: var(--yellow); color: var(--yellow); }
+#btn-publish { border-color: #3c9b6d; color: #70d6a3; }
+button.action-loading { display: inline-flex; align-items: center; justify-content: center; }
+button.action-loading::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  margin-right: 7px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: action-button-spin 650ms linear infinite;
+}
+@keyframes action-button-spin { to { transform: rotate(360deg); } }
 #btn-save:disabled {
   color: var(--fg-dim);
   cursor: default;
   opacity: 0.65;
 }
+#btn-save.action-loading:disabled { color: var(--yellow); border-color: var(--yellow); opacity: 1; }
+#btn-publish.action-loading:disabled { color: #70d6a3; opacity: 1; }
 #btn-save:disabled:hover { border-color: var(--border); }
 .theme-toggle {
   position: relative;

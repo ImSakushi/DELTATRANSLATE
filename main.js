@@ -127,7 +127,7 @@ async function syncConfiguredRunedelta(config, language = null, conflictResoluti
     ...settings,
     language,
     conflictResolution,
-    push: config.runedelta?.autoPush !== false,
+    push: true,
     serializeLanguage,
     backupFile: runedeltaBackup,
   });
@@ -544,7 +544,6 @@ ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
       runedelta: {
         ...config.runedelta,
         enabled: true,
-        autoPush: true,
         remoteUrl,
         directory: previous.directory,
         installedChapters: {
@@ -575,7 +574,6 @@ ipcMain.handle("sync-runedelta", async (_event, language = null, conflictResolut
           ...result,
           savedAt: new Date().toISOString(),
           mode: "runedelta",
-          syncWarning: result.pushError,
         }
       : result;
   } catch (error) {
@@ -636,22 +634,7 @@ ipcMain.handle("close-window", (event) => {
 
 ipcMain.handle("load-data", async () => {
   let config = getConfig();
-  let runedeltaSync = null;
-  if (runedeltaEnabledForCurrentChapter(config) && config.dataWinPath) {
-    try {
-      runedeltaSync = await syncConfiguredRunedelta(config);
-      if (runedeltaSync.conflict) {
-        runedeltaSync.error = formatRunedeltaConflict(runedeltaSync);
-      } else if (runedeltaSync.ok && runedeltaSync.targetPath !== config.langFrPath) {
-        config = updateConfig({
-          langFrPath: runedeltaSync.targetPath,
-          storageMode: "lang-json",
-        });
-      }
-    } catch (error) {
-      runedeltaSync = { ok: false, error: error.message };
-    }
-  }
+  const runedeltaSync = null;
   const detectedExtraction = resolveExtractionDirectory(config);
   if (detectedExtraction && detectedExtraction !== config.extractedDir) {
     config = updateConfig({ extractedDir: detectedExtraction });
@@ -848,20 +831,6 @@ ipcMain.handle("save-lang", async (event, langObj) => {
   let translationTemp = null;
   let dataWinTemp = null;
   try {
-    if (runedeltaEnabledForCurrentChapter(config)) {
-      const result = await syncConfiguredRunedelta(config, langObj);
-      if (result.conflict) {
-        return { ...result, ok: false, error: formatRunedeltaConflict(result) };
-      }
-      return {
-        ...result,
-        ok: true,
-        savedAt: new Date().toISOString(),
-        mode: "runedelta",
-        syncWarning: result.pushError,
-      };
-    }
-
     if (config.storageMode !== "datawin") {
       const backup = backupsEnabled()
         ? backupFile(config.langFrPath, serialized)

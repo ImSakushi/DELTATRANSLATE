@@ -210,11 +210,27 @@ kbd { font-family: var(--mono); }
   cursor: pointer;
 }
 #btn-save.dirty { border-color: var(--yellow); color: var(--yellow); }
+#btn-publish { border-color: var(--green); color: var(--green); }
+button.action-loading { display: inline-flex; align-items: center; justify-content: center; }
+button.action-loading::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  margin-right: 7px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: action-button-spin 650ms linear infinite;
+}
+@keyframes action-button-spin { to { transform: rotate(360deg); } }
 #btn-save:disabled {
   color: var(--fg-dim);
   border-color: var(--border-dim);
   cursor: default;
 }
+#btn-save.action-loading:disabled { color: var(--yellow); border-color: var(--yellow); }
+#btn-publish.action-loading:disabled { color: var(--green); opacity: 1; }
 #btn-save:disabled:hover { border-color: var(--border-dim); }
 .theme-toggle {
   position: relative;

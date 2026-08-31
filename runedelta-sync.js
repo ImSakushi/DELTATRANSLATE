@@ -164,6 +164,95 @@ function countDifferences(left, right) {
   return count;
 }
 
+function compactDialogue(value, maxLength = 54) {
+  const text = String(value ?? "")
+    .replace(/\\[A-Za-z*].?/g, "")
+    .replace(/\^[0-9]|[|&/%]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function buildTranslationCommitMessage(chapter, before, after, reference = {}) {
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
+    (key) => key !== "date" && before[key] !== after[key]
+  );
+  const groups = { translated: [], corrected: [], restored: [] };
+
+  for (const key of keys) {
+    const english = reference[key]?.en;
+    if (typeof english === "string" && before[key] === english && after[key] !== english) {
+      groups.translated.push(key);
+    } else if (typeof english === "string" && before[key] !== english && after[key] === english) {
+      groups.restored.push(key);
+    } else {
+      groups.corrected.push(key);
+    }
+  }
+
+  const total = keys.length;
+  const onlyKey = total === 1 ? keys[0] : null;
+  const excerpt = onlyKey ? compactDialogue(after[onlyKey]) : "";
+  let action;
+  if (onlyKey && excerpt) {
+    if (groups.translated.length) action = `traduire « ${excerpt} »`;
+    else if (groups.restored.length) action = `rétablir « ${excerpt} »`;
+    else action = `corriger « ${excerpt} »`;
+  } else {
+    const actions = [];
+    if (groups.translated.length) {
+      actions.push(
+        `traduire ${groups.translated.length} dialogue${groups.translated.length > 1 ? "s" : ""}`
+      );
+    }
+    if (groups.corrected.length) {
+      actions.push(
+        `corriger ${groups.corrected.length} traduction${groups.corrected.length > 1 ? "s" : ""}`
+      );
+    }
+    if (groups.restored.length) {
+      actions.push(
+        `rétablir ${groups.restored.length} texte${groups.restored.length > 1 ? "s" : ""}`
+      );
+    }
+    action = actions.join(" et ") || "mettre à jour les traductions";
+  }
+
+  const counts = [];
+  if (groups.translated.length) counts.push(`Nouvelles traductions : ${groups.translated.length}`);
+  if (groups.corrected.length) counts.push(`Corrections : ${groups.corrected.length}`);
+  if (groups.restored.length) counts.push(`Textes rétablis : ${groups.restored.length}`);
+  const examples = keys.slice(0, 5).map((key) => {
+    const english = compactDialogue(reference[key]?.en ?? before[key], 44);
+    const french = compactDialogue(after[key], 44);
+    return `- ${english || key} → ${french || "<texte supprimé>"}`;
+  });
+  if (keys.length > examples.length) {
+    const remaining = keys.length - examples.length;
+    examples.push(`- … et ${remaining} autre${remaining > 1 ? "s" : ""}`);
+  }
+
+  return {
+    subject: `trad(ch${chapter}): ${action}`,
+    body: [
+      ...counts,
+      ...(examples.length ? ["", "Dialogues concernés :", ...examples] : []),
+    ].join("\n"),
+  };
+}
+
+function loadTranslationReference(config) {
+  const file = config.extractedDir ? path.join(config.extractedDir, "reference.json") : null;
+  if (!file || !fs.existsSync(file)) return {};
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    return value && !Array.isArray(value) && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
 function languageKeyFromJsonLine(line) {
   const match = String(line).match(/^\s*("(?:\\.|[^"\\])*")\s*:/);
   if (!match) return null;
@@ -208,6 +297,59 @@ function parseGitBlamePorcelain(output) {
       current = null;
     }
   }
+  return attributions;
+}
+
+function parseGitLanguageHistory(output) {
+  const commits = [];
+  for (const rawChunk of String(output).split("\x1e")) {
+    const chunk = rawChunk.replace(/^\r?\n/, "");
+    if (!chunk) continue;
+    const newline = chunk.search(/\r?\n/);
+    const metadata = (newline === -1 ? chunk : chunk.slice(0, newline)).split("\x1f");
+    if (metadata.length < 5 || !/^[0-9a-f]{40,64}$/i.test(metadata[0])) continue;
+    const addedKeys = new Set();
+    const patch = newline === -1 ? "" : chunk.slice(newline).split(/\r?\n/);
+    for (const line of patch) {
+      if (!line.startsWith("+") || line.startsWith("+++")) continue;
+      const key = languageKeyFromJsonLine(line.slice(1));
+      if (key && key !== "date") addedKeys.add(key);
+    }
+    commits.push({
+      commit: metadata[0],
+      author: metadata[1] || "Auteur Git inconnu",
+      email: metadata[2] || "",
+      authorTime: Number(metadata[3]),
+      summary: metadata.slice(4).join("\x1f"),
+      addedKeys: [...addedKeys],
+    });
+  }
+  return commits;
+}
+
+function attributionsFromHistory(commits) {
+  const chronological = [...commits].reverse();
+  const initialCommit = chronological.find((commit) => commit.addedKeys.length > 0);
+  const attributions = {};
+  for (const commit of chronological) {
+    if (commit === initialCommit) continue;
+    const name = githubName(commit.author, commit.email);
+    for (const key of commit.addedKeys) {
+      const current = attributions[key] ?? { names: [], identities: new Set() };
+      const identity = name.toLocaleLowerCase("fr");
+      if (!current.identities.has(identity)) {
+        current.identities.add(identity);
+        current.names.push(name);
+      }
+      current.name = name;
+      current.author = commit.author;
+      current.commit = commit.commit;
+      current.summary = commit.summary;
+      current.timestamp = Number.isFinite(commit.authorTime) ? commit.authorTime * 1000 : null;
+      attributions[key] = current;
+    }
+  }
+  for (const attribution of Object.values(attributions)) delete attribution.identities;
   return attributions;
 }
 
@@ -291,8 +433,23 @@ async function showLanguage(directory, ref, relativePath) {
 }
 
 async function languageAttributions(directory, relativePath, ref = "HEAD") {
-  const result = await git(["blame", "--line-porcelain", ref, "--", relativePath], directory);
-  return parseGitBlamePorcelain(result.stdout);
+  const result = await git(
+    [
+      "log",
+      "--follow",
+      "--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s",
+      "-p",
+      "--unified=0",
+      "--no-color",
+      "--no-ext-diff",
+      ref,
+      "--",
+      relativePath,
+    ],
+    directory,
+    { timeoutMs: 60_000 }
+  );
+  return attributionsFromHistory(parseGitLanguageHistory(result.stdout));
 }
 
 async function dirtyFiles(directory) {
@@ -327,7 +484,7 @@ async function installRunedelta(options) {
   const ff = await git(["merge", "--ff-only", remoteRef], directory, { allowFailure: true });
   if (ff.code !== 0) {
     throw new Error(
-      "Le dépôt Runedelta local et GitHub ont divergé. Termine d’abord la synchronisation avec Git, puis réessaie."
+      "Le dépôt Runedelta local et GitHub ont divergé. Termine d’abord la fusion avec Git, puis réessaie de publier."
     );
   }
 
@@ -471,8 +628,14 @@ async function synchronizeRunedelta(options) {
   });
   let committed = false;
   if (staged.code === 1) {
+    const message = buildTranslationCommitMessage(
+      chapter,
+      repositoryLanguage,
+      language,
+      loadTranslationReference(config)
+    );
     const commit = await git(
-      ["commit", "-m", `trad: synchroniser le chapitre ${chapter}`, "--", relativePath],
+      ["commit", "-m", message.subject, "-m", message.body, "--", relativePath],
       directory,
       { allowFailure: true }
     );
@@ -496,7 +659,9 @@ async function synchronizeRunedelta(options) {
       allowFailure: true,
       timeoutMs: 60_000,
     });
-    if (pushed.code !== 0) pushError = (pushed.stderr || pushed.stdout || "Push refusé.").trim();
+    if (pushed.code !== 0) {
+      pushError = (pushed.stderr || pushed.stdout || "Publication refusée.").trim();
+    }
   }
   const remoteChanges = countDifferences(gameLanguage, language);
   const localChanges = countDifferences(remoteLanguage, language);
@@ -557,6 +722,19 @@ async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA
     status.sourcePath = chapter
       ? path.join(directory, ...languageRelativePath(chapter).split("/"))
       : null;
+    const targetPath = config.dataWinPath ? gameLanguagePath(config) : null;
+    if (
+      enabled &&
+      status.sourcePath &&
+      fs.existsSync(status.sourcePath) &&
+      targetPath &&
+      fs.existsSync(targetPath)
+    ) {
+      status.unpublishedChanges = countDifferences(
+        readLanguage(status.sourcePath, `Runedelta chapitre ${chapter}`),
+        readLanguage(targetPath, "lang_fr.json du jeu")
+      );
+    }
   } catch (error) {
     status.error = error.message;
   }
@@ -565,6 +743,7 @@ async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA
 
 module.exports = {
   DEFAULT_RUNEDDELTA_REMOTE,
+  buildTranslationCommitMessage,
   countDifferences,
   detectChapter,
   gameLanguagePath,
@@ -573,7 +752,9 @@ module.exports = {
   languageRelativePath,
   languageAttributions,
   mergeLanguages,
+  attributionsFromHistory,
   parseGitBlamePorcelain,
+  parseGitLanguageHistory,
   runedeltaStatus,
   synchronizeRunedelta,
   validateLanguage,

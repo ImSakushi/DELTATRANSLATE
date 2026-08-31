@@ -5,10 +5,13 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  buildTranslationCommitMessage,
+  attributionsFromHistory,
   detectChapter,
   installRunedelta,
   mergeLanguages,
   parseGitBlamePorcelain,
+  parseGitLanguageHistory,
   synchronizeRunedelta,
 } = require("./runedelta-sync.js");
 
@@ -90,6 +93,49 @@ test("associe chaque clé JSON à l’auteur de sa dernière ligne Git", () => {
   });
 });
 
+test("liste tous les contributeurs d’une clé sauf ceux du commit initial", () => {
+  const commit = (hash, author, email, time, summary, key, value) =>
+    `\x1e${hash}\x1f${author}\x1f${email}\x1f${time}\x1f${summary}\n` +
+    `diff --git a/file b/file\n--- a/file\n+++ b/file\n` +
+    `+  ${JSON.stringify(key)}: ${JSON.stringify(value)},\n`;
+  const output = [
+    commit("c".repeat(40), "Bob", "bob@example.invalid", 300, "Deuxième correction", "key_1", "Trois"),
+    commit("b".repeat(40), "Alice", "123+alice@users.noreply.github.com", 200, "Traduction", "key_1", "Deux"),
+    commit("a".repeat(40), "Import", "import@example.invalid", 100, "Initial", "key_1", "Un"),
+  ].join("");
+
+  const result = attributionsFromHistory(parseGitLanguageHistory(output));
+  assert.deepEqual(result.key_1.names, ["alice", "Bob"]);
+  assert.equal(result.key_1.name, "Bob");
+  assert.equal(result.key_1.summary, "Deuxième correction");
+  assert.equal(result.key_1.timestamp, 300000);
+});
+
+test("génère un commit représentatif des traductions et corrections", () => {
+  const before = language({ key_1: "Hello", key_2: "Déjà traduit" });
+  const after = language({ key_1: "Bonjour", key_2: "Traduction corrigée" });
+  const reference = {
+    key_1: { en: "Hello" },
+    key_2: { en: "English 2" },
+  };
+  const message = buildTranslationCommitMessage(5, before, after, reference);
+
+  assert.equal(message.subject, "trad(ch5): traduire 1 dialogue et corriger 1 traduction");
+  assert.match(message.body, /Nouvelles traductions : 1/);
+  assert.match(message.body, /Corrections : 1/);
+  assert.match(message.body, /Hello → Bonjour/);
+});
+
+test("nomme directement le dialogue quand un seul texte change", () => {
+  const before = language();
+  const after = language({ key_3: "Une bien meilleure réplique" });
+  const message = buildTranslationCommitMessage(4, before, after, {
+    key_3: { en: "English 3" },
+  });
+
+  assert.equal(message.subject, "trad(ch4): traduire « Une bien meilleure réplique »");
+});
+
 test("installe puis synchronise Runedelta avec un dépôt Git distant", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "deltatranslate-runedelta-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -101,10 +147,17 @@ test("installe puis synchronise Runedelta avec un dépôt Git distant", async (t
   const dataWin = path.join(game, "data.win");
   const gameLanguage = path.join(game, "lang", "lang_fr.json");
   const relative = path.join("strings", "strings_chapitre_5.json");
-  const config = { dataWinPath: dataWin };
+  const extracted = path.join(root, "extracted");
+  const config = { dataWinPath: dataWin, extractedDir: extracted };
 
   fs.mkdirSync(game, { recursive: true });
+  fs.mkdirSync(extracted, { recursive: true });
   fs.writeFileSync(dataWin, "", "utf8");
+  fs.writeFileSync(
+    path.join(extracted, "reference.json"),
+    JSON.stringify({ key_1: { en: "English 1" } }),
+    "utf8"
+  );
   runGit(root, "init", "--bare", remote);
   runGit(root, "clone", remote, seed);
   runGit(seed, "config", "user.name", "Test");
@@ -125,7 +178,7 @@ test("installe puis synchronise Runedelta avec un dépôt Git distant", async (t
   });
   assert.equal(installed.chapter, 5);
   assert.deepEqual(JSON.parse(fs.readFileSync(gameLanguage, "utf8")), language());
-  assert.equal(installed.attributions.key_0.name, "Test");
+  assert.equal(Object.hasOwn(installed.attributions, "key_0"), false);
   runGit(managed, "config", "user.name", "Test");
   runGit(managed, "config", "user.email", "test@example.invalid");
 
@@ -152,7 +205,13 @@ test("installe puis synchronise Runedelta avec un dépôt Git distant", async (t
   assert.equal(synced.language.key_1, "Modification locale");
   assert.equal(synced.language.key_2, "Modification distante");
   assert.equal(synced.attributions.key_1.name, "Test");
+  assert.deepEqual(synced.attributions.key_1.names, ["Test"]);
   assert.equal(synced.attributions.key_2.name, "Test distant");
+  assert.deepEqual(synced.attributions.key_2.names, ["Test distant"]);
+  assert.equal(
+    runGit(managed, "log", "-1", "--pretty=%s").trim(),
+    "trad(ch5): traduire « Modification locale »"
+  );
 
   runGit(collaborator, "pull", "--ff-only");
   const published = JSON.parse(fs.readFileSync(path.join(collaborator, relative), "utf8"));

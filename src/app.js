@@ -521,11 +521,17 @@ function translatedAttribution(e) {
   return runedeltaAttributions[e.key] ?? null;
 }
 
+function attributionNames(attribution) {
+  if (!attribution) return [];
+  if (Array.isArray(attribution.names) && attribution.names.length) return attribution.names;
+  return attribution.name ? [attribution.name] : [];
+}
+
 function attributionTooltip(attribution) {
   if (!attribution) return "";
-  const details = [`Traduit par ${attribution.name}`];
+  const details = [`Traduit par ${attributionNames(attribution).join(", ")}`];
   if (attribution.timestamp) {
-    details.push(new Date(attribution.timestamp).toLocaleString("fr-FR"));
+    details.push(`Dernière modification : ${new Date(attribution.timestamp).toLocaleString("fr-FR")}`);
   }
   if (attribution.summary) details.push(attribution.summary);
   if (attribution.commit) details.push(`Commit ${attribution.commit.slice(0, 10)}`);
@@ -612,7 +618,7 @@ function renderList() {
         ? `<span class="li-meta">` +
           (sortLabel ? `<span class="li-sort-label">${escapeHtml(sortLabel)}</span>` : "") +
           (attribution
-            ? `<span class="li-author" data-tooltip="${escapeHtml(attributionTooltip(attribution))}">✎ ${escapeHtml(attribution.name)}</span>`
+            ? `<span class="li-author" data-tooltip="${escapeHtml(attributionTooltip(attribution))}">✎ ${escapeHtml(attributionNames(attribution).join(", "))}</span>`
             : "") +
           `</span>`
         : "";
@@ -658,7 +664,9 @@ function selectKey(key) {
   const attribution = translatedAttribution(e);
   const author = $("key-author");
   author.classList.toggle("hidden", !attribution);
-  author.textContent = attribution ? `✎ Traduit par ${attribution.name}` : "";
+  author.textContent = attribution
+    ? `✎ Traduit par ${attributionNames(attribution).join(", ")}`
+    : "";
   author.dataset.tooltip = attribution ? attributionTooltip(attribution) : "";
   $("en-display").innerHTML = e.en != null ? highlight(e.en) : "<i>—</i>";
   $("fr-input").value = e.fr;
@@ -1924,15 +1932,27 @@ function onEdit(historyEntry = null) {
   schedulePreview();
 }
 
+function setSaveButtonLoading(loading) {
+  const saveButton = $("btn-save");
+  saveButton.classList.toggle("action-loading", loading);
+  saveButton.setAttribute("aria-busy", String(loading));
+  saveButton.disabled = loading || !dirty;
+  saveButton.textContent = loading
+    ? "Sauvegarde…"
+    : dirty
+      ? "💾 Sauvegarder"
+      : "✓ Sauvegardé";
+  saveButton.dataset.tooltip = loading
+    ? "Sauvegarde en cours…"
+    : dirty
+      ? "Sauvegarder dans le jeu (Ctrl+S)"
+      : "Toutes les modifications sont sauvegardées";
+}
+
 function setDirty(d) {
   dirty = d;
-  const saveButton = $("btn-save");
-  saveButton.classList.toggle("dirty", d);
-  saveButton.disabled = !d;
-  saveButton.textContent = d ? "💾 Sauvegarder" : "✓ Sauvegardé";
-  saveButton.dataset.tooltip = d
-    ? "Sauvegarder dans le jeu (Ctrl+S)"
-    : "Toutes les modifications sont sauvegardées";
+  $("btn-save").classList.toggle("dirty", d);
+  setSaveButtonLoading(Boolean(savePromise));
   const st = $("save-state");
   st.className = d ? "dirty" : "";
   st.textContent = d
@@ -1948,12 +1968,7 @@ function save() {
   savePromise = (async () => {
     try {
       const langSnapshot = { ...lang };
-      let r = await window.api.saveLang(langSnapshot);
-      if (!r.ok && r.conflict) {
-        const resolution = askRunedeltaConflictResolution(r);
-        if (!resolution) return false;
-        r = await window.api.syncRunedelta(langSnapshot, resolution);
-      }
+      const r = await window.api.saveLang(langSnapshot);
       if (!r.ok) {
         alert(`La sauvegarde a échoué.\n\n${r.error ?? "Erreur inconnue"}`);
         return false;
@@ -1976,13 +1991,12 @@ function save() {
       setDirty(unsavedKeys.size > 0);
       if (!dirty) {
         const st = $("save-state");
-        st.className = r.syncWarning ? "dirty" : "saved";
-        st.textContent = r.syncWarning
-          ? `⚠ Sauvegardé localement, push GitHub en attente : ${r.syncWarning.split("\n")[0]}`
-          : `✔ Sauvegardé à ${new Date(r.savedAt).toLocaleTimeString()}` +
-            (r.backupCreated ? " (backup créé)" : "");
+        st.className = "saved";
+        st.textContent =
+          `✔ Sauvegardé localement à ${new Date(r.savedAt).toLocaleTimeString()}` +
+          (r.backupCreated ? " (backup créé)" : "");
       }
-      if (r.mode === "runedelta") await refreshRunedeltaStatus(r);
+      if (appConfig.runedelta?.enabled) await refreshRunedeltaStatus();
       updateProgress();
       renderList();
       if (selectedKey) selectKey(selectedKey);
@@ -1992,9 +2006,11 @@ function save() {
       alert(`La sauvegarde a échoué.\n\n${error.message ?? error}`);
       return false;
     } finally {
+      setSaveButtonLoading(false);
       savePromise = null;
     }
   })();
+  setSaveButtonLoading(true);
   return savePromise;
 }
 
@@ -2320,7 +2336,7 @@ let runedeltaBusy = false;
 
 function askRunedeltaConflictResolution(result) {
   const choice = prompt(
-    `${result.error}\n\nTape LOCAL pour conserver et pousser tes versions, ` +
+    `${result.error}\n\nTape LOCAL pour conserver et publier tes versions, ` +
       "ou GITHUB pour prendre les versions distantes sur les clés en conflit."
   );
   if (choice == null) return null;
@@ -2335,10 +2351,19 @@ function askRunedeltaConflictResolution(result) {
 function renderRunedeltaStatus(status = {}, sync = null) {
   const label = $("runedelta-status");
   const topButton = $("btn-runedelta");
+  const publishButton = $("btn-publish");
+  const modalPublishButton = $("btn-publish-runedelta");
   const enabled = Boolean(status.enabled ?? appConfig.runedelta?.enabled);
   const warning = sync?.error || sync?.pushError || status.error || status.dirtyFiles?.length;
   topButton.classList.toggle("sync-ready", enabled && !warning);
   topButton.classList.toggle("sync-warning", Boolean(warning));
+  publishButton.classList.toggle("hidden", !enabled);
+  for (const button of [publishButton, modalPublishButton]) {
+    button.classList.toggle("action-loading", runedeltaBusy);
+    button.setAttribute("aria-busy", String(runedeltaBusy));
+    button.disabled = !enabled || runedeltaBusy;
+    button.textContent = runedeltaBusy ? "Publication…" : "↑ Publier";
+  }
 
   if (!status.available) {
     label.className = "setup-status missing";
@@ -2348,10 +2373,27 @@ function renderRunedeltaStatus(status = {}, sync = null) {
     label.textContent = `⚠ ${sync?.error || sync?.pushError || status.error || `Modifications Git non commitées : ${status.dirtyFiles.join(", ")}`}`;
   } else if (enabled) {
     const pending = Number(status.ahead ?? sync?.ahead ?? 0);
+    const unpublished = Number(status.unpublishedChanges ?? 0);
+    const behind = Number(status.behind ?? sync?.behind ?? 0);
+    let publicationState = " — publié";
+    if (unpublished > 0) {
+      publicationState = ` — ${unpublished} traduction${unpublished > 1 ? "s" : ""} à publier`;
+    } else if (pending > 0) {
+      publicationState = ` — ${pending} commit${pending > 1 ? "s" : ""} à publier`;
+    } else if (behind > 0) {
+      publicationState = ` — ${behind} commit${behind > 1 ? "s" : ""} distant${behind > 1 ? "s" : ""} à récupérer`;
+    }
+    if (!runedeltaBusy) {
+      const needsPublication = unpublished > 0 || pending > 0 || behind > 0;
+      publishButton.textContent = needsPublication ? "↑ Publier" : "✓ Publié";
+      publishButton.dataset.tooltip = needsPublication
+        ? "Publier les traductions sauvegardées sur GitHub"
+        : "Tout est publié — cliquer pour vérifier les changements distants";
+    }
     label.className = "setup-status ready";
     label.textContent =
       `✓ Runedelta connecté — chapitre ${status.chapter ?? sync?.chapter ?? "?"}, branche ${status.branch ?? sync?.branch ?? "?"}` +
-      (pending > 0 ? ` — ${pending} commit${pending > 1 ? "s" : ""} à pousser` : " — synchronisé");
+      publicationState;
   } else if (status.configured && status.connected) {
     label.className = "setup-status";
     label.textContent = `Dépôt connecté — le chapitre ${status.chapter ?? "courant"} doit encore être installé.`;
@@ -2369,7 +2411,6 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   const connectButton = $("btn-connect-runedelta");
   connectButton.classList.toggle("hidden", enabled);
   connectButton.disabled = !status.available || !appConfig.dataWinPath || runedeltaBusy;
-  $("btn-sync-runedelta").disabled = !enabled || runedeltaBusy;
   $("btn-open-runedelta").disabled = !status.connected || runedeltaBusy;
   $("btn-disconnect-runedelta").disabled = !(status.configured || enabled) || runedeltaBusy;
 }
@@ -2421,28 +2462,42 @@ async function connectRunedelta() {
   location.reload();
 }
 
-async function synchronizeRunedeltaNow() {
+async function publishRunedeltaNow() {
   if (runedeltaBusy) return;
-  if (dirty && !(await save())) return;
   runedeltaBusy = true;
   renderRunedeltaStatus({ available: true, enabled: true });
-  let result = await window.api.syncRunedelta();
-  runedeltaBusy = false;
-  if (!result.ok && result.conflict) {
-    const resolution = askRunedeltaConflictResolution(result);
-    if (resolution) result = await window.api.syncRunedelta(lang, resolution);
+  if (dirty && !(await save())) {
+    runedeltaBusy = false;
+    await refreshRunedeltaStatus();
+    return;
+  }
+  let result;
+  try {
+    result = await window.api.syncRunedelta(lang);
+    if (!result.ok && result.conflict) {
+      const resolution = askRunedeltaConflictResolution(result);
+      if (resolution) result = await window.api.syncRunedelta(lang, resolution);
+    }
+  } catch (error) {
+    result = { ok: false, error: error.message ?? String(error) };
+  } finally {
+    runedeltaBusy = false;
   }
   if (!result.ok) {
     await refreshRunedeltaStatus(result);
-    alert(`Synchronisation Runedelta impossible.\n\n${result.error}`);
+    alert(`Publication Runedelta impossible.\n\n${result.error}`);
     return;
   }
   await refreshRunedeltaStatus(result);
   if (result.pushError) {
     alert(
-      "Les fichiers sont sauvegardés et commités localement, mais GitHub a refusé le push. " +
-        `Le prochain essai reprendra ce commit.\n\n${result.pushError}`
+      "Les fichiers sont sauvegardés et commités localement, mais GitHub a refusé la publication. " +
+        `Le prochain clic sur Publier reprendra ce commit.\n\n${result.pushError}`
     );
+  } else {
+    const state = $("save-state");
+    state.className = "saved";
+    state.textContent = `✔ Sauvegardé et publié à ${new Date().toLocaleTimeString()}`;
   }
   if (result.remoteChanges > 0) location.reload();
 }
@@ -2504,13 +2559,14 @@ function bindImportModal() {
     $("runedelta-section").scrollIntoView({ behavior: "smooth", block: "start" });
   };
   $("btn-connect-runedelta").onclick = connectRunedelta;
-  $("btn-sync-runedelta").onclick = synchronizeRunedeltaNow;
+  $("btn-publish").onclick = publishRunedeltaNow;
+  $("btn-publish-runedelta").onclick = publishRunedeltaNow;
   $("btn-open-runedelta").onclick = () => window.api.openRunedelta();
   $("btn-disconnect-runedelta").onclick = async () => {
     if (runedeltaBusy) return;
     if (
       !confirm(
-        "Déconnecter Runedelta ? Le dépôt local et lang_fr.json seront conservés, mais les prochaines sauvegardes ne seront plus poussées."
+        "Déconnecter Runedelta ? Le dépôt local et lang_fr.json seront conservés, mais les traductions ne pourront plus être publiées depuis l’application."
       )
     ) {
       return;
