@@ -350,6 +350,8 @@ function buildSearchable(e) {
   return (
     e.key +
     "\n" +
+    shortKey(e.key) +
+    "\n" +
     (e.en || "") +
     "\n" +
     e.fr +
@@ -545,7 +547,7 @@ function compareEntries(a, b) {
   return groupComparison || a.sourceIndex - b.sourceIndex;
 }
 
-function applyFilter() {
+function applyFilter({ restoreSelected = false } = {}) {
   const q = $("search").value.trim().toLowerCase();
   const f = document.querySelector(".filter.active").dataset.filter;
   filtered = entries.filter((e) => {
@@ -574,6 +576,7 @@ function applyFilter() {
   }
   $("list-status").textContent = `${filtered.length} lignes affichées${sortSuffix}`;
   renderList();
+  if (restoreSelected) scrollToSelected(true);
 }
 
 let listRafPending = false;
@@ -2071,14 +2074,50 @@ function gotoTodo(dir) {
   }
 }
 
-function scrollToSelected() {
+function scrollToSelected(center = false) {
   const idx = filtered.findIndex((e) => e.key === selectedKey);
   if (idx < 0) return;
   const container = $("list-container");
   const y = idx * ROW_H;
-  if (y < container.scrollTop || y > container.scrollTop + container.clientHeight - ROW_H)
-    container.scrollTop = y - container.clientHeight / 2;
+  if (
+    center ||
+    y < container.scrollTop ||
+    y > container.scrollTop + container.clientHeight - ROW_H
+  ) {
+    container.scrollTop = Math.max(0, y - (container.clientHeight - ROW_H) / 2);
+  }
   renderList();
+}
+
+function openDialogueSearch() {
+  const bar = $("dialogue-search-bar");
+  const button = $("btn-toggle-search");
+  bar.classList.remove("hidden");
+  button.classList.add("active");
+  button.setAttribute("aria-expanded", "true");
+  button.setAttribute("aria-pressed", "true");
+  button.setAttribute("aria-label", "Fermer la recherche");
+  button.dataset.tooltip = "Fermer la recherche (Échap)";
+  $("search").focus();
+  $("search").select();
+}
+
+function closeDialogueSearch() {
+  const search = $("search");
+  const button = $("btn-toggle-search");
+  search.value = "";
+  $("dialogue-search-bar").classList.add("hidden");
+  button.classList.remove("active");
+  button.setAttribute("aria-expanded", "false");
+  button.setAttribute("aria-pressed", "false");
+  button.setAttribute("aria-label", "Rechercher un dialogue");
+  button.dataset.tooltip = "Rechercher un dialogue (Ctrl+F)";
+  applyFilter({ restoreSelected: true });
+}
+
+function toggleDialogueSearch() {
+  if ($("dialogue-search-bar").classList.contains("hidden")) openDialogueSearch();
+  else closeDialogueSearch();
 }
 
 // ---------------------------------------------------------------------------
@@ -2088,7 +2127,12 @@ function bindEvents() {
   setupTagWheel();
   $("btn-theme").onclick = toggleTheme;
   $("list-container").addEventListener("scroll", renderListRaf, { passive: true });
-  $("search").addEventListener("input", debounce(applyFilter, 200));
+  $("search").addEventListener(
+    "input",
+    debounce(() => applyFilter({ restoreSelected: $("search").value.trim() === "" }), 200)
+  );
+  $("btn-toggle-search").addEventListener("click", toggleDialogueSearch);
+  $("btn-close-search").addEventListener("click", closeDialogueSearch);
   $("sel-list-sort").addEventListener("change", () => {
     prefs.listSort = $("sel-list-sort").value;
     window.api.savePrefs(prefs);
@@ -2216,7 +2260,22 @@ function bindEvents() {
 
   window.addEventListener("keydown", (ev) => {
     if (!$("code-modal").classList.contains("hidden")) return;
-    if (ev.ctrlKey && ev.key === "Enter") {
+    const shortcut = ev.ctrlKey || ev.metaKey;
+    if (
+      shortcut &&
+      ev.key.toLowerCase() === "f" &&
+      !$("layout").classList.contains("hidden") &&
+      $("import-modal").classList.contains("hidden")
+    ) {
+      ev.preventDefault();
+      openDialogueSearch();
+    } else if (
+      ev.key === "Escape" &&
+      !$("dialogue-search-bar").classList.contains("hidden")
+    ) {
+      ev.preventDefault();
+      closeDialogueSearch();
+    } else if (ev.ctrlKey && ev.key === "Enter") {
       if (!ev.defaultPrevented) {
         ev.preventDefault();
         void saveAndGotoNext();
