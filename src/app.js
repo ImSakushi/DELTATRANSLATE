@@ -11,7 +11,7 @@ let lang = {}; // objet complet du lang_fr.json (ordre des clés préservé)
 let japanese = {}; // lang_ja.json du chapitre, utilisé comme référence de balises
 let reference = {}; // id -> {en, call, channel, file, line, speaker, face, substitutions, smallFace, speakerOverlay}
 let runedeltaAttributions = {}; // id -> dernier auteur Git de la ligne Runedelta
-let prefs = {}; // { modeOverrides, bubbleSides, validated, faceOverrides, theme, backupsEnabled, listSort, speakerFilter }
+let prefs = {}; // { modeOverrides, bubbleSides, platformSides, validated, faceOverrides, theme, backupsEnabled, listSort, speakerFilter }
 let entries = []; // index pour la liste
 let entriesByKey = new Map();
 let filtered = [];
@@ -54,8 +54,10 @@ const SORT_COLLATOR = new Intl.Collator("fr", { sensitivity: "base", numeric: tr
 const DIALOGUE_TYPE_NAMES = {
   darkbox: "Textbox (monde sombre)",
   lightbox: "Textbox (monde clair)",
+  platform: "Dialogue plateformer",
   bubble: "Bulle de combat",
   battletext: "Texte de combat",
+  trial: "Dossier du procès",
   shop: "Dialogue de boutique",
   device: "Appareil",
   plain: "Menu / texte libre",
@@ -236,6 +238,7 @@ async function init() {
     {
       modeOverrides: {},
       bubbleSides: {},
+      platformSides: {},
       validated: {},
       faceOverrides: {},
       sceneOverrides: {},
@@ -244,6 +247,7 @@ async function init() {
   );
   if (!prefs.validated) prefs.validated = {};
   if (!prefs.faceOverrides) prefs.faceOverrides = {};
+  if (!prefs.platformSides) prefs.platformSides = {};
   if (!prefs.sceneOverrides) prefs.sceneOverrides = {};
   prefs.listSort = LIST_SORTS.has(prefs.listSort) ? prefs.listSort : "source";
   prefs.speakerFilter = typeof prefs.speakerFilter === "string" ? prefs.speakerFilter : "all";
@@ -625,6 +629,19 @@ function shortKey(k) {
   return k.replace(/_slash_/g, "/").replace(/_gml_/g, " :");
 }
 
+function renderKeyMeta(e) {
+  if (e.noref) {
+    $("key-meta").textContent =
+      "aucune référence trouvée dans le code du chapitre 5 (clé d'un autre chapitre ?)";
+    return;
+  }
+  const identity = speakerIdentity(e);
+  const speakerMeta =
+    identity.key !== UNIDENTIFIED_SPEAKER ? ` · 👤 ${identity.label}` : "";
+  $("key-meta").textContent =
+    `${e.file}:${e.line} · ${e.channel} · ${reference[e.key].call}${speakerMeta}`;
+}
+
 // ---------------------------------------------------------------------------
 // Sélection et éditeur
 // ---------------------------------------------------------------------------
@@ -634,9 +651,7 @@ function selectKey(key) {
   const e = entriesByKey.get(key);
   if (!e) return;
   $("key-name").textContent = shortKey(key);
-  $("key-meta").textContent = e.noref
-    ? "aucune référence trouvée dans le code du chapitre 5 (clé d'un autre chapitre ?)"
-    : `${e.file}:${e.line} · ${e.channel} · ${reference[key].call}`;
+  renderKeyMeta(e);
   const attribution = translatedAttribution(e);
   const author = $("key-author");
   author.classList.toggle("hidden", !attribution);
@@ -778,11 +793,12 @@ function updateLineLens(text) {
   if (mode === "battletext") charline = hasFace ? 29 : 37;
   else if ((mode === "darkbox" || mode === "lightbox") && state.typer === 97)
     charline = 23;
+  else if (mode === "platform") charline = hasFace ? 31 : 38;
   else if (mode === "darkbox" || mode === "lightbox" || mode === "shop" || mode === "device")
     charline = hasFace ? 26 : 33;
   else charline = 999;
 
-  const lines = visualLines(text);
+  const lines = visualLines(text, mode === "trial" || Boolean(reference[selectedKey]?.choice));
   const parts = lines.map((len) => {
     const cls = len > charline ? "over" : "";
     return `<span class="${cls}">${len}</span>`;
@@ -791,7 +807,7 @@ function updateLineLens(text) {
 }
 
 // Longueur visible de chaque ligne (règles de comptage d'Other_15)
-function visualLines(text) {
+function visualLines(text, hashBreak = false) {
   const lens = [];
   let cur = 0;
   let i = 0;
@@ -801,7 +817,9 @@ function visualLines(text) {
     if (c === "\\") { i += 3; continue; }
     if (c === "^") { i += 2; continue; }
     if (c === "/" || c === "%") { i += 1; continue; }
-    if (c === "&" || c === "\n") { lens.push(cur); cur = 0; i += 1; continue; }
+    if (c === "&" || c === "\n" || (hashBreak && c === "#")) {
+      lens.push(cur); cur = 0; i += 1; continue;
+    }
     cur++;
     i += 1;
   }
@@ -818,15 +836,14 @@ function schedulePreview() {
   previewTimer = setTimeout(runPreview, 120);
 }
 
-// Les écrans de shop alternent entre deux petites colonnes (menus) et une
-// grande boîte plein écran (menu == 4). Les dialogues de cette dernière sont
-// les messages étoilés terminés par / ou %, y compris dans les vieux shops où
-// ils sont stockés avec stringsetloc avant d'être copiés dans global.msg.
-function isLargeShopDialogue(e) {
+// Compatibilité avec une référence générée par une ancienne version : les
+// dialogues étoilés d'un objet shop passent par son obj_writer même lorsqu'ils
+// sont stockés sans code final / ou % (obj_shop_ch5._intro_text). Le nouveau
+// catalogue suit directement les affectations à global.msg.
+function isShopDialogueFallback(e) {
   const file = (e?.file || "").toLowerCase();
   if (!/gml_object_obj_shop\w*_(?:create|draw|other)_0/.test(file)) return false;
   const source = e.en ?? e.fr ?? "";
-  if (!/(?:\/%|[/%])$/.test(source)) return false;
   const visibleStart = source.replace(/^(?:\\..|\^[0-9]|[|&]|\s)*/, "");
   return visibleStart.startsWith("*");
 }
@@ -862,15 +879,19 @@ function lightWorldAdjust(e, mode) {
 
 function autoMode(e) {
   if (!e || e.noref) return "darkbox";
-  if (reference[e.key]?.smallFace?.dialogueKey) return "darkbox";
-  if (isLargeShopDialogue(e)) return "shop";
-  // Les wrappers c_msg* créent une textbox de cinématique via obj_dialoguer.
-  // Le nom de l'objet peut contenir "encounter" tout en alternant cinématique
-  // et combat : le canal est donc plus fiable que le nom du propriétaire.
-  if (String(e.channel ?? "").startsWith("cutscene-"))
-    return lightWorldAdjust(e, "darkbox");
+  const smallFaceDialogueKey = reference[e.key]?.smallFace?.dialogueKey;
+  if (smallFaceDialogueKey) {
+    const linkedMode = reference[smallFaceDialogueKey]?.previewMode;
+    return linkedMode ? lightWorldAdjust(e, linkedMode) : "darkbox";
+  }
+  if (isShopDialogueFallback(e)) return "shop";
   const detectedMode = reference[e.key]?.previewMode;
   if (detectedMode) return lightWorldAdjust(e, detectedMode);
+  // Les wrappers c_msg* créent une textbox de cinématique via obj_dialoguer.
+  // Leur catalogue peut toutefois préciser "platform" : la commande `talk`
+  // choisit obj_dialoguer_plat lorsqu'un obj_plat_player existe.
+  if (String(e.channel ?? "").startsWith("cutscene-"))
+    return lightWorldAdjust(e, "darkbox");
   const f = (e.file || "").toLowerCase();
   if (/enemy|battle|blcon|_attack|encounter|boss|trashy_trio/.test(f)) {
     // texte à astérisque = boîte de combat en bas ; sinon = bulle de l'ennemi
@@ -952,7 +973,7 @@ function selectedSceneContext() {
 }
 
 function roomSceneApplies() {
-  return ["darkbox", "lightbox"].includes(effectiveMode());
+  return ["darkbox", "lightbox", "platform"].includes(effectiveMode());
 }
 
 function contextConfidenceLabel(confidence) {
@@ -1009,7 +1030,19 @@ async function runPreview() {
   );
   const mode = effectiveMode();
   const state = inheritedState();
+  const choiceWarnings = [];
+  state.language = showEn ? "en" : "fr";
   state.sceneContext = selectedSceneContext();
+  state.platformSide =
+    prefs.platformSides[selectedKey] ??
+    reference[selectedKey]?.platformSide ??
+    state.sceneContext?.platformSide ??
+    0;
+  state.trialCase = reference[selectedKey]?.trialCase ?? 0;
+  const trialPromptKey = "obj_yellow_trial_manager_slash_Draw_0_gml_33_0";
+  state.trialPrompt = showEn
+    ? reference[trialPromptKey]?.en
+    : lang[trialPromptKey] ?? reference[trialPromptKey]?.en;
   const sourceFile = reference[selectedKey]?.file ?? e.file ?? "";
   if (/obj_shop1(?:_|$)/i.test(sourceFile)) state.scene = "shop-seam";
   if (/obj_trashy_trio(?:_|$)/i.test(sourceFile)) state.scene = "trashy-trio";
@@ -1017,7 +1050,44 @@ async function runPreview() {
     state.typer = 78;
     state.shopCharline = 36;
   }
-  state.bubbleSide = prefs.bubbleSides[selectedKey] ?? 1;
+  // Acteur de la bulle (détection statique, reference.json). Un héros parle
+  // via scr_heroblcon → side -1 (bulle à droite, queue vers la gauche).
+  state.bubbleActor = reference[selectedKey]?.bubbleActor ?? null;
+  state.bubbleSide =
+    prefs.bubbleSides[selectedKey] ?? (state.bubbleActor?.kind === "hero" ? -1 : 1);
+  const choice = reference[selectedKey]?.choice;
+  if (choice?.options?.length) {
+    state.choiceOptions = choice.options.map((option) => {
+      const optionRef = option.key ? reference[option.key] : null;
+      const optionSource = option.key
+        ? showEn
+          ? optionRef?.en ?? option.text ?? ""
+          : lang[option.key] ?? optionRef?.en ?? option.text ?? ""
+        : option.text ?? "";
+      const resolved = substituteArgs(
+        optionSource,
+        optionRef?.substitutions,
+        optionRef?.substitutionSamples
+      );
+      choiceWarnings.push(
+        ...resolved.sampled.map(
+          ({ index, value }) =>
+            `Choix ~${index} → « ${value} » (exemple — valeur dynamique en jeu)`
+        ),
+        ...resolved.unresolved.map(
+          (id) => `Choix ~${id} : valeur dynamique inconnue hors du jeu`
+        )
+      );
+      return resolved.text;
+    });
+    state.choiceSelected = choice.index;
+    state.choiceSide = choice.side;
+    state.fc = 0;
+    state.fe = 0;
+    state.faceVariant = null;
+    state.speakerOverlay = null;
+    if (mode === "platform") state.platformSide = 1;
+  }
   const smallFace = reference[selectedKey]?.smallFace;
   if (smallFace?.dialogueKey) {
     const dialogueKey = smallFace.dialogueKey;
@@ -1038,6 +1108,8 @@ async function runPreview() {
     state.typer = dialogueRef?.typer ?? state.typer;
     state.miniFaceBank = dialogueRef?.miniFaceBank ?? state.miniFaceBank;
     state.speakerOverlay = dialogueRef?.speakerOverlay ?? state.speakerOverlay;
+    if (prefs.platformSides[selectedKey] == null && dialogueRef?.platformSide != null)
+      state.platformSide = dialogueRef.platformSide;
     state.smallFace = {
       ...smallFace,
       text: substitution.text,
@@ -1063,7 +1135,7 @@ async function runPreview() {
       (id) => `~${id} : valeur dynamique inconnue hors du jeu`
     ),
   ];
-  for (const w of [...substitutionWarnings, ...(res.warnings ?? [])]) {
+  for (const w of [...substitutionWarnings, ...choiceWarnings, ...(res.warnings ?? [])]) {
     const d = document.createElement("div");
     d.className = "warn";
     d.textContent = w;
@@ -1080,6 +1152,15 @@ async function runPreview() {
 function updateModeSelect() {
   const override = prefs.modeOverrides[selectedKey];
   $("sel-mode").value = override ?? "auto";
+  updateSideControl();
+}
+
+function updateSideControl() {
+  const mode = effectiveMode();
+  const button = $("btn-side");
+  button.style.display = mode === "bubble" || mode === "platform" ? "" : "none";
+  button.dataset.tooltip =
+    mode === "platform" ? "Basculer la bande en haut ou en bas" : "Côté de la bulle";
 }
 
 // Contrôles « Visage » de la preview : reflètent l'override de la clé courante
@@ -1098,6 +1179,8 @@ function applyFaceOverride() {
       fe: Math.max(0, Number($("inp-preview-fe").value) || 0),
     };
   window.api.savePrefs(prefs);
+  const e = entriesByKey.get(selectedKey);
+  if (e) renderKeyMeta(e);
   if (prefs.listSort === "speaker") {
     buildSpeakerFilterOptions();
     applyFilter();
@@ -2075,10 +2158,19 @@ function bindEvents() {
       scrollToSelected();
     }
     updateSceneContextControls();
+    updateSideControl();
     schedulePreview();
   });
   $("btn-side").onclick = () => {
-    prefs.bubbleSides[selectedKey] = (prefs.bubbleSides[selectedKey] ?? 1) * -1;
+    if (effectiveMode() === "platform") {
+      const current =
+        prefs.platformSides[selectedKey] ?? selectedSceneContext()?.platformSide ?? 0;
+      prefs.platformSides[selectedKey] = current === 1 ? 0 : 1;
+    } else {
+      // même défaut que runPreview : un héros (scr_heroblcon) parle side -1
+      const fallback = reference[selectedKey]?.bubbleActor?.kind === "hero" ? -1 : 1;
+      prefs.bubbleSides[selectedKey] = (prefs.bubbleSides[selectedKey] ?? fallback) * -1;
+    }
     window.api.savePrefs(prefs);
     schedulePreview();
   };

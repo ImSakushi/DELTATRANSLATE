@@ -3,6 +3,20 @@
 // - interprétation des codes de contrôle : gml_Object_obj_writer_Draw_0
 import { TYPERS, T_TAG, C_TAG, F_TAG, decodeFe, resolveTyper } from "./typers.js";
 
+// scr_84_get_lang_string : le jeu applique ces remplacements après la lecture
+// du JSON français, avant de confier la chaîne au writer. U+202F n'est pas un
+// espace de coupure pour obj_writer Other_15.
+export function applyLanguageTypography(input, language = "fr") {
+  let text = String(input ?? "");
+  if (language !== "fr") return text;
+  text = text.replaceAll(" !", " !");
+  text = text.replaceAll(" ?", " ?");
+  text = text.replaceAll(" :", " :");
+  text = text.replaceAll(" »", " »");
+  text = text.replaceAll("« ", "« ");
+  return text;
+}
+
 // substringargs.gml : remplace ~1, ~2, ... dans l'ordre, avant la création du
 // writer. Les valeurs nulles correspondent aux arguments dépendant de l'état
 // de la partie, impossibles à déterminer depuis le seul data.win ; `samples`

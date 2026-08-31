@@ -1,7 +1,8 @@
 // Rendu canvas fidèle des textbox de DELTARUNE Ch5
 // Géométrie issue de : obj_dialoguer_Draw_0 / Other_10, scr_darkbox(_black),
 // obj_battleblcon_Draw_0, scr_facechoice, obj_face_Draw_0
-import { formatText, layoutText } from "./writer.js";
+import { applyLanguageTypography, formatText, layoutText } from "./writer.js";
+import { classicChoiceLayout, neoChoiceLayout } from "./choice.js";
 
 // Résolution des portraits (obj_face_Draw_0, branches chapitre 5 / ch > 1).
 // Chaque entrée peut fournir :
@@ -21,12 +22,14 @@ const FACE_TABLE = {
   },
   2: {
     ox: -15, oy: -10,
-    resolve: (fe, dark) => [
-      { name: dark ? "spr_face_r_dark" : "spr_face_r_nohat", frame: fe },
-      { name: "spr_face_r_nohat", frame: fe },
-      { name: "spr_face_r_dark", frame: fe },
-      { name: "spr_face_r_hood", frame: fe },
-    ],
+    resolve: (fe, dark, variant) => {
+      const hat = variant === "ralsei-hat" || (variant !== "ralsei-nohat" && dark);
+      return [
+        { name: hat ? "spr_face_r_dark" : "spr_face_r_nohat", frame: fe },
+        { name: hat ? "spr_face_r_nohat" : "spr_face_r_dark", frame: fe },
+        { name: "spr_face_r_hood", frame: fe },
+      ];
+    },
   },
   3: {
     ox: -12, oy: -10,
@@ -213,12 +216,31 @@ export class Preview {
   }
 
   // -------------------------------------------------------------------------
-  // Rendu principal. mode: darkbox | lightbox | shop | bubble | battletext | plain
+  // Rendu principal. mode: darkbox | lightbox | platform | shop | bubble | battletext | trial | plain
   // state: { fc, fe, typer, bubbleSide } hérité de la séquence
   // -------------------------------------------------------------------------
   async render(text, mode, state = {}) {
     this.jewelTimer++;
+    text = applyLanguageTypography(text, state.language);
+    if (state.choiceOptions) {
+      state = {
+        ...state,
+        choiceOptions: state.choiceOptions.map((option) =>
+          applyLanguageTypography(option, state.language)
+        ),
+      };
+    }
     if (state.smallFace) {
+      state = {
+        ...state,
+        smallFace: {
+          ...state.smallFace,
+          text: applyLanguageTypography(state.smallFace.text, state.language),
+          dialogueText: applyLanguageTypography(state.smallFace.dialogueText, state.language),
+        },
+      };
+      if (mode === "platform")
+        return this.renderPlatformDialogue(state.smallFace.dialogueText, state);
       return this.renderDialogue(state.smallFace.dialogueText, state, { dark: true });
     }
     switch (mode) {
@@ -226,10 +248,14 @@ export class Preview {
         return this.renderShop(text, state);
       case "lightbox":
         return this.renderDialogue(text, state, { dark: false });
+      case "platform":
+        return this.renderPlatformDialogue(text, state);
       case "bubble":
         return this.renderBubble(text, state);
       case "battletext":
         return this.renderBattleText(text, state);
+      case "trial":
+        return this.renderTrialCase(text, state);
       case "device":
         return this.renderDevice(text, state);
       case "plain":
@@ -574,7 +600,7 @@ export class Preview {
     }
   }
 
-  async drawBattleHud(ctx) {
+  async drawBattleHud(ctx, hp = {}) {
     const boundary = "#351435";
     ctx.fillStyle = "#000000";
     ctx.fillRect(0, 325, 640, 155);
@@ -583,9 +609,9 @@ export class Preview {
     ctx.fillRect(0, 362, 640, 3);
 
     const party = [
-      { chunk: 0, head: "spr_headkris", headFrame: 6, name: "spr_bnamekris", hp: 111, max: 240, color: "#00FFFF" },
-      { chunk: 213, head: "spr_headsusie", headFrame: 6, name: "spr_bnamesusie", hp: 238, max: 290, color: "#FF00FF" },
-      { chunk: 426, head: "spr_headralsei", headFrame: 0, name: "spr_bnameralsei", hp: 210, max: 210, color: "#00FF00" },
+      { chunk: 0, head: "spr_headkris", headFrame: 6, name: "spr_bnamekris", hp: hp.kris ?? 111, max: 240, color: "#00FFFF" },
+      { chunk: 213, head: "spr_headsusie", headFrame: 6, name: "spr_bnamesusie", hp: hp.susie ?? 238, max: 290, color: "#FF00FF" },
+      { chunk: 426, head: "spr_headralsei", headFrame: 0, name: "spr_bnameralsei", hp: hp.ralsei ?? 210, max: 210, color: "#00FF00" },
     ];
     for (const member of party) {
       const x = member.chunk;
@@ -653,6 +679,16 @@ export class Preview {
     await this.drawTensionBar(ctx);
     await this.drawBattleHud(ctx);
 
+    if (state.choiceOptions) {
+      const choice = await this.drawClassicChoices(ctx, state.choiceOptions, {
+        selected: state.choiceSelected,
+        scale: 2,
+        dAdd: 155,
+        fightingOffset: 30,
+      });
+      return { ...choice, fc: 0, fe: 0, mode: "battletext" };
+    }
+
     const initialFc = state.fc || 0;
     const fmt = formatText(text, { charline: 33, battle: true, initialFc });
     const lay = layoutText(fmt.text, {
@@ -694,6 +730,206 @@ export class Preview {
     return { warnings, lines: lay.lines, fc: lay.fc, fe: lay.fe, mode: "battletext" };
   }
 
+  bitmapTextWidth(font, text, scale = 1) {
+    if (!font) return 0;
+    let width = 0;
+    let maxWidth = 0;
+    for (const ch of String(text).replaceAll("#", "\n")) {
+      if (ch === "\r") continue;
+      if (ch === "\n") {
+        maxWidth = Math.max(maxWidth, width);
+        width = 0;
+        continue;
+      }
+      width += (font.glyphs.get(ch.codePointAt(0))?.shift ?? 0) * scale;
+    }
+    return Math.max(maxWidth, width);
+  }
+
+  drawCenteredChoiceText(ctx, font, item, color, lineHeight) {
+    if (!font) return;
+    // draw_set_valign(fa_middle) centre le bloc sur son interligne, tandis que
+    // le bitmap utile commence plus bas dans la cellule de la font (10 px en
+    // mainbig, 5 px en main). Ces valeurs reproduisent la capture en jeu.
+    const startY = item.y - (item.lines.length * lineHeight) / 2 + lineHeight * (5 / 18);
+    item.lines.forEach((line, index) => {
+      const width = this.bitmapTextWidth(font, line);
+      font.drawText(ctx, line, item.x - width / 2, startY + index * lineHeight, color);
+    });
+  }
+
+  async drawNeoChoices(ctx, options, { dark, side, selected }) {
+    const scale = dark ? 2 : 1;
+    const font = dark ? this.fonts.mainbig : this.fonts.main;
+    const layout = neoChoiceLayout(options, {
+      scale,
+      side,
+      measure: (line) => this.bitmapTextWidth(font, line),
+    });
+    const selectedIndex = Math.max(0, Math.min(layout.length - 1, Number(selected) || 0));
+    layout.forEach((item, index) =>
+      this.drawCenteredChoiceText(
+        ctx,
+        font,
+        item,
+        index === selectedIndex ? "#FFFF00" : "#FFFFFF",
+        dark ? 36 : 18
+      )
+    );
+    const heart = layout[selectedIndex];
+    const heartDrawn = heart
+      ? await this.drawChoiceHeart(ctx, heart.heartX, heart.heartY, scale)
+      : false;
+    const warnings = [];
+    if (!heartDrawn) warnings.push("⚠ Sprite du cœur introuvable — réimporte le data.win");
+    for (const item of layout) {
+      if (item.x - item.width / 2 < 24 || item.x + item.width / 2 > (dark ? 616 : 305)) {
+        warnings.push("⚠ Une option de choix déborde horizontalement de la boîte");
+        break;
+      }
+    }
+    return {
+      warnings,
+      lines: Math.max(1, ...layout.map((item) => item.lines.length)),
+    };
+  }
+
+  async drawClassicChoices(
+    ctx,
+    options,
+    { selected, scale, dAdd, fightingOffset = 0 }
+  ) {
+    const font = this.fonts.mainbig;
+    const layout = classicChoiceLayout(options, {
+      scale,
+      dAdd,
+      fightingOffset,
+      measure: (line) => this.bitmapTextWidth(font, line),
+    });
+    const selectedIndex = Math.max(0, Math.min(layout.length - 1, Number(selected) || 0));
+    layout.forEach((item, index) =>
+      font?.drawText(
+        ctx,
+        item.text,
+        item.x,
+        item.y,
+        index === selectedIndex ? "#FFFF00" : "#FFFFFF",
+        1,
+        36
+      )
+    );
+    const heart = layout[selectedIndex];
+    const heartDrawn = heart
+      ? await this.drawChoiceHeart(ctx, heart.heartX, heart.heartY, scale)
+      : false;
+    const warnings = [];
+    if (!heartDrawn) warnings.push("⚠ Sprite du cœur introuvable — réimporte le data.win");
+    if (layout.some((item) => item.x < 0 || item.x + item.width > 640))
+      warnings.push("⚠ Une option de choix déborde horizontalement de la zone");
+    return {
+      warnings,
+      lines: Math.max(1, ...layout.map((item) => item.lines.length)),
+    };
+  }
+
+  async drawChoiceHeart(ctx, x, y, scale) {
+    // obj_choicer_neo Create_0 : heartSprite 3113 = spr_heartsmall_white,
+    // origin (0,0), teinté par heartCol = c_red dans Draw_0.
+    const exact = await this.tintedSprite("spr_heartsmall_white", 0, "#FF0000");
+    const fallback = exact ? null : await this.sprite("spr_heart_centered", 0, true);
+    const image = exact ?? fallback;
+    if (!image) return false;
+    ctx.drawImage(image, Math.round(x), Math.round(y), 9 * scale, 9 * scale);
+    return true;
+  }
+
+  // obj_yellow_trial_manager Draw_0 : case_info n'est jamais envoyé au
+  // writer. Le dossier est dessiné à (30,376), en main x2, au-dessus du HUD
+  // assombri ; les cinq prévenus et le prévenu sélectionné restent en scène.
+  async renderTrialCase(text, state = {}) {
+    const ctx = this.clear(640, 480);
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, 640, 480);
+    await this.tileSprite(ctx, "bg_battleback1", -82, -82, 640, 325, 0.5);
+    await this.tileSprite(ctx, "bg_battleback1", -224, -234, 640, 325, 1);
+
+    // Les héros conservent leurs positions de combat. Les pupitres sont créés
+    // à partir de celles-ci par obj_yellow_trial_manager Create_0.
+    await this.drawGameSprite(ctx, "spr_kris_lawyer", 0, 94, 50, 2);
+    await this.drawGameSprite(ctx, "spr_susie_lawyer", 0, 80, 122, 2);
+    await this.drawGameSprite(ctx, "spr_ralsei_lawyer", 0, 72, 200, 2);
+    await this.drawGameSprite(ctx, "spr_trial_podium", 1, 154, 106, 2);
+    await this.drawGameSprite(ctx, "spr_trial_podium", 0, 140, 184, 2);
+    await this.drawGameSprite(ctx, "spr_trial_podium", 1, 132, 272, 2);
+
+    const perps = [
+      { name: "spr_aqua_walk_down", frame: 0, xstart: 220, ystart: 240 },
+      { name: "spr_seth_walk_down", frame: 0, xstart: 300, ystart: 240 },
+      { name: "spr_enemy_green_walk", frame: 0, xstart: 380, ystart: 240 },
+      { name: "spr_yellow_walk_down", frame: 0, xstart: 460, ystart: 240 },
+      { name: "spr_blue_poses", frame: 2, xstart: 540, ystart: 240 },
+    ];
+    const drawPerp = async (perp) => {
+      const meta = this.spriteMeta[perp.name] ?? {};
+      const width = meta.width ?? 0;
+      const height = meta.height ?? 0;
+      const originX = meta.originX ?? 0;
+      const originY = meta.originY ?? 0;
+      const x = perp.xstart - (width - originX);
+      const y = perp.ystart - (height - originY) * 2;
+      return this.drawGameSprite(ctx, perp.name, perp.frame, x, y, 2, 2, 0, { exact: true });
+    };
+    for (const perp of perps) await drawPerp(perp);
+
+    await this.drawTensionBar(ctx);
+    await this.drawBattleHud(ctx, { kris: 135, susie: 290, ralsei: 144 });
+
+    // begin_trial() fixe darkness à 0.5. Les éléments de sélection sont ensuite
+    // redessinés à pleine luminosité dans le Draw du manager.
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, 640, 480);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    await this.drawGameSprite(ctx, "spr_trial_spotlight", 0, 220, 240, 2, 2.5, 0, {
+      exact: true,
+      alpha: 0.75,
+    });
+    ctx.restore();
+    const selectedDrawn = await drawPerp(perps[0]);
+    await this.drawGameSprite(ctx, "spr_heart_centered", 0, 220, 280, 1, 1, 0, { exact: true });
+    const arrowOffset = Math.sin(this.jewelTimer * 0.1) * 3;
+    await this.drawGameSprite(ctx, "spr_sneo_bullet_arrow", 0, 240 + arrowOffset, 279, 1, 1, 0, { exact: true });
+    await this.drawGameSprite(ctx, "spr_sneo_bullet_arrow", 0, 200 - arrowOffset, 279, -1, 1, 0, { exact: true });
+
+    const prompt = applyLanguageTypography(
+      state.trialPrompt ?? "{0} to accuse.",
+      state.language
+    ).replace("{0}", "    ").replace("~1", "    ");
+    const promptFont = this.fonts.main;
+    const promptWidth = this.bitmapTextWidth(promptFont, prompt, 2);
+    const promptX = Math.round(220 - promptWidth / 2);
+    // Branche manette du Draw_0 : l'icône remplace le token d'entrée, puis le
+    // texte conserve quatre espaces pour réserver sa place.
+    await this.drawGameSprite(ctx, "button_xbox_a", 0, 148, 292, 2, 2, 0, { exact: true });
+    promptFont?.drawText(ctx, prompt, promptX, 288, "#FFFFFF", 2, 16);
+
+    this.fonts.main?.drawText(ctx, text, 30, 376, "#FFFFFF", 2, 16);
+    ctx.fillStyle = "#9A7ED3";
+    for (let a = 0; a < 9; a += 2) ctx.fillRect(378, 376 + a * 10, 4, 10);
+
+    const lines = String(text).replaceAll("#", "\n").split(/\r?\n/);
+    const warnings = [];
+    if (!selectedDrawn) warnings.push("⚠ Sprites du procès introuvables — réimporte le data.win");
+    if (lines.some((line) => this.bitmapTextWidth(this.fonts.main, line, 2) > 340))
+      warnings.push("⚠ Le dossier du procès atteint le séparateur violet");
+    if (lines.length > 3) warnings.push("⚠ Trop de lignes pour le panneau du procès");
+    return { warnings, lines: lines.length, fc: 0, fe: 0, mode: "trial" };
+  }
+
   // --- Boîte de dialogue (monde sombre f=2 sur 640x480 ; monde clair f=1 sur
   //     320x240, upscalé x2 pour l'affichage)
   async renderDialogue(text, state, { dark = true, fight = false }) {
@@ -707,8 +943,10 @@ export class Preview {
     if (!hasScene)
       this.checkerBg(ctx, dark ? "#151020" : "#1a2c20", "rgba(255,255,255,0.025)");
 
-    const initialFc = state.fc || 0;
+    const isChoice = Boolean(state.choiceOptions?.length);
+    const initialFc = isChoice ? 0 : state.fc || 0;
     const typer = state.typer || (fight ? 47 : dark ? 6 : 5);
+    const side = isChoice ? (Number(state.choiceSide) === 0 ? 0 : 1) : 1;
 
     // formatage (word-wrap)
     const fmt = formatText(text, {
@@ -720,11 +958,11 @@ export class Preview {
       initialFc,
     });
 
-    // --- boîte (obj_dialoguer_Draw_0, side = 1 : en bas) ---
+    // --- boîte (obj_dialoguer_Draw_0) ---
     const boxheight = 3;
     let boxRight, boxBottom;
     if (dark) {
-      const sidemod = 310;
+      const sidemod = side * 310;
       const x0 = 24,
         y0 = 2 + sidemod,
         x1 = 24 + 592,
@@ -733,7 +971,7 @@ export class Preview {
       boxRight = x1;
       boxBottom = y1;
     } else {
-      const sidemod = 155;
+      const sidemod = side * 155;
       // bordure (c_border blanc) puis intérieur (c_inner noir)
       const hei = 80 - 54 + 18 * boxheight + sidemod - (5 + sidemod);
       ctx.fillStyle = "#FFFFFF";
@@ -746,9 +984,24 @@ export class Preview {
       boxBottom = 236;
     }
 
-    // --- writer (obj_dialoguer Other_10, side = 1) ---
+    if (isChoice) {
+      const choice = await this.drawNeoChoices(ctx, state.choiceOptions, {
+        dark,
+        side,
+        selected: state.choiceSelected,
+      });
+      ctx.restore();
+      return {
+        ...choice,
+        fc: 0,
+        fe: 0,
+        mode: dark ? "darkbox" : "lightbox",
+      };
+    }
+
+    // --- writer (obj_dialoguer Other_10) ---
     const writerX = 19 * f + 10 * f;
-    const writerY = 20 * f + (-5 + 155) * f;
+    const writerY = 20 * f + (-5 + 155 * side) * f;
 
     const lay = layoutText(fmt.text, {
       typer,
@@ -804,6 +1057,123 @@ export class Preview {
     };
   }
 
+  // obj_dialoguer_plat Draw_0 / Other_10 / Alarm_0 : bande noire sans
+  // bordure, charline_bonus = 5 et positions attachées à la caméra 640×480.
+  async renderPlatformDialogue(text, state = {}) {
+    const ctx = this.clear(640, 480);
+    const hasScene = await this.drawSceneBackground(ctx, state.sceneContext, true);
+    if (!hasScene) this.checkerBg(ctx, "#151020", "rgba(255,255,255,0.025)");
+
+    const isChoice = Boolean(state.choiceOptions?.length);
+    const side = isChoice ? 1 : Number(state.platformSide) === 1 ? 1 : 0;
+    const initialFc = isChoice ? 0 : state.fc || 0;
+    const typer = state.typer || 6;
+    const fmt = formatText(text, {
+      charline: (initialFc ? 26 : 33) + 5,
+      dialoguer: true,
+      initialFc,
+    });
+    const writerX = 18;
+    const writerY = 10 + 380 * side;
+    const lay = layoutText(fmt.text, {
+      typer,
+      dark: true,
+      writingx: writerX,
+      writingy: writerY,
+      faceXShift: 116,
+      initialFc,
+      initialFe: state.fe || 0,
+    });
+
+    const panelY = 380 * side;
+    if (lay.fc !== 0) {
+      const extensionY = side ? panelY - 20 : panelY;
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, extensionY, 110, 120);
+
+      const triangleY = side ? panelY : 100;
+      const triangleDrawn = await this.drawGameSprite(
+        ctx,
+        "spr_gradient_triangle_dialoguer_plat",
+        0,
+        110,
+        triangleY,
+        1,
+        side ? 1 : -1,
+        0,
+        { exact: true, filter: "brightness(0)" }
+      );
+      if (!triangleDrawn) {
+        ctx.beginPath();
+        ctx.moveTo(110, side ? panelY - 20 : 100);
+        ctx.lineTo(110, side ? panelY : 120);
+        ctx.lineTo(130, side ? panelY : 100);
+        ctx.closePath();
+        ctx.fill();
+      }
+      const fadeDrawn = await this.drawGameSprite(
+        ctx,
+        "spr_gradient20",
+        0,
+        110,
+        panelY,
+        5,
+        2,
+        270,
+        { exact: true, filter: "brightness(0)" }
+      );
+      if (!fadeDrawn) {
+        const fade = ctx.createLinearGradient(110, 0, 210, 0);
+        fade.addColorStop(0, "#000000");
+        fade.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = fade;
+        ctx.fillRect(110, panelY, 100, side ? 40 : 100);
+      }
+    }
+
+    ctx.save();
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, panelY, 640, 100);
+    ctx.restore();
+
+    if (isChoice) {
+      const choice = await this.drawClassicChoices(ctx, state.choiceOptions, {
+        selected: state.choiceSelected,
+        scale: 2,
+        dAdd: 177,
+      });
+      return { ...choice, fc: 0, fe: 0, mode: "platform" };
+    }
+
+    let faceExact = true;
+    if (lay.fc !== 0) {
+      const face = await this.drawFace(
+        ctx,
+        lay.fc,
+        lay.fe,
+        12,
+        side ? 376 : 6,
+        2,
+        true,
+        state.faceVariant
+      );
+      faceExact = face.exact;
+    }
+    const miniFaceWarnings = await this.drawMiniFaces(ctx, lay.miniFaces, state.miniFaceBank);
+    this.drawOps(ctx, lay.ops, 0, 0, 1);
+    if (state.smallFace) await this.drawSmallFace(ctx, state.smallFace, writerX, writerY);
+
+    const warnings = [...lay.warnings, ...miniFaceWarnings];
+    if (!faceExact)
+      warnings.push(`⚠ Expression ${lay.fe} introuvable pour ce visage — frame 0 affichée`);
+    if (lay.maxX > 632) warnings.push("⚠ Le texte déborde à droite de la bande plateformer");
+    const textBottom = side ? 480 : 100;
+    if (lay.maxY + lay.vspace > textBottom)
+      warnings.push("⚠ Trop de lignes pour la bande plateformer");
+    return { warnings, lines: lay.lines, fc: lay.fc, fe: lay.fe, mode: "platform" };
+  }
+
   // obj_smallface Alarm_0 + scr_smallface_reset : alarm[0] vaut 5 ; l'alarme
   // stoppe la vitesse avant le 5e déplacement, soit 4 × 10 px vers la gauche.
   async drawSmallFace(ctx, smallFace, writerX, writerY) {
@@ -816,7 +1186,7 @@ export class Preview {
     const trueX = writerX + localX - 40;
     const trueY = writerY + localY;
     const speaker = String(smallFace.speaker).toLowerCase();
-    const spriteName = SMALL_FACE_SPRITES[speaker];
+    const spriteName = speaker.startsWith("spr_") ? speaker : SMALL_FACE_SPRITES[speaker];
     const sprite = spriteName
       ? await this.sprite(spriteName, Number(smallFace.expression) || 0, true)
       : null;
@@ -855,6 +1225,31 @@ export class Preview {
     let writingx = side === 1 ? initX - (bw + 20) : initX + 20;
     const writingy = initY - bh / 2;
 
+    // personnage qui parle, dessiné sous la bulle. Dérivé de l'ancrage du
+    // jeu : ennemi → scr_enemyblcon(x - 10, y + 40, 10) donc instance à
+    // (ancre+10, ancre-40) ; héros → scr_heroblcon : ancre (héros.x+100,
+    // héros.y+40) donc héros à (ancre-100, ancre-40). Échelle 2 pour tous
+    // (scr_enemy_object_init L62, obj_heroparent Create_0).
+    const actor = state.bubbleActor;
+    let actorWarning = null;
+    if (actor?.sprites?.length) {
+      const actorX = side === 1 ? anchorX + 10 : anchorX - 100;
+      const actorY = anchorY - 40;
+      let drawn = false;
+      for (const name of actor.sprites) {
+        const frames = Math.max(1, this.spriteMeta[name]?.frames ?? 1);
+        const frame = Math.floor(this.jewelTimer / 6) % frames;
+        if (await this.drawGameSprite(ctx, name, frame, actorX, actorY, 2, 2)) {
+          drawn = true;
+          break;
+        }
+      }
+      if (!drawn)
+        actorWarning =
+          `⚠ Sprite ${actor.sprites[0]} introuvable — réimporte le data.win ` +
+          "(bouton ⚙ data.win) pour extraire les personnages de combat";
+    }
+
     // bulle blanche : deux rectangles superposés (comme le jeu)
     ctx.fillStyle = "#FFFFFF";
     ctx.fillRect(writingx - 10, writingy - 5, bw + 10, bh);
@@ -886,6 +1281,7 @@ export class Preview {
     this.drawOps(ctx, lay.ops, writingx, writingy, 1);
 
     const warnings = [...lay.warnings, ...miniFaceWarnings];
+    if (actorWarning) warnings.push(actorWarning);
     if (bw > 330) warnings.push(`⚠ Bulle très large (${bw}px) — pense à couper avec &`);
     if (writingx < 10) warnings.push("⚠ La bulle sort de l'écran à gauche");
     return { warnings, lines: lay.lines, fc: 0, fe: 0, mode: "bubble" };
