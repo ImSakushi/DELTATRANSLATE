@@ -9,7 +9,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test updater.test.js runedelta-sync.test.js extraction/chapter-scope.test.mjs extraction/code-overrides.test.mjs extraction/speaker-detection.test.mjs",
+    "test": "node --test updater.test.js runedelta-sync.test.js writer.test.js choice-layout.test.js extraction/bubble-actor-detection.test.mjs extraction/chapter-scope.test.mjs extraction/choice-detection.test.mjs extraction/code-overrides.test.mjs extraction/platform-dialogue-detection.test.mjs extraction/shop-dialogue-detection.test.mjs extraction/speaker-detection.test.mjs extraction/trial-case-detection.test.mjs",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac --universal --publish never",
