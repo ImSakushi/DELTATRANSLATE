@@ -86,13 +86,13 @@ export class BitmapFont {
   }
 }
 
-export async function loadFonts(extractedDir, fontCsvs) {
+export async function loadFonts(extractedDir, fontCsvs, language = "fr") {
   const wanted = ["main", "mainbig", "dotumche", "comicsans", "small", "tinynoelle", "8bit"];
   const fonts = {};
   await Promise.all(
     wanted.map(async (short) => {
-      const french = "fnt_" + short + "_fr";
-      const full = fontCsvs[french] ? french : "fnt_" + short;
+      const translated = "fnt_" + short + "_" + language;
+      const full = fontCsvs[translated] ? translated : "fnt_" + short;
       const csv = fontCsvs[full];
       if (!csv) return;
       const img = new Image();

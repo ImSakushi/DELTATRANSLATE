@@ -2,7 +2,9 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const storage = require("./storage.js");
 const { findUtmtCli, installLatestUtmt } = require("./utmt-manager.js");
+const { discoverChapters, findChapters, validateDataWin } = require("./game-discovery.js");
 const { createUpdaterController } = require("./updater.js");
 const {
   DEFAULT_RUNEDDELTA_REMOTE,
@@ -29,6 +31,8 @@ const DEFAULT_CONFIG = {
   dataWinPath: null,
   sourceDataWinPath: null,
   storageMode: null,
+  targetLanguage: "fr",
+  multilang: false,
   utmtDir: null,
   runedelta: null,
 };
@@ -45,11 +49,7 @@ const updater = createUpdaterController({
 });
 
 function loadJson(file, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return fallback;
-  }
+  return file ? storage.readJson(file, fallback) : fallback;
 }
 
 // Les anciennes installations stockaient ces fichiers à côté du code. On les
@@ -95,6 +95,7 @@ function runedeltaBackup(file, content) {
 }
 
 function runedeltaEnabledForCurrentChapter(config) {
+  if (config.targetLanguage && config.targetLanguage !== "fr") return false;
   if (!config.runedelta?.enabled) return false;
   const installed = config.runedelta.installedChapters;
   if (!installed) return true;
@@ -138,7 +139,7 @@ function getConfig() {
 }
 
 function saveConfig(config) {
-  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2), "utf8");
+  storage.atomicWrite(configPath(), JSON.stringify(config, null, 2), { json: true });
   return config;
 }
 
@@ -198,31 +199,7 @@ function serializeLanguage(langObj) {
 }
 
 function backupContent(file, content) {
-  if (!file || !fs.existsSync(file)) return null;
-  const directory = runtimeDirectory("backups");
-  const stem = path.basename(file).replace(/[^\w.-]+/g, "_");
-  const backups = fs
-    .readdirSync(directory)
-    .filter((name) => name.startsWith(`${stem}_`) && name.endsWith(".bak"))
-    .map((name) => ({ name, modifiedAt: fs.statSync(path.join(directory, name)).mtimeMs }))
-    .sort((a, b) => a.modifiedAt - b.modifiedAt);
-  const latest = backups.at(-1);
-  if (latest && Date.now() - latest.modifiedAt < BACKUP_INTERVAL_MS) return null;
-  if (
-    latest &&
-    fs.readFileSync(path.join(directory, latest.name), "utf8") === content
-  ) {
-    return null;
-  }
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const destination = path.join(directory, `${stem}_${stamp}.bak`);
-  fs.writeFileSync(destination, content, "utf8");
-  backups.push({ name: path.basename(destination), modifiedAt: Date.now() });
-  while (backups.length > 40) {
-    fs.unlinkSync(path.join(directory, backups.shift().name));
-  }
-  return destination;
+  return file ? storage.backup(runtimeDirectory("backups"), file, content) : null;
 }
 
 function backupFile(file, nextContent) {
@@ -267,11 +244,15 @@ function readSpriteMetadata(config = getConfig()) {
 
 function spriteOverrideRoot(config = getConfig()) {
   if (!config.extractedDir) throw new Error("Aucune extraction de chapitre n'est chargée.");
-  return path.join(config.extractedDir, "SpriteOverrides");
+  return config.multilang
+    ? path.join(config.extractedDir, "LanguageSprites", config.targetLanguage ?? "fr")
+    : path.join(config.extractedDir, "SpriteOverrides");
 }
 
-function buildSpriteEntry(item, metadata, root) {
-  const variant = metadata.get(`${item.name}_fr`) ?? null;
+function buildSpriteEntry(item, metadata, root, config = getConfig()) {
+  const code = config.targetLanguage ?? "fr";
+  const originalVariant = metadata.get(`${item.name}_${code}`) ?? null;
+  const variant = originalVariant ?? (config.multilang ? { ...item, name: `${item.name}_${code}` } : null);
   const targetName = variant?.name ?? item.name;
   const directory = path.join(root, targetName);
   const overrideFrames = fs.existsSync(directory)
@@ -288,7 +269,9 @@ function buildSpriteEntry(item, metadata, root) {
     variant,
     targetName,
     overrideFrames,
-    translated: Boolean(variant || overrideFrames.length),
+    language: code,
+    independent: Boolean(config.multilang),
+    translated: Boolean(originalVariant || overrideFrames.length),
   };
 }
 
@@ -297,21 +280,21 @@ function spriteCatalog(config = getConfig()) {
   const root = spriteOverrideRoot(config);
   const result = [];
   for (const item of metadata.values()) {
-    if (item.name.endsWith("_fr")) continue;
-    result.push(buildSpriteEntry(item, metadata, root));
+    if ((config.languages ?? ["fr"]).some((code) => item.name.endsWith(`_${code}`) && metadata.has(item.name.slice(0, -code.length - 1)))) continue;
+    result.push(buildSpriteEntry(item, metadata, root, config));
   }
   return result.sort((a, b) => a.name.localeCompare(b.name, "fr", { numeric: true }));
 }
 
 function spriteEntry(baseName, config = getConfig()) {
   const safeName = String(baseName ?? "");
-  if (!/^[A-Za-z0-9_]+$/.test(safeName) || safeName.endsWith("_fr")) {
+  if (!/^[A-Za-z0-9_]+$/.test(safeName)) {
     throw new Error("Nom de sprite invalide.");
   }
   const metadata = readSpriteMetadata(config);
   const item = metadata.get(safeName);
   if (!item) throw new Error(`Sprite introuvable : ${safeName}`);
-  return buildSpriteEntry(item, metadata, spriteOverrideRoot(config));
+  return buildSpriteEntry(item, metadata, spriteOverrideRoot(config), config);
 }
 
 function pngDimensions(file) {
@@ -350,7 +333,7 @@ async function ensureSpriteCached(entry, event) {
     const promise = (async () => {
       const utmt = getUtmtStatus();
       if (!utmt.ready) throw new Error("UTMT CLI est requis pour extraire l'aperçu.");
-      const source = config.sourceDataWinPath ?? config.dataWinPath;
+      const source = config.multilang ? config.dataWinPath : config.sourceDataWinPath ?? config.dataWinPath;
       if (!source || !fs.existsSync(source)) throw new Error("Le data.win source est introuvable.");
       if (!event.sender.isDestroyed()) {
         event.sender.send("sprite-progress", `Extraction de ${entry.name}…`);
@@ -391,11 +374,21 @@ function ensureImmutableDataWinSource(config) {
   return updateConfig({ sourceDataWinPath: snapshot });
 }
 
-function runNodeScript(script, args, onLine = () => {}) {
+function runNodeScript(script, args, onLine = () => {}, signal = null) {
   return new Promise((resolve) => {
+    if (signal?.aborted) { resolve({ code: -1, error: new Error("Préparation annulée.") }); return; }
     const child = spawn(process.execPath, [script, ...args], {
       env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: "1" }),
+      windowsHide: true,
+      detached: process.platform !== "win32",
     });
+    const cancel = () => {
+      if (!child.pid) return;
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+      } else { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
     let buffer = "";
     const consume = (chunk) => {
       buffer += chunk.toString();
@@ -403,30 +396,35 @@ function runNodeScript(script, args, onLine = () => {}) {
       while ((newline = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
-        if (line.trim()) onLine(line);
+        if (line.trim()) onLine(line, child);
       }
     };
     child.stdout.on("data", consume);
     child.stderr.on("data", consume);
     child.on("error", (error) => resolve({ code: -1, error }));
     child.on("close", (code) => {
-      if (buffer.trim()) onLine(buffer.trim());
+      signal?.removeEventListener("abort", cancel);
+      if (buffer.trim()) onLine(buffer.trim(), child);
       resolve({ code, error: null });
     });
   });
 }
 
-function replaceDataWinSafely(generated, target) {
+function replaceDataWinSafely(generated, target, afterReplace = () => {}) {
   const previous = `${target}.deltatranslate-previous`;
   fs.rmSync(previous, { force: true });
   fs.renameSync(target, previous);
   try {
     fs.renameSync(generated, target);
-    fs.rmSync(previous, { force: true });
+    afterReplace();
   } catch (error) {
-    if (!fs.existsSync(target) && fs.existsSync(previous)) fs.renameSync(previous, target);
+    if (fs.existsSync(previous)) {
+      fs.rmSync(target, { force: true });
+      fs.renameSync(previous, target);
+    }
     throw error;
   }
+  try { fs.rmSync(previous, { force: true }); } catch {}
 }
 
 function replaceWorkspaceFileSafely(generated, target) {
@@ -526,9 +524,13 @@ ipcMain.handle("get-runedelta-attributions", async () => {
   }
 });
 
+let runedeltaRunning = false;
 ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
+  if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) return { ok: false, error: "Une écriture est déjà en cours." };
+  runedeltaRunning = true;
   try {
     const config = getConfig();
+    if ((config.targetLanguage ?? "fr") !== "fr") throw new Error("Runedelta fournit la traduction française. Ouvre la langue FR avant de le connecter.");
     const previous = runedeltaSettings(config);
     const remoteUrl = String(requestedRemote ?? "").trim() || DEFAULT_RUNEDDELTA_REMOTE;
     const result = await installRunedelta({
@@ -555,12 +557,16 @@ ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
     return { ...result, config: nextConfig };
   } catch (error) {
     return { ok: false, error: error.message };
-  }
+  } finally { runedeltaRunning = false; }
 });
 
-ipcMain.handle("sync-runedelta", async (_event, language = null, conflictResolution = null) => {
+ipcMain.handle("sync-runedelta", async (_event, language = null, conflictResolution = null, expectedRevision, expectedProject) => {
+  if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) return { ok: false, error: "Une écriture est déjà en cours." };
+  runedeltaRunning = true;
   try {
     const config = getConfig();
+    if (expectedProject !== storage.projectId(config)) throw new Error("Le chapitre actif a changé.");
+    storage.assertRevision(config.langFrPath, expectedRevision);
     if (!runedeltaEnabledForCurrentChapter(config)) {
       return { ok: false, error: "Runedelta n’est pas installé pour ce chapitre." };
     }
@@ -574,11 +580,12 @@ ipcMain.handle("sync-runedelta", async (_event, language = null, conflictResolut
           ...result,
           savedAt: new Date().toISOString(),
           mode: "runedelta",
+          revision: storage.revision(result.targetPath),
         }
       : result;
   } catch (error) {
     return { ok: false, error: error.message };
-  }
+  } finally { runedeltaRunning = false; }
 });
 
 ipcMain.handle("disconnect-runedelta", () => {
@@ -616,15 +623,16 @@ ipcMain.handle("confirm-close", async (event, unsavedCount) => {
       `Vous avez ${count} nouvelle${plural ? "s" : ""} traduction${plural ? "s" : ""} ` +
       `non sauvegardée${plural ? "s" : ""}.`,
     detail: `Voulez-vous ${plural ? "les" : "la"} sauvegarder avant de quitter ?`,
-    buttons: ["Oui", "Non"],
+    buttons: ["Enregistrer", "Quitter sans enregistrer", "Annuler"],
     defaultId: 0,
-    cancelId: 1,
+    cancelId: 2,
     noLink: true,
   });
-  return result.response === 0 ? "save" : "discard";
+  return ["save", "discard", "cancel"][result.response] ?? "cancel";
 });
 
 ipcMain.handle("close-window", (event) => {
+  if (importInstalling) return false;
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return false;
   windowsAllowedToClose.add(win);
@@ -639,7 +647,14 @@ ipcMain.handle("load-data", async () => {
   if (detectedExtraction && detectedExtraction !== config.extractedDir) {
     config = updateConfig({ extractedDir: detectedExtraction });
   }
-  const prefs = loadJson(prefsPath(), {});
+  const projectId = storage.projectId(config);
+  const document = loadJson(prefsPath(), {});
+  const migrated = config.dataWinPath ? storage.migratePreferences(document, projectId) : document;
+  if (migrated !== document) {
+    if (fs.existsSync(prefsPath())) backupFile(prefsPath(), JSON.stringify(migrated, null, 2));
+    storage.atomicWrite(prefsPath(), JSON.stringify(migrated, null, 2), { json: true });
+  }
+  const prefs = storage.scopedPreferences(migrated, projectId);
   const referencePath = config.extractedDir
     ? path.join(config.extractedDir, "reference.json")
     : null;
@@ -654,6 +669,7 @@ ipcMain.handle("load-data", async () => {
       ready: false,
       config,
       prefs,
+      projectId,
       setupReason: "Aucun chapitre extrait n'est disponible.",
       utmt: getUtmtStatus(),
       runedeltaSync,
@@ -664,10 +680,13 @@ ipcMain.handle("load-data", async () => {
     ready: true,
     config,
     prefs,
+    projectId,
+    revision: storage.revision(config.langFrPath),
     utmt: getUtmtStatus(),
     lang: JSON.parse(fs.readFileSync(config.langFrPath, "utf8")),
     japanese: loadJson(resolveJapaneseLanguagePath(config), {}),
     reference: loadJson(referencePath, {}),
+    migration: loadJson(path.join(config.extractedDir, `migration-${config.targetLanguage ?? "fr"}.json`), {}),
     extractedDir: config.extractedDir,
     fonts: {},
     runedeltaSync,
@@ -823,26 +842,33 @@ ipcMain.handle("open-sprite-overrides", () => {
 });
 
 let saveRunning = false;
-ipcMain.handle("save-lang", async (event, langObj) => {
-  if (saveRunning) return { ok: false, error: "Une sauvegarde est déjà en cours." };
+ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedProject) => {
+  if (saveRunning || codeApplyRunning || importRunning || runedeltaRunning) return { ok: false, error: "Une écriture est déjà en cours." };
   saveRunning = true;
-  const config = getConfig();
-  const serialized = serializeLanguage(langObj);
+  let config = null;
   let translationTemp = null;
   let dataWinTemp = null;
   try {
+    config = getConfig();
+    if (expectedProject !== storage.projectId(config)) throw new Error("Le chapitre actif a changé. Recharge l’éditeur.");
+    const serialized = serializeLanguage(langObj);
+    storage.assertRevision(config.langFrPath, expectedRevision);
     if (config.storageMode !== "datawin") {
       const backup = backupsEnabled()
         ? backupFile(config.langFrPath, serialized)
         : null;
-      fs.writeFileSync(config.langFrPath, serialized, "utf8");
+      storage.atomicWrite(config.langFrPath, serialized, { json: true, expected: expectedRevision });
       return {
         ok: true,
         savedAt: new Date().toISOString(),
         mode: "lang-json",
         backupCreated: Boolean(backup),
+        revision: storage.revision(config.langFrPath),
       };
     }
+
+    const versions = await import("./extraction/source-version.mjs");
+    versions.assertActiveVersion(config.dataWinPath, config.extractedDir);
 
     const utmt = getUtmtStatus();
     if (!utmt.ready) throw new Error("UTMT CLI est requis pour écrire dans data.win.");
@@ -891,16 +917,24 @@ ipcMain.handle("save-lang", async (event, langObj) => {
     if (result.code !== 0) {
       throw new Error(`La recompilation UTMT a échoué (code ${result.code}).\n${lines.slice(-8).join("\n")}`);
     }
-    replaceDataWinSafely(dataWinTemp, config.dataWinPath);
-    fs.writeFileSync(config.langFrPath, serialized, "utf8");
+    storage.assertRevision(config.langFrPath, expectedRevision);
+    versions.assertActiveVersion(config.dataWinPath, config.extractedDir);
+    versions.recordGeneratedVersion(dataWinTemp, config.extractedDir);
+    replaceDataWinSafely(dataWinTemp, config.dataWinPath, () => {
+      storage.atomicWrite(config.langFrPath, serialized, { json: true, expected: expectedRevision });
+    });
     fs.rmSync(translationTemp, { force: true });
     return {
       ok: true,
       savedAt: new Date().toISOString(),
       mode: "datawin",
       backupCreated: Boolean(backup),
+      revision: storage.revision(config.langFrPath),
     };
   } catch (error) {
+    if (config?.langFrPath && expectedProject === storage.projectId(config)) {
+      try { storage.backup(runtimeDirectory("backups"), config.langFrPath, serializeLanguage(langObj), { kind: "draft" }); } catch {}
+    }
     return { ok: false, error: error.message };
   } finally {
     if (translationTemp) fs.rmSync(translationTemp, { force: true });
@@ -909,12 +943,13 @@ ipcMain.handle("save-lang", async (event, langObj) => {
   }
 });
 
-ipcMain.handle("backup-lang", (_event, langObj) => {
+ipcMain.handle("backup-lang", (_event, langObj, expectedProject) => {
   try {
     if (!backupsEnabled()) {
       return { ok: true, backupCreated: false, disabled: true };
     }
     const config = getConfig();
+    if (expectedProject !== storage.projectId(config)) throw new Error("Le chapitre actif a changé.");
     const serialized = serializeLanguage(langObj);
     if (!config.langFrPath || !fs.existsSync(config.langFrPath)) {
       throw new Error("Le fichier de langue est introuvable.");
@@ -922,7 +957,7 @@ ipcMain.handle("backup-lang", (_event, langObj) => {
     if (fs.readFileSync(config.langFrPath, "utf8") === serialized) {
       return { ok: true, backupCreated: false };
     }
-    const backup = backupContent(config.langFrPath, serialized);
+    const backup = storage.backup(runtimeDirectory("backups"), config.langFrPath, serialized, { kind: "draft", interval: 60_000 });
     return { ok: true, backupCreated: Boolean(backup) };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -1027,13 +1062,15 @@ ipcMain.handle("reset-code-file", (_event, file) => {
 
 let codeApplyRunning = false;
 async function applyWorkspaceOverrides(event, progressChannel, progressLabel) {
-  if (codeApplyRunning || saveRunning) {
+  if (codeApplyRunning || saveRunning || importRunning || runedeltaRunning) {
     return { ok: false, error: "Une recompilation est déjà en cours." };
   }
   codeApplyRunning = true;
   let dataWinTemp = null;
   try {
     let config = ensureImmutableDataWinSource(getConfig());
+    const versions = await import("./extraction/source-version.mjs");
+    versions.assertActiveVersion(config.dataWinPath, config.extractedDir);
     const utmt = getUtmtStatus();
     if (!utmt.ready) throw new Error("UTMT CLI est requis pour appliquer les modifications au jeu.");
     const required = [config.dataWinPath, config.sourceDataWinPath, config.extractedDir];
@@ -1062,10 +1099,12 @@ async function applyWorkspaceOverrides(event, progressChannel, progressLabel) {
     } else {
       args.push("--overrides-only");
     }
+    if (config.multilang) args.push("--workspace", config.extractedDir, "--datawin", config.dataWinPath,
+      "--language", config.targetLanguage ?? "fr");
     const lines = [];
     event.sender.send(progressChannel, progressLabel);
     const result = await runNodeScript(
-      path.join(ROOT, "extraction", "patch-datawin.mjs"),
+      path.join(ROOT, "extraction", config.multilang ? "build-language.mjs" : "patch-datawin.mjs"),
       args,
       (line) => {
         lines.push(line);
@@ -1075,7 +1114,24 @@ async function applyWorkspaceOverrides(event, progressChannel, progressLabel) {
     if (result.code !== 0) {
       throw new Error(`La compilation UTMT a échoué (code ${result.code}).\n${lines.slice(-8).join("\n")}`);
     }
-    replaceDataWinSafely(dataWinTemp, config.dataWinPath);
+    versions.assertActiveVersion(config.dataWinPath, config.extractedDir);
+    if (config.multilang) {
+      const { assertGameClosed, installTransaction } = await import("./extraction/install-language.mjs");
+      assertGameClosed(config.dataWinPath);
+      installTransaction([{ source: dataWinTemp, target: config.dataWinPath }], path.join(path.dirname(config.dataWinPath), "deltatranslate-backups"));
+    } else {
+      replaceDataWinSafely(dataWinTemp, config.dataWinPath);
+    }
+    versions.recordGeneratedVersion(config.dataWinPath, config.extractedDir);
+    if (config.multilang) {
+      const { hashFile } = await import("./extraction/install-language.mjs");
+      const manifest = path.join(config.extractedDir, "multilang-install.json");
+      const previous = loadJson(manifest, {});
+      storage.atomicWrite(manifest, JSON.stringify({ ...previous, outputHash: hashFile(config.dataWinPath) }, null, 2), { json: true });
+      const cache = path.resolve(config.extractedDir, "SpriteEditorCache");
+      if (path.dirname(cache) !== path.resolve(config.extractedDir)) throw new Error("Cache de sprites invalide.");
+      fs.rmSync(cache, { recursive: true, force: true });
+    }
     return { ok: true, appliedAt: new Date().toISOString() };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -1093,10 +1149,20 @@ ipcMain.handle("apply-sprite-overrides", (event) =>
   applyWorkspaceOverrides(event, "sprite-progress", "Application des sprites au jeu via UTMT…")
 );
 
-ipcMain.handle("save-prefs", (_event, prefs) => {
-  fs.writeFileSync(prefsPath(), JSON.stringify(prefs, null, 2), "utf8");
+ipcMain.handle("save-prefs", (_event, prefs, projectId) => {
+  if (projectId !== storage.projectId(getConfig())) throw new Error("Le chapitre actif a changé. Préférences conservées.");
+  const next = storage.mergePreferences(loadJson(prefsPath(), {}), projectId, prefs);
+  const serialized = JSON.stringify(next, null, 2);
+  backupFile(prefsPath(), serialized);
+  storage.atomicWrite(prefsPath(), serialized, { json: true });
   return true;
 });
+
+ipcMain.handle("list-backups", () => {
+  const file = getConfig().langFrPath;
+  return file ? storage.listBackups(runtimeDirectory("backups"), file) : [];
+});
+ipcMain.handle("read-backup", (_event, id) => storage.readBackup(runtimeDirectory("backups"), getConfig().langFrPath, id));
 
 ipcMain.handle("open-backups", () => shell.openPath(runtimeDirectory("backups")));
 
@@ -1107,6 +1173,17 @@ ipcMain.handle("pick-datawin", async () => {
     properties: ["openFile"],
   });
   return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("discover-chapters", () => discoverChapters({ currentDataWin: getConfig().dataWinPath }));
+ipcMain.handle("validate-datawin", (_event, file) => validateDataWin(file));
+ipcMain.handle("pick-game-folder", async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Choisir le dossier DELTARUNE ou celui d’un chapitre",
+    properties: ["openDirectory"],
+  });
+  if (result.canceled) return null;
+  return findChapters(result.filePaths[0]);
 });
 
 ipcMain.handle("pick-utmt-folder", async () => {
@@ -1144,17 +1221,28 @@ ipcMain.handle("install-utmt", async (event) => {
 });
 
 let importRunning = false;
-ipcMain.handle("import-datawin", async (event, dataWinPath) => {
-  if (importRunning) return { ok: false, error: "Un import est déjà en cours." };
-  if (!dataWinPath || !fs.existsSync(dataWinPath)) {
-    return { ok: false, error: "Le fichier data.win est introuvable." };
-  }
-  const utmt = getUtmtStatus();
-  if (!utmt.ready) return { ok: false, error: "Installe ou lie UTMT CLI avant l'import." };
+let importAbort = null;
+let importInstalling = false;
+ipcMain.handle("cancel-import", () => {
+  if (importInstalling) return false;
+  importAbort?.abort();
+  return true;
+});
+ipcMain.handle("import-datawin", async (event, dataWinPath, options = {}) => {
+  if (importRunning || saveRunning || codeApplyRunning || runedeltaRunning) return { ok: false, error: "Une écriture est déjà en cours." };
+  // Réserver l’import avant toute attente pour empêcher deux extractions concurrentes.
   importRunning = true;
-  let imported = null;
-  const lines = [];
+  importAbort = new AbortController();
+  let stageDirectory = null;
   try {
+    const { normalizeLanguage } = await import("./extraction/languages.mjs");
+    const language = normalizeLanguage(options.language ?? "fr");
+    const validation = await validateDataWin(dataWinPath);
+    if (!validation.ok) return validation;
+    const utmt = getUtmtStatus();
+    if (!utmt.ready) return { ok: false, error: "Installe ou lie UTMT CLI avant l'import." };
+    let imported = null;
+    const lines = [];
     const result = await runNodeScript(
       path.join(ROOT, "extraction", "import-datawin.mjs"),
       [
@@ -1164,8 +1252,24 @@ ipcMain.handle("import-datawin", async (event, dataWinPath) => {
         utmt.cliPath,
         "--outdir",
         runtimeDirectory("extracted-imports"),
+        ...(options.force ? ["--force"] : []),
+        ...(options.newOriginal ? ["--new-original"] : []),
+        "--language", language,
+        "--coordinated-install",
+        ...(options.fontDonor ? ["--font-donor", String(options.fontDonor)] : []),
       ],
-      (line) => {
+      (line, child) => {
+        if (line.startsWith("IMPORT_WORKSPACE ")) {
+          stageDirectory = JSON.parse(line.slice("IMPORT_WORKSPACE ".length));
+          return;
+        }
+        if (line === "IMPORT_INSTALLING") {
+          if (importAbort.signal.aborted) return;
+          importInstalling = true;
+          event.sender.send("import-progress", "IMPORT_INSTALLING");
+          child.stdin.write("INSTALL\n");
+          return;
+        }
         if (line.startsWith("IMPORT_DONE ")) {
           try {
             imported = JSON.parse(line.slice("IMPORT_DONE ".length));
@@ -1174,7 +1278,8 @@ ipcMain.handle("import-datawin", async (event, dataWinPath) => {
         }
         lines.push(line);
         if (!event.sender.isDestroyed()) event.sender.send("import-progress", line);
-      }
+      },
+      importAbort.signal
     );
     if (result.code === 0 && imported) {
       const config = updateConfig(imported);
@@ -1183,9 +1288,19 @@ ipcMain.handle("import-datawin", async (event, dataWinPath) => {
     }
     return {
       ok: false,
-      error: `L'import a échoué (code ${result.code}).\n${lines.slice(-8).join("\n")}`,
+      error: importAbort.signal.aborted ? "Préparation annulée. Le chapitre précédent et ses traductions sont conservés." : `L'import a échoué (code ${result.code}).\n${lines.slice(-8).join("\n")}`,
     };
+  } catch (error) {
+    return { ok: false, error: error.message };
   } finally {
+    if (stageDirectory) {
+      try {
+        const { cleanupInterruptedWorkspace } = await import("./extraction/workspace-transaction.mjs");
+        cleanupInterruptedWorkspace(runtimeDirectory("extracted-imports"), stageDirectory);
+      } catch (error) { console.error(`Nettoyage de l’import : ${error.message}`); }
+    }
     importRunning = false;
+    importAbort = null;
+    importInstalling = false;
   }
 });

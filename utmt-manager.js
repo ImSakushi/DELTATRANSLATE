@@ -63,6 +63,7 @@ function request(url, options = {}) {
         resolve(res);
       }
     );
+    req.setTimeout(30000, () => req.destroy(new Error("Le téléchargement ne répond plus. Vérifie ta connexion Internet, puis réessaie.")));
     req.on("error", reject);
   });
 }

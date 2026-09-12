@@ -187,22 +187,26 @@ export class Preview {
 
   // exact=true : ne pas se replier sur la frame 0 si la frame demandée manque
   async sprite(name, frame = 0, exact = false) {
+    const variant = `${name}_${this.language}`;
+    if (this.language && !["en", "ja"].includes(this.language) &&
+        (this.spriteFiles.has(`${variant}_${frame}.png`) || this.spriteFiles.has(`${variant}_0.png`))) name = variant;
     let file = `${name}_${frame}.png`;
     if (!this.spriteFiles.has(file)) {
       if (exact) return null;
       file = `${name}_0.png`; // repli sur la frame 0
       if (!this.spriteFiles.has(file)) return null;
     }
-    if (!SPRITE_CACHE.has(file)) {
+    const cacheKey = this.extractedDir + "/" + file;
+    if (!SPRITE_CACHE.has(cacheKey)) {
       const img = new Image();
       img.src =
         "file:///" + (this.extractedDir + "/sprites/" + file).replace(/\\/g, "/");
       SPRITE_CACHE.set(
-        file,
+        cacheKey,
         img.decode().then(() => img).catch(() => null)
       );
     }
-    return SPRITE_CACHE.get(file);
+    return SPRITE_CACHE.get(cacheKey);
   }
 
   async sceneImage(file) {
@@ -220,6 +224,7 @@ export class Preview {
   // state: { fc, fe, typer, bubbleSide } hérité de la séquence
   // -------------------------------------------------------------------------
   async render(text, mode, state = {}) {
+    this.language = state.language ?? "en";
     this.jewelTimer++;
     text = applyLanguageTypography(text, state.language);
     if (state.choiceOptions) {

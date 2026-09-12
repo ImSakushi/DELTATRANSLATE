@@ -133,8 +133,14 @@ function mergeLanguages(base, local, remote, conflictResolution = null) {
     else if (sameValue(localValue, baseValue)) chosen = remoteValue;
     else if (sameValue(remoteValue, baseValue)) chosen = localValue;
     else {
-      if (conflictResolution === "local") chosen = localValue;
-      else if (conflictResolution === "remote") chosen = remoteValue;
+      const resolution = typeof conflictResolution === "object" && conflictResolution !== null
+        ? conflictResolution[key] : conflictResolution;
+      const observed = { base: baseValue === MISSING ? null : baseValue, local: localValue === MISSING ? null : localValue, remote: remoteValue === MISSING ? null : remoteValue };
+      const stale = resolution?.expected && ["base", "local", "remote"].some(side => resolution.expected[side] !== observed[side]);
+      const choice = stale ? null : resolution?.choice ?? resolution;
+      if (choice === "local") chosen = localValue;
+      else if (choice === "remote") chosen = remoteValue;
+      else if (!stale && resolution && typeof resolution === "object" && typeof resolution.value === "string") chosen = resolution.value;
       else {
         conflicts.push(key);
         conflictDetails.push({
@@ -471,6 +477,8 @@ async function installRunedelta(options) {
     serializeLanguage,
     backupFile,
   } = options;
+  const targetPath = gameLanguagePath(config);
+  const targetRevision = revision(targetPath);
   const chapter = detectChapter(config);
   const relativePath = languageRelativePath(chapter);
   await ensureRepository(directory, remoteUrl);
@@ -490,11 +498,10 @@ async function installRunedelta(options) {
 
   const sourcePath = path.join(directory, ...relativePath.split("/"));
   const language = readLanguage(sourcePath, `Runedelta chapitre ${chapter}`);
-  const targetPath = gameLanguagePath(config);
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const serialized = serializeLanguage(language);
   const backup = backupFile(targetPath, serialized);
-  fs.writeFileSync(targetPath, serialized, "utf8");
+  atomicWrite(targetPath, serialized, { json: true, expected: targetRevision });
   let attributions = {};
   let attributionError = null;
   try {
@@ -531,7 +538,7 @@ async function resolveMergeConflict(directory, relativePath, mergedContent) {
   }
 
   const sourcePath = path.join(directory, ...relativePath.split("/"));
-  fs.writeFileSync(sourcePath, mergedContent, "utf8");
+  atomicWrite(sourcePath, mergedContent, { json: true });
   await git(["add", "--", relativePath], directory);
   await git(["commit", "--no-edit"], directory);
 }
@@ -547,6 +554,8 @@ async function synchronizeRunedelta(options) {
     push = true,
     conflictResolution = null,
   } = options;
+  const targetPath = gameLanguagePath(config);
+  const targetRevision = revision(targetPath);
   const chapter = detectChapter(config);
   const relativePath = languageRelativePath(chapter);
   await ensureRepository(directory, remoteUrl);
@@ -572,7 +581,6 @@ async function synchronizeRunedelta(options) {
   const baseLanguage = await showLanguage(directory, mergeBase, relativePath);
   const headLanguage = await showLanguage(directory, "HEAD", relativePath);
   const remoteLanguage = await showLanguage(directory, remoteRef, relativePath);
-  const targetPath = gameLanguagePath(config);
   const gameLanguage = suppliedLanguage
     ? validateLanguage(suppliedLanguage, "traductions de l’éditeur")
     : fs.existsSync(targetPath)
@@ -583,7 +591,7 @@ async function synchronizeRunedelta(options) {
     baseLanguage,
     headLanguage,
     gameLanguage,
-    conflictResolution
+    conflictResolution && (Object.hasOwn(conflictResolution, "local") || Object.hasOwn(conflictResolution, "remote")) ? conflictResolution.local : conflictResolution
   );
   if (localMerge.conflicts.length) {
     return {
@@ -598,7 +606,7 @@ async function synchronizeRunedelta(options) {
     baseLanguage,
     localMerge.language,
     remoteLanguage,
-    conflictResolution
+    conflictResolution && (Object.hasOwn(conflictResolution, "local") || Object.hasOwn(conflictResolution, "remote")) ? conflictResolution.remote : conflictResolution
   );
   if (finalMerge.conflicts.length) {
     return {
@@ -612,6 +620,7 @@ async function synchronizeRunedelta(options) {
 
   const language = validateLanguage(finalMerge.language, "fusion Runedelta");
   const serialized = serializeLanguage(language);
+  assertRevision(targetPath, targetRevision);
   const mergeResult = await git(["merge", "--no-edit", remoteRef], directory, {
     allowFailure: true,
   });
@@ -621,7 +630,7 @@ async function synchronizeRunedelta(options) {
 
   const sourcePath = path.join(directory, ...relativePath.split("/"));
   const repositoryLanguage = readLanguage(sourcePath, `Runedelta chapitre ${chapter}`);
-  fs.writeFileSync(sourcePath, serialized, "utf8");
+  atomicWrite(sourcePath, serialized, { json: true });
   await git(["add", "--", relativePath], directory);
   const staged = await git(["diff", "--cached", "--quiet", "--", relativePath], directory, {
     allowFailure: true,
@@ -640,7 +649,7 @@ async function synchronizeRunedelta(options) {
       { allowFailure: true }
     );
     if (commit.code !== 0) {
-      fs.writeFileSync(sourcePath, serializeLanguage(repositoryLanguage), "utf8");
+      atomicWrite(sourcePath, serializeLanguage(repositoryLanguage), { json: true });
       await git(["add", "--", relativePath], directory, { allowFailure: true });
       throw new Error((commit.stderr || commit.stdout || "Le commit Git a échoué.").trim());
     }
@@ -651,7 +660,7 @@ async function synchronizeRunedelta(options) {
 
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const backup = backupFile(targetPath, serialized);
-  fs.writeFileSync(targetPath, serialized, "utf8");
+  atomicWrite(targetPath, serialized, { json: true, expected: targetRevision });
 
   let pushError = networkError;
   if (push && !networkError) {
@@ -759,3 +768,4 @@ module.exports = {
   synchronizeRunedelta,
   validateLanguage,
 };
+const { atomicWrite, revision, assertRevision } = require("./storage.js");

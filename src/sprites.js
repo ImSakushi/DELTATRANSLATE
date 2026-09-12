@@ -139,7 +139,7 @@ export class SpriteEditor {
         const state = imported
           ? '<span class="sprite-li-state local">Import local</span>'
           : entry.variant
-            ? '<span class="sprite-li-state ok">_fr détecté</span>'
+            ? `<span class="sprite-li-state ok">_${escapeHtml(entry.language ?? "fr")} prêt</span>`
             : '<span class="sprite-li-state">À faire</span>';
         item.innerHTML = `
           <div class="sprite-li-name">${escapeHtml(entry.name)}</div>
@@ -186,8 +186,8 @@ export class SpriteEditor {
     this.$("sprite-reset-frame").disabled = !overridden;
 
     const badges = [];
-    if (entry.variant) badges.push('<span class="sprite-badge ok">✓ VERSION _fr DÉTECTÉE</span>');
-    else badges.push('<span class="sprite-badge todo">AUCUNE VARIANTE _fr</span>');
+    if (entry.variant) badges.push(`<span class="sprite-badge ok">✓ VARIANTE ${escapeHtml((entry.language ?? "fr").toUpperCase())} PRÊTE</span>`);
+    else badges.push('<span class="sprite-badge todo">AUCUNE VARIANTE</span>');
     if (entry.overrideFrames.length) {
       badges.push(`<span class="sprite-badge local">${entry.overrideFrames.length} FRAME${entry.overrideFrames.length > 1 ? "S" : ""} IMPORTÉE${entry.overrideFrames.length > 1 ? "S" : ""}</span>`);
     }
@@ -197,7 +197,7 @@ export class SpriteEditor {
       : "Importer la traduction de cette frame";
     this.$("sprite-import-hint").textContent = entry.variant
       ? `Le PNG ${entry.width}×${entry.height} px remplacera ${entry.targetName}, frame ${this.frame}.`
-      : `Pas de _fr : le PNG ${entry.width}×${entry.height} px remplacera l'image source dans la copie recompilée.`;
+      : `Prépare la langue depuis les paramètres pour créer une variante indépendante de ce sprite.`;
   }
 
   frameCount(entry = this.selected()) {

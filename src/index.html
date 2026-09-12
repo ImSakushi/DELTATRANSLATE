@@ -5,6 +5,8 @@
   <title>DELTATRANSLATE</title>
   <link id="theme-css" rel="stylesheet" href="themes/deltarune.css" />
   <link rel="stylesheet" href="themes/sprites.css" />
+  <link rel="stylesheet" href="themes/setup.css" />
+  <link rel="stylesheet" href="themes/review.css" />
 </head>
 <body>
   <div id="window-titlebar">
@@ -27,12 +29,13 @@
         <span class="theme-icon theme-icon-classic" aria-hidden="true">▣</span>
         <span class="theme-icon theme-icon-dr" aria-hidden="true">♥</span>
       </button>
-      <button id="btn-import" data-tooltip="Importer un data.win DELTARUNE (n'importe quel chapitre)">⚙ data.win</button>
+      <button id="btn-import" data-tooltip="Choisir ou préparer un chapitre de DELTARUNE">📂 Chapitre</button>
       <button id="btn-code" data-tooltip="Lire le GML de la scène sélectionnée et modifier ponctuellement le code">⌘ Code GML</button>
       <label class="chk backup-toggle" data-tooltip="Créer des backups avant les sauvegardes et pendant les modifications non sauvegardées">
         <input type="checkbox" id="chk-backups" /> Backups
       </label>
-      <button id="btn-backups" data-tooltip="Ouvrir le dossier des backups">🗁 Dossier</button>
+      <button id="btn-backups" data-tooltip="Comparer et restaurer les versions précédentes">🗁 Historique</button>
+      <button id="btn-quality" data-tooltip="Vérifier les traductions de tout le chapitre">Contrôle qualité</button>
       <button id="btn-reload" data-tooltip="Recharger le fichier du jeu (écrase les modifs non sauvées)">⟳ Recharger</button>
       <button id="btn-save" data-tooltip="Toutes les modifications sont sauvegardées" disabled>✓ Sauvegardé</button>
       <button id="btn-publish" class="hidden" data-tooltip="Publier les traductions sauvegardées sur GitHub">↑ Publier</button>
@@ -50,9 +53,79 @@
   </nav>
 
   <!-- ==================== Modal import data.win ==================== -->
-  <div id="import-modal" class="modal hidden">
-    <div class="modal-box">
-      <h2 id="import-title">Configurer DELTATRANSLATE</h2>
+  <div id="import-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="import-title">
+    <div class="modal-box setup-box">
+      <p class="setup-eyebrow">DELTATRANSLATE</p>
+      <h2 id="import-title" tabindex="-1">Bienvenue !</h2>
+      <div id="chapter-setup">
+      <p class="setup-intro">Choisis le chapitre à traduire. On prépare tout le nécessaire pour toi.</p>
+      <ol class="setup-steps" aria-label="Préparation du chapitre">
+        <li data-setup-step="choose" aria-current="step"><span>1</span> Choisir</li>
+        <li data-setup-step="prepare"><span>2</span> Préparer</li>
+        <li data-setup-step="done"><span>3</span> Traduire</li>
+      </ol>
+      <div id="setup-selection">
+        <label for="setup-language">Langue à ajouter ou à traduire</label>
+        <select id="setup-language">
+          <option value="fr">Français (FR)</option>
+          <option value="es">Espagnol (ES)</option>
+          <option value="de">Allemand (DE)</option>
+          <option value="it">Italien (IT)</option>
+          <option value="pt_br">Portugais du Brésil (PT-BR)</option>
+          <option value="custom">Autre langue…</option>
+        </select>
+        <label id="setup-language-custom-label" class="hidden" for="setup-language-custom">Code de langue</label>
+        <input id="setup-language-custom" class="hidden" type="text" maxlength="24" placeholder="Ex. : pl, ko, zh-CN" autocomplete="off" />
+        <p class="modal-hint">Un fichier lang_&lt;code&gt;.json et des ressources séparées seront préparés. L’anglais et le japonais restent disponibles. Ferme le jeu avant la préparation.</p>
+        <button id="btn-font-donor" type="button">Choisir les polices d’un mod existant…</button>
+        <button id="btn-clear-font-donor" type="button" class="hidden">Retirer le donneur</button>
+        <p id="setup-font-donor" class="modal-hint">Pour les accents et les autres alphabets, sélectionne le data.win d’un mod dont les polices les affichent. Seules ses polices compatibles seront importées dans ta langue.</p>
+        <h3 id="datawin-step-title">Ton chapitre</h3>
+        <p id="chapter-discovery-status" class="modal-hint" role="status">Recherche de DELTARUNE dans Steam…</p>
+        <div id="detected-chapters" class="chapter-options" role="group" aria-label="Chapitres détectés"></div>
+        <div class="modal-actions">
+          <button id="btn-pick-game-folder" type="button">📂 Choisir le dossier du jeu…</button>
+          <button id="btn-pick-datawin" type="button">Choisir un data.win…</button>
+        </div>
+        <div id="datawin-dropzone" class="dropzone" role="button" tabindex="0" aria-label="Choisir un fichier data.win">
+          <strong>Tu peux aussi déposer un data.win ici</strong>
+          <span>Il se trouve dans le dossier du chapitre à traduire.</span>
+        </div>
+        <details class="setup-help">
+          <summary>Où trouver le dossier du jeu ?</summary>
+          <p>Dans Steam, ouvre les fichiers locaux de DELTARUNE depuis le menu Gérer.
+          Sélectionne ce dossier ici : les chapitres qu’il contient seront proposés automatiquement.
+          Pour une autre installation, choisis directement son dossier ou le data.win du chapitre.</p>
+        </details>
+      </div>
+      <div id="setup-selected" class="setup-selected hidden">
+        <strong id="setup-selected-label"></strong>
+        <span id="setup-selected-path"></span>
+      </div>
+      <p id="setup-download-note" class="modal-hint">Si nécessaire, l’outil de lecture du jeu (UTMT) sera téléchargé automatiquement. Une connexion Internet est alors requise.</p>
+      <p class="modal-hint">Les ressources sont extraites de ta copie du jeu et restent sur ton ordinateur. Aucun fichier de DELTARUNE n’est fourni avec l’application.</p>
+      <div id="setup-progress" class="hidden" role="status" aria-live="polite">
+        <strong id="setup-progress-title"></strong>
+        <p id="setup-progress-description" class="modal-hint"></p>
+        <div class="setup-activity" aria-hidden="true"></div>
+        <small id="setup-elapsed"></small>
+      </div>
+      <div id="utmt-progress" class="install-progress hidden">
+        <div><span id="utmt-progress-fill"></span></div>
+        <small id="utmt-progress-label"></small>
+      </div>
+      <div id="setup-error" class="setup-error hidden" role="alert"></div>
+      <div id="setup-success" class="setup-success hidden">
+        <h3>Ton chapitre est prêt !</h3>
+        <p>Sélectionne une ligne, écris sa traduction et découvre son rendu dans l’aperçu.</p>
+        <p>Enregistre avec <kbd>Ctrl+S</kbd> (ou <kbd>⌘S</kbd> sur Mac).</p>
+        <p id="setup-save-target" class="modal-hint"></p>
+        <p class="modal-hint">Pour rejoindre un projet de traduction, tu retrouveras Runedelta dans la barre du haut.</p>
+      </div>
+      <details id="setup-advanced" class="setup-help">
+        <summary>Options avancées · installation manuelle et chemins</summary>
+        <label class="chk"><input type="checkbox" id="setup-force" /> Réextraire toutes les ressources</label>
+        <label class="chk"><input type="checkbox" id="setup-new-original" /> Le fichier sélectionné est un nouvel original (mise à jour officielle, sans modifications)</label>
       <section id="current-chapter">
         <h3>Chapitre chargé</h3>
         <div class="import-paths">
@@ -61,8 +134,22 @@
           <div><b>Extraction locale :</b> <span id="cur-extracted">—</span></div>
         </div>
       </section>
-
-      <section id="runedelta-section">
+      <section id="utmt-setup-section">
+        <h3>Outil de lecture du jeu</h3>
+        <div id="utmt-status" class="setup-status">Vérification…</div>
+        <p class="modal-hint">Tu disposes déjà d’UndertaleModTool CLI ? Lie son dossier pour l’utiliser sans téléchargement.</p>
+        <div class="modal-actions">
+          <button id="btn-pick-utmt" type="button">📂 Lier mon dossier UTMT…</button>
+          <button id="btn-install-utmt" type="button">↓ Installer UTMT</button>
+        </div>
+      </section>
+      </details>
+      <details id="setup-log-details" class="setup-help hidden">
+        <summary>Détails de la préparation</summary>
+        <pre id="import-log"></pre>
+      </details>
+      </div>
+      <section id="runedelta-section" class="hidden">
         <h3>Projet Runedelta</h3>
         <div id="runedelta-status" class="setup-status">Vérification de Git…</div>
         <label class="runedelta-remote" for="runedelta-remote">
@@ -83,39 +170,14 @@
         </div>
       </section>
 
-      <section id="utmt-setup-section">
-        <h3>1. UndertaleModTool CLI</h3>
-        <div id="utmt-status" class="setup-status">Vérification…</div>
-        <p class="modal-hint">
-          Lie une installation existante d'UTMT CLI, ou laisse l'outil télécharger et
-          extraire automatiquement la dernière release officielle adaptée à ton système.
-        </p>
-        <div class="modal-actions">
-          <button id="btn-pick-utmt">📂 Lier mon dossier UTMT…</button>
-          <button id="btn-install-utmt" class="primary">↓ Installer UTMT</button>
+      <div class="setup-footer">
+        <div id="setup-primary-actions" class="modal-actions setup-primary-actions">
+          <button id="btn-prepare-chapter" class="primary" type="button" disabled>Préparer ce chapitre</button>
+          <button id="btn-open-editor" class="primary hidden" type="button">Commencer à traduire →</button>
+          <button id="btn-cancel-import" class="hidden" type="button">Annuler la préparation</button>
         </div>
-        <div id="utmt-progress" class="install-progress hidden">
-          <div><span id="utmt-progress-fill"></span></div>
-          <small id="utmt-progress-label"></small>
-        </div>
-      </section>
-
-      <h3 id="datawin-step-title">2. Importer un chapitre</h3>
-      <p class="modal-hint">
-        Glisse le <code>data.win</code> du chapitre ici, ou ouvre-le manuellement. Les strings,
-        fonts et portraits sont extraits localement : aucun asset du jeu n'est fourni par GitHub.
-        Si <code>lang/lang_fr.json</code> existe, il est édité directement. Sinon, l'outil garde
-        une copie anglaise originale et applique les traductions à la vraie source du chapitre.
-      </p>
-      <div id="datawin-dropzone" class="dropzone" role="button" tabindex="0">
-        <strong>Dépose data.win ici</strong>
-        <span>ou clique pour parcourir les fichiers</span>
+        <button id="btn-close-import" type="button">Fermer</button>
       </div>
-      <div class="modal-actions">
-        <button id="btn-pick-datawin">📂 Choisir un data.win…</button>
-        <button id="btn-close-import">Fermer</button>
-      </div>
-      <pre id="import-log" class="hidden"></pre>
     </div>
   </div>
 
@@ -313,7 +375,7 @@
       </section>
 
       <section class="text-block grow">
-        <label>🇫🇷 Français
+        <label><span id="translation-language-label">🇫🇷 Français</span>
           <span class="editor-meta">
             <span id="enter-hint"><kbd>Entrée</kbd> → <code>&amp;</code> · <kbd>Maj+Entrée</kbd> → vraie ligne</span>
             <span id="line-lens"></span>

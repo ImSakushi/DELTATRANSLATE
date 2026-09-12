@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
+let projectId = null;
 
 contextBridge.exposeInMainWorld("api", {
   getConfig: () => ipcRenderer.invoke("get-config"),
@@ -9,14 +10,20 @@ contextBridge.exposeInMainWorld("api", {
   getRunedeltaStatus: () => ipcRenderer.invoke("get-runedelta-status"),
   getRunedeltaAttributions: () => ipcRenderer.invoke("get-runedelta-attributions"),
   connectRunedelta: (remoteUrl) => ipcRenderer.invoke("connect-runedelta", remoteUrl),
-  syncRunedelta: (language, conflictResolution) =>
-    ipcRenderer.invoke("sync-runedelta", language, conflictResolution),
+  syncRunedelta: (language, conflictResolution, revision) =>
+    ipcRenderer.invoke("sync-runedelta", language, conflictResolution, revision, projectId),
   disconnectRunedelta: () => ipcRenderer.invoke("disconnect-runedelta"),
   openRunedelta: () => ipcRenderer.invoke("open-runedelta"),
   setTitleBarTheme: (theme) => ipcRenderer.invoke("set-title-bar-theme", theme),
-  loadData: () => ipcRenderer.invoke("load-data"),
-  saveLang: (langObj) => ipcRenderer.invoke("save-lang", langObj),
-  backupLang: (langObj) => ipcRenderer.invoke("backup-lang", langObj),
+  loadData: async () => {
+    const result = await ipcRenderer.invoke("load-data");
+    projectId = result.projectId;
+    return result;
+  },
+  saveLang: (langObj, revision) => ipcRenderer.invoke("save-lang", langObj, revision, projectId),
+  backupLang: (langObj) => ipcRenderer.invoke("backup-lang", langObj, projectId),
+  listBackups: () => ipcRenderer.invoke("list-backups"),
+  readBackup: (id) => ipcRenderer.invoke("read-backup", id),
   getSpriteFrame: (name, role, frame) => ipcRenderer.invoke("get-sprite-frame", name, role, frame),
   exportSpriteFrame: (name, frame) => ipcRenderer.invoke("export-sprite-frame", name, frame),
   importSpriteFrame: (name, frame, file) =>
@@ -29,7 +36,7 @@ contextBridge.exposeInMainWorld("api", {
   saveCodeFile: (file, content) => ipcRenderer.invoke("save-code-file", file, content),
   resetCodeFile: (file) => ipcRenderer.invoke("reset-code-file", file),
   applyCodeOverrides: () => ipcRenderer.invoke("apply-code-overrides"),
-  savePrefs: (prefs) => ipcRenderer.invoke("save-prefs", prefs),
+  savePrefs: (prefs) => ipcRenderer.invoke("save-prefs", prefs, projectId),
   confirmClose: (unsavedCount) => ipcRenderer.invoke("confirm-close", unsavedCount),
   closeWindow: () => ipcRenderer.invoke("close-window"),
   onCloseRequested: (cb) => ipcRenderer.on("close-requested", cb),
@@ -40,10 +47,14 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.on("update-install-requested", (_event, version) => cb(version)),
   openBackups: () => ipcRenderer.invoke("open-backups"),
   pickDataWin: () => ipcRenderer.invoke("pick-datawin"),
+  discoverChapters: () => ipcRenderer.invoke("discover-chapters"),
+  pickGameFolder: () => ipcRenderer.invoke("pick-game-folder"),
+  validateDataWin: (file) => ipcRenderer.invoke("validate-datawin", file),
   pickUtmtFolder: () => ipcRenderer.invoke("pick-utmt-folder"),
   installUtmt: () => ipcRenderer.invoke("install-utmt"),
   getPathForFile: (file) => webUtils.getPathForFile(file),
-  importDataWin: (p) => ipcRenderer.invoke("import-datawin", p),
+  importDataWin: (p, options) => ipcRenderer.invoke("import-datawin", p, options),
+  cancelImport: () => ipcRenderer.invoke("cancel-import"),
   onImportProgress: (cb) =>
     ipcRenderer.on("import-progress", (_e, line) => cb(line)),
   onUtmtProgress: (cb) =>

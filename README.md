@@ -13,7 +13,7 @@
   </p>
 </div>
 
-DELTATRANSLATE est une application de bureau conçue pour traduire les textes de **DELTARUNE** de l’anglais vers le français. Elle associe un éditeur rapide à une prévisualisation en temps réel des textbox : polices bitmap, portraits, couleurs, retours à la ligne, boîtes de dialogue et bulles de combat.
+DELTATRANSLATE est une application de bureau conçue pour traduire les textes de **DELTARUNE** de l’anglais vers la langue de votre choix. Elle associe un éditeur rapide à une prévisualisation en temps réel des textbox : polices bitmap, portraits, couleurs, retours à la ligne, boîtes de dialogue et bulles de combat.
 
 > [!IMPORTANT]
 > DELTATRANSLATE ne distribue aucune donnée de DELTARUNE. Vous devez posséder votre propre copie du jeu et importer le `data.win` du chapitre que vous souhaitez traduire. Toutes les ressources nécessaires sont extraites localement.
@@ -46,15 +46,24 @@ Traduire une ligne sans la voir dans sa textbox réelle rend les problèmes de l
 
 ## Installation
 
-### Prérequis
+### Version prête à utiliser (recommandé)
 
-- [Node.js](https://nodejs.org/) avec `npm` ;
-- une copie installée de DELTARUNE ;
-- le fichier `data.win` du chapitre à traduire ;
-- une connexion Internet au premier lancement si vous choisissez l’installation automatique d’UTMT.
-- [Git](https://git-scm.com/) si vous souhaitez synchroniser le projet Runedelta.
+Téléchargez DELTATRANSLATE depuis la [page des versions](https://github.com/ImSakushi/DELTATRANSLATE/releases/latest).
+
+| Système | Fichier à choisir | Installation |
+| --- | --- | --- |
+| Windows | `DELTATRANSLATE-Setup-…-Windows-x64.exe` | Double-cliquez : l’application s’installe pour votre compte et s’ouvre automatiquement. |
+| macOS | `DELTATRANSLATE-…-macOS-universal.dmg` | Ouvrez l’image et glissez l’application dans Applications. |
+| Linux | `DELTATRANSLATE-…-Linux-x64.AppImage` ou `.deb` | Autorisez l’exécution de l’AppImage, ou installez le paquet DEB. |
+
+La version Windows **Portable** permet aussi de lancer l’application sans installation.
+Il vous faut seulement une copie installée de DELTARUNE et une connexion Internet si l’outil de lecture
+du jeu doit être téléchargé. **Ni Node.js ni Git ne sont nécessaires pour traduire avec la version distribuée.**
+Git est uniquement requis pour la fonction facultative Runedelta.
 
 ### Depuis le dépôt
+
+Cette option s’adresse au développement et nécessite Node.js avec npm ainsi que Git pour cloner le dépôt.
 
 ```bash
 git clone https://github.com/ImSakushi/DELTATRANSLATE.git
@@ -63,18 +72,27 @@ npm install
 npm start
 ```
 
-L’application utilise [UndertaleModTool CLI](https://github.com/UnderminersTeam/UndertaleModTool/releases/) pour lire les données du jeu. Au premier lancement, vous pourrez soit lier une installation existante, soit laisser DELTATRANSLATE télécharger la version adaptée à Windows, macOS ou Linux.
+L’application utilise UndertaleModTool CLI pour lire les données du jeu. Il est installé automatiquement
+lors de la préparation du premier chapitre si nécessaire. Une installation existante peut être liée depuis
+**Options avancées**, notamment pour travailler hors ligne.
 
 Les versions installées vérifient aussi les nouvelles releases GitHub au démarrage. Lorsqu’une version supérieure est disponible, DELTATRANSLATE propose de la télécharger, sauvegarde le travail en cours avant l’installation, puis redémarre automatiquement. Les lancements depuis le code source avec `npm start` ne déclenchent pas cette vérification.
 
 ## Premier démarrage
 
-1. Lancez l’application avec `npm start`.
-2. Cliquez sur **Installer UTMT**, ou choisissez **Lier mon dossier UTMT…** si le CLI est déjà présent sur votre machine.
-3. Glissez le `data.win` d’un chapitre dans la zone d’import, ou cliquez sur **Choisir un data.win…**.
-4. Patientez pendant l’extraction. Selon la machine et le chapitre, cette étape peut prendre quelques minutes.
-5. Sélectionnez une ligne, saisissez sa traduction et contrôlez immédiatement son rendu dans la preview.
-6. Enregistrez avec `Ctrl+S`. DELTATRANSLATE écrit dans la cible adaptée au chapitre et crée une sauvegarde avant remplacement.
+1. Ouvrez DELTATRANSLATE et choisissez un chapitre parmi ceux détectés dans Steam.
+   Si le jeu n’est pas trouvé, cliquez sur **Choisir le dossier du jeu…**, ou déposez le `data.win` du chapitre.
+2. Choisissez la langue à ajouter : français, espagnol, allemand, ou **Autre langue…** avec son code.
+   Pour les accents, utilisez **Choisir les polices d’un mod existant…** et sélectionnez le `data.win` du mod donneur.
+   Les polices compatibles seront copiées uniquement dans les ressources de cette langue.
+3. Fermez le jeu, puis cliquez sur **Préparer ce chapitre**. DELTATRANSLATE installe UTMT si nécessaire,
+   extrait les ressources et prépare le sélecteur de langues sur une copie du jeu. Le résultat est recompilé,
+   rechargé et vérifié avant installation avec sauvegarde. Les étapes et le temps écoulé restent visibles.
+4. Cliquez sur **Commencer à traduire →**. Sélectionnez une ligne, saisissez sa traduction et contrôlez son aperçu.
+
+Enregistrez avec `Ctrl+S` (ou `⌘S` sur Mac). L’écran de fin de préparation indique la cible de sauvegarde.
+Les lancements suivants ouvrent directement le chapitre configuré. Un échec de préparation permet de
+réessayer sans recommencer un téléchargement d’UTMT déjà terminé ; le journal est disponible dans **Détails de la préparation**.
 
 Pour rejoindre Runedelta après l’import, ouvre **⇅ Runedelta**, conserve l’URL proposée et clique sur
 **Connecter et installer**. Le catalogue du chapitre est alors installé dans le jeu sous le nom
@@ -88,7 +106,22 @@ L’import génère localement :
 - les décors de rooms et les placements utiles au contexte visuel ;
 - les associations entre dialogues, personnages et expressions.
 
-Après l’import initial, le bouton **⚙ data.win** permet de changer de chapitre ou de relancer la configuration.
+Après l’import initial, le bouton **📂 Chapitre** permet de changer de chapitre ou de relancer la configuration.
+Runedelta possède son propre écran et n’est pas requis pour commencer à traduire.
+
+### Ajouter plusieurs langues à une copie vanilla
+
+La préparation crée `lang/lang_fr.json`, `lang/lang_es.json`, etc., avec l’anglais comme texte initial.
+Un fichier existant est conservé ; seules les clés absentes sont ajoutées. EN et JA restent disponibles.
+Rouvrez **📂 Chapitre**, sélectionnez le même chapitre et une autre langue pour l’ajouter indépendamment.
+Le lanceur adjacent est également adapté ; un chapitre sans fichier pour la langue choisie revient à l’anglais.
+
+Les sprites et polices ont des variantes propres à chaque langue (`_fr`, `_es`, `_pt_br`…).
+L’outil route leur affichage sans modifier les indices de sprites utilisés par la logique du jeu.
+Le donneur apporte uniquement ses polices compatibles : ni ses textes ni ses images ne remplacent les originaux.
+Les polices de corps différent sont signalées à la fin de la préparation. Le **Contrôle qualité** permet ensuite
+de repérer les glyphes absents. Ajouter un code de langue ne fournit pas automatiquement un alphabet,
+une composition de texte ou une mise en page adaptés à toutes les écritures.
 
 ## Fonctionnalités
 
@@ -116,11 +149,11 @@ Après l’import initial, le bouton **⚙ data.win** permet de changer de chapi
 ### Sprites traduits
 
 - onglet dédié avec recherche, filtres et liste virtualisée de tous les sprites du chapitre ;
-- détection automatique des variantes portant le suffixe `_fr` ;
-- comparaison pixelisée de l'original et de la version utilisée en français, frame par frame ;
+- détection automatique des variantes portant le suffixe de la langue active ;
+- comparaison pixelisée de l’original et de sa traduction, frame par frame ;
 - export de la frame originale en PNG pour la retoucher dans l'éditeur d'images de son choix ;
 - import d'un PNG par clic ou glisser-déposer, avec contrôle strict des dimensions ;
-- si une variante `_fr` existe, elle est modifiée ; sinon l'image source est remplacée uniquement dans la copie recompilée ;
+- dans un chapitre préparé avec le setup multilingue, import dans une variante indépendante, créée automatiquement si nécessaire ;
 - annulation indépendante de chaque frame et réapplication automatique des imports lors des recompilations suivantes.
 
 ## Travailler avec Runedelta
@@ -164,25 +197,45 @@ générique `Traducteur Runedelta`, sans modifier la configuration Git globale.
 
 ## Sauvegarde et sécurité
 
-Le mode de sauvegarde est sélectionné automatiquement selon le chapitre :
+Le setup multilingue enregistre les textes dans le fichier propre à la langue. Les anciens projets restent lisibles :
 
 | Situation détectée | Cible utilisée | Protection appliquée |
 | --- | --- | --- |
-| `lang/lang_fr.json` existe | Le fichier français existant | Backup horodaté avant écriture |
+| Langue préparée par le setup | `lang/lang_<code>.json` | Traductions existantes préservées, backup avant sauvegarde |
 | Runedelta est connecté | `lang/lang_fr.json` + `strings_chapitre_N.json` | Fusion clé par clé, commit local, puis push |
-| Le chapitre lit ses textes depuis `lang_en.json` | `lang_en.json` | Conservation de `lang_en.json.original` comme référence anglaise |
-| Les textes doivent être recompilés dans le jeu | `data.win` actif | Conservation de `data-original.win`, génération temporaire et remplacement atomique |
+| Installation du sélecteur ou de sprites traduits | `data.win` du chapitre et, si présent, du lanceur | Sources immuables, compilation vérifiée, sauvegarde durable dans `deltatranslate-backups` |
+| Ancien projet en mode recompilation | `data.win` actif | Source conservée et remplacement atomique ; réimporter pour passer au setup multilingue |
 
 Garanties importantes :
 
 - le `data.win` utilisé comme source d’extraction reste en lecture seule ;
 - le fichier anglais de référence n’est jamais normalisé ni réordonné ;
-- jusqu’à **40 sauvegardes** sont conservées par cible ;
-- une copie automatique supplémentaire est créée après 30 minutes de modifications non enregistrées ;
+- jusqu’à **40 sauvegardes avant écriture et 40 brouillons** sont conservés par cible, séparément pour chaque installation et langue ;
+- un brouillon des modifications non enregistrées est conservé toutes les minutes lorsque les backups sont activés ;
 - si le remplacement d’un `data.win` échoue, le fichier précédent est restauré ;
+- si le jeu ou une traduction change pendant la compilation, l’installation est refusée avant remplacement ;
+- les textures, sprites, polices et sons d’origine du chapitre sont comparés après recompilation ;
 - les validations, choix de portrait, modes et autres préférences sont conservés séparément.
 
-Le bouton **🗁 Backups** ouvre directement le dossier contenant les copies de sécurité.
+Le bouton **🗁 Historique** compare les copies avec le texte actuel et permet de restaurer une seule ligne dans l’éditeur. La restauration doit ensuite être enregistrée pour être appliquée au jeu. Les anciennes copies, dont le nom seul ne permet pas d’identifier le chapitre, restent accessibles via **Ouvrir le dossier des backups**.
+
+Les écritures JSON passent par un fichier temporaire validé puis renommé. Si le fichier a été modifié par un autre programme depuis son chargement, la sauvegarde est refusée et une copie de la saisie est conservée dans l’historique. Les caractères saisis pendant une sauvegarde restent dans l’éditeur et sont signalés comme non enregistrés. La fermeture propose **Enregistrer**, **Quitter sans enregistrer** et **Annuler**.
+
+Les validations et les choix de portrait, de boîte et de scène sont isolés par installation et langue. Les préférences historiques sont rattachées au projet actif à leur première migration, sans suppression du document d’origine. Le thème et le réglage des backups restent communs.
+
+### Contrôle qualité
+
+Le bouton **Contrôle qualité** analyse tout le chapitre avec le moteur de preview : arguments `~1`, `~2`, balises incomplètes, terminaisons de dialogue, glyphes absents et avertissements de débordement. Les valeurs dynamiques et les éléments non simulés sont signalés comme tels. Il ne remplace pas une comparaison visuelle en jeu.
+
+Les résultats sont filtrables et affichés par groupes de 100 ; cliquer sur une clé ouvre la traduction. L’analyse peut être interrompue. Les clés absentes de la référence anglaise restent accessibles via **Sans réf**.
+
+### Réimport et mises à jour du jeu
+
+Le réimport prépare une extraction séparée et l’active après réussite. L’annulation conserve l’extraction précédente ; la phase finale d’installation est protégée contre l’annulation. **Options avancées → Réextraire toutes les ressources** force la reconstruction.
+
+Si le jeu diffère de la version importée et des compilations connues, l’application demande un original vérifié. L’option **Le fichier sélectionné est un nouvel original** permet d’importer une mise à jour officielle ; les anciennes sources sont conservées. Les traductions retrouvées sans ambiguïté par leur fichier et leur anglais sont proposées dans l’éditeur comme modifications à enregistrer. Un anglais modifié est signalé par le contrôle qualité. Les anciens overrides incompatibles restent archivés dans l’espace de traduction.
+
+Les tests de sauvegarde, migration, isolation des préférences et restauration sont exécutés sur les pull requests et avant les releases sous Windows, macOS et Linux.
 
 ## Raccourcis et codes de contrôle
 
@@ -229,6 +282,10 @@ Les fichiers générés lors d’un import restent sur votre machine :
 - clone Git local de Runedelta, si la synchronisation a été activée.
 
 Ces données sont placées dans le dossier utilisateur de l’application. Les anciennes installations qui possèdent déjà `config.json`, `prefs.json`, `backups/` ou `extracted-imports/` à côté du code continuent d’utiliser ces emplacements afin de ne pas perdre le travail existant.
+
+Chaque nouvelle extraction utilise un dossier propre à l’installation du jeu et au chapitre. Deux copies
+de DELTARUNE peuvent ainsi être traduites séparément. Les anciens dossiers d’extraction sont réutilisés
+quand leur manifeste identifie la même installation.
 
 ## Développement
 
@@ -278,13 +335,17 @@ Toute modification du rendu doit pouvoir être reliée au comportement observé 
 <details>
 <summary><strong>L’application demande UTMT à chaque lancement</strong></summary>
 
-Vérifiez que le dossier sélectionné contient bien `UndertaleModCli.exe` sous Windows ou `UndertaleModCli` sous macOS/Linux. Vous pouvez aussi utiliser **Installer UTMT** pour laisser l’application gérer son emplacement.
+Dans **Chapitre → Options avancées**, vérifiez que le dossier lié contient bien `UndertaleModCli.exe`
+sous Windows ou `UndertaleModCli` sous macOS/Linux. L’installation automatique est relancée si aucun outil utilisable n’est trouvé.
 </details>
 
 <details>
 <summary><strong>L’import semble bloqué</strong></summary>
 
-La première extraction décompile le code et exporte plusieurs ressources ; elle peut rester plusieurs minutes sur une même étape. Consultez le journal affiché dans la fenêtre d’import avant d’interrompre l’opération.
+La première extraction décompile le code et exporte plusieurs ressources ; elle peut rester plusieurs minutes sur une même étape.
+Le temps écoulé continue de s’afficher. Ouvrez **Détails de la préparation** pour consulter le journal.
+Si un téléchargement échoue, vérifiez la connexion puis cliquez sur **Réessayer la préparation** ;
+une installation locale d’UTMT peut aussi être liée depuis **Options avancées**.
 </details>
 
 <details>

@@ -2,12 +2,16 @@
 //   node extraction/import-datawin.mjs --datawin "<...>/data.win" --cli "<UndertaleModCli>"
 // 1. extrait code GML + fonts + sprites via UndertaleModTool CLI
 // 2. construit reference.json (catalogue EN + visages)
-// 3. utilise lang_fr.json s'il existe, sinon prépare un workspace dont les
-//    sauvegardes seront recompilées directement dans data.win
+// 3. ajoute une langue indépendante et son sélecteur dans le jeu
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawnSync } from "node:child_process";
+import { runTool } from "./process-runner.mjs";
+import { beginWorkspace, commitWorkspace, abandonWorkspace } from "./workspace-transaction.mjs";
+import { chooseSource, recordGeneratedVersion } from "./source-version.mjs";
+import { normalizeLanguage } from "./languages.mjs";
+import { planMigration } from "./translation-migration.mjs";
+import { installLanguage, restoreTransaction } from "./install-language.mjs";
 import {
   buildReference,
   buildReferenceFromLangJson,
@@ -22,6 +26,7 @@ import {
   makeRoomContextCsx,
 } from "./room-context.mjs";
 import { ensureBattleActorSprites } from "./battle-actors.mjs";
+import { extractionDirectory } from "./workspace-path.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -68,6 +73,7 @@ function clearGeneratedExtraction(outDir) {
 }
 
 const dataWin = arg("datawin");
+const targetLanguage = normalizeLanguage(arg("language", "fr"));
 const utmtDir = arg("utmt");
 const cli =
   arg("cli") ??
@@ -87,23 +93,26 @@ if (!cli || !fs.existsSync(cli)) {
 }
 
 const gameDir = path.dirname(dataWin);
-const name = path.basename(gameDir).replace(/[^\w.-]+/g, "_");
 const extractionRoot = path.resolve(arg("outdir", path.join(ROOT, "extracted-imports")));
-const outDir = path.join(extractionRoot, name);
-fs.mkdirSync(outDir, { recursive: true });
+const finalDir = extractionDirectory(extractionRoot, dataWin);
+const transaction = beginWorkspace(finalDir, stage => log(`IMPORT_WORKSPACE ${JSON.stringify(stage)}`));
+const outDir = transaction.stage;
+let committed = false;
+process.on("exit", () => { if (!committed) { try { abandonWorkspace(transaction); } catch {} } });
 
 const langDir = path.join(gameDir, "lang");
-const langFrCandidate = path.join(langDir, "lang_fr.json");
-const hasLangFr = fs.existsSync(langFrCandidate);
-const originalDataWin = path.join(gameDir, "data-original.win");
-let sourceDataWin = dataWin;
-if (!hasLangFr) {
-  if (!fs.existsSync(originalDataWin)) {
-    fs.copyFileSync(dataWin, originalDataWin);
-    log(`Snapshot anglais créé : ${originalDataWin}`);
+const previousReferencePath = path.join(outDir, "reference.json");
+const previousReference = fs.existsSync(previousReferencePath) ? JSON.parse(fs.readFileSync(previousReferencePath, "utf8")) : {};
+const previousLanguagePath = [path.join(langDir, `lang_${targetLanguage}.json`), path.join(outDir, `translation_${targetLanguage}.json`)].find(file => fs.existsSync(file));
+const previousLanguage = previousLanguagePath ? JSON.parse(fs.readFileSync(previousLanguagePath, "utf8")) : {};
+const version = chooseSource(dataWin, outDir, { hasLangFr: false, originalConfirmed: process.argv.includes("--new-original") });
+const sourceDataWin = version.source;
+if (version.changed) {
+  log("Nouvelle version du jeu : conservation des anciennes modifications GML et sprites dans un historique séparé.");
+  for (const directory of ["CodeOverrides", "SpriteOverrides", "LanguageSprites"]) {
+    const previous = path.join(outDir, directory);
+    if (fs.existsSync(previous)) fs.renameSync(previous, path.join(outDir, directory + "-previous-" + Date.now()));
   }
-  sourceDataWin = originalDataWin;
-  log(`Source de vérité : ${sourceDataWin}`);
 }
 
 log(`Import de : ${sourceDataWin}`);
@@ -124,10 +133,7 @@ if (alreadyExtracted && !force) {
   log("Étape 1/3 — extraction UTMT (peut prendre quelques minutes)…");
   const csxPath = path.join(os.tmpdir(), `deltatranslate_export_${Date.now()}.csx`);
   fs.writeFileSync(csxPath, makeCsx(outDir), "utf8");
-  const result = spawnSync(cli, ["load", sourceDataWin, "-s", csxPath], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const result = await runTool(cli, ["load", sourceDataWin, "-s", csxPath]);
   fs.rmSync(csxPath, { force: true });
   if (result.error) {
     console.error(`ERREUR UTMT: ${result.error.message}`);
@@ -174,10 +180,7 @@ if (sameExtractionSource) {
   fs.mkdirSync(fontDir, { recursive: true });
   const fontCsxPath = path.join(os.tmpdir(), `deltatranslate_fonts_${Date.now()}.csx`);
   fs.writeFileSync(fontCsxPath, makeFontsCsx(outDir), "utf8");
-  const fontResult = spawnSync(cli, ["load", dataWin, "-s", fontCsxPath], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const fontResult = await runTool(cli, ["load", dataWin, "-s", fontCsxPath]);
   fs.rmSync(fontCsxPath, { force: true });
   for (const line of (fontResult.stdout || "").split(/\r?\n/)) {
     if (line.trim().startsWith("FONTS_")) log(`  ${line.trim()}`);
@@ -199,7 +202,6 @@ if (sameExtractionSource) {
 // --- 2. référence anglaise + visages ---
 log("Étape 2/3 — catalogue anglais + détection des visages…");
 let ref = buildReference(codeDir, log);
-let legacyLanguagePath = null;
 if (Object.keys(ref).length < 50) {
   // Chapitres 1/2 : l'anglais vit dans lang_en.json, pas inline dans le code.
   log("  peu d'appels inline — bascule sur l'ancien système (lang_en.json)…");
@@ -220,7 +222,6 @@ if (Object.keys(ref).length < 50) {
   }
   const enJson = JSON.parse(fs.readFileSync(englishSource, "utf8"));
   ref = buildReferenceFromLangJson(codeDir, enJson, log);
-  legacyLanguagePath = plainLang;
 }
 
 const scope = scopeReferenceToChapter({
@@ -264,10 +265,7 @@ if (hasRoomContext && !force) {
   const requests = collectRoomContextRequests(ref, codeDir);
   const roomCsxPath = path.join(os.tmpdir(), `deltatranslate_rooms_${Date.now()}.csx`);
   fs.writeFileSync(roomCsxPath, makeRoomContextCsx(outDir, requests), "utf8");
-  const roomResult = spawnSync(cli, ["load", sourceDataWin, "-s", roomCsxPath], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const roomResult = await runTool(cli, ["load", sourceDataWin, "-s", roomCsxPath]);
   fs.rmSync(roomCsxPath, { force: true });
   for (const line of (roomResult.stdout || "").split(/\r?\n/)) {
     if (line.trim().startsWith("ROOM_CONTEXT_")) log(`  ${line.trim()}`);
@@ -293,44 +291,40 @@ ensureBattleActorSprites({
 
 const referencePath = path.join(outDir, "reference.json");
 fs.writeFileSync(referencePath, JSON.stringify(ref), "utf8");
+const migration = planMigration(previousReference, ref, previousLanguage);
+fs.writeFileSync(path.join(outDir, `migration-${targetLanguage}.json`), JSON.stringify(migration), "utf8");
+log(`Migration : ${Object.keys(migration.suggestions).length} traductions retrouvées, ${migration.review.length} textes anglais modifiés à relire, ${migration.orphaned.length} clés conservées sans référence.`);
 
 // --- 3. cible de traduction ---
 log("Étape 3/3 — cible de traduction…");
-let langFrPath;
-let storageMode;
-if (hasLangFr) {
-  langFrPath = langFrCandidate;
-  storageMode = "lang-json";
-  log(`  lang_fr.json existant : ${langFrPath}`);
-} else if (legacyLanguagePath && fs.existsSync(legacyLanguagePath)) {
-  // Ces chapitres lisent lang_en.json à l'exécution : modifier data.win ne
-  // changerait rien. Le snapshot .original reste la source anglaise immuable.
-  langFrPath = legacyLanguagePath;
-  storageMode = "lang-json";
-  log(`  ancien système : édition directe de ${langFrPath}`);
-} else {
-  langFrPath = path.join(outDir, "translation_fr.json");
-  storageMode = "datawin";
-  if (!fs.existsSync(langFrPath)) {
-    const ids = Object.keys(ref);
-    const lines = ["{", `  "date": ${JSON.stringify(String(Date.now()))},`];
-    ids.forEach((id, index) => {
-      const comma = index < ids.length - 1 ? "," : "";
-      lines.push(`  ${JSON.stringify(id)}: ${JSON.stringify(ref[id].en)}${comma}`);
+const beforeInstall = async () => {
+  if (!process.argv.includes("--coordinated-install")) return;
+  await new Promise((resolve, reject) => {
+    process.stdin.once("data", (data) => {
+      process.stdin.pause();
+      if (data.toString().trim() === "INSTALL") resolve();
+      else reject(new Error("Installation interrompue avant toute écriture."));
     });
-    lines.push("}");
-    fs.writeFileSync(langFrPath, lines.join("\n"), "utf8");
-  }
-  log(`  mode data.win : workspace ${langFrPath}`);
-  log(`  chaque sauvegarde recompilera ${dataWin} depuis le snapshot anglais.`);
+    process.stdin.resume();
+    log("IMPORT_INSTALLING");
+  });
+};
+const languageConfig = await installLanguage({ dataWin, source: sourceDataWin, cli, codeDir,
+  workspace: outDir, reference: ref, language: targetLanguage, fontDonor: arg("font-donor"), force, log, beforeInstall });
+try {
+  recordGeneratedVersion(dataWin, outDir);
+  commitWorkspace(transaction);
+  committed = true;
+} catch (error) {
+  restoreTransaction(languageConfig.installationBackup);
+  throw error;
 }
-
+log(`  Langue ${targetLanguage.toUpperCase()} prête : ${languageConfig.langFrPath}`);
 console.log(
   `IMPORT_DONE ${JSON.stringify({
-    extractedDir: outDir,
-    langFrPath,
+    extractedDir: finalDir,
+    ...languageConfig,
     dataWinPath: dataWin,
     sourceDataWinPath: sourceDataWin,
-    storageMode,
   })}`
 );

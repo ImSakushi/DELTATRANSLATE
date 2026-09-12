@@ -1,0 +1,13 @@
+.review-dialog { width: min(1000px, 90vw); max-height: 86vh; padding: 24px; color: #eee; background: #171923; border: 2px solid #8590ac; border-radius: 8px; }
+.review-dialog::backdrop { background: #000b; }
+.review-dialog h2 { margin: 0 0 16px; }
+.review-dialog h3 { font-size: 13px; overflow-wrap: anywhere; }
+.review-content { max-height: 65vh; overflow: auto; min-height: 0; }
+.review-content section { border-top: 1px solid #555; padding: 12px 0; }
+.review-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.5 monospace; }
+.review-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.review-actions { display: flex; gap: 12px; padding-top: 16px; }
+.review-dialog button, .review-dialog select { margin: 4px; padding: 8px; max-width: 100%; overflow-wrap: anywhere; }
+.review-dialog textarea { width: 95%; min-height: 80px; margin: 8px; padding: 8px; }
+.top-actions { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+#topbar { flex-wrap: wrap; }

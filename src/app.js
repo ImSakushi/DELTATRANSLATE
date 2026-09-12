@@ -3,15 +3,34 @@ import { Preview } from "./engine/preview.js";
 import { C_TAG, FC_NAMES, F_TAG, encodeFe } from "./engine/typers.js";
 import { extractTags, substituteArgs } from "./engine/writer.js";
 import { SpriteEditor } from "./sprites.js";
+import { prepareChapter } from "./setup-flow.mjs";
+import { mergeSavedEdits, catalogKeys } from "./editor-state.mjs";
+import { resolveConflicts, showHistory, showQuality, textIssues } from "./review-tools.mjs";
 
 // ---------------------------------------------------------------------------
 // État global
 // ---------------------------------------------------------------------------
 let lang = {}; // objet complet du lang_fr.json (ordre des clés préservé)
+let languageRevision = null;
+let migrationReview = new Set();
 let japanese = {}; // lang_ja.json du chapitre, utilisé comme référence de balises
 let reference = {}; // id -> {en, call, channel, file, line, speaker, face, substitutions, smallFace, speakerOverlay}
 let runedeltaAttributions = {}; // id -> dernier auteur Git de la ligne Runedelta
 let prefs = {}; // { modeOverrides, bubbleSides, platformSides, validated, faceOverrides, theme, backupsEnabled, listSort, speakerFilter }
+let prefsSavePromise = Promise.resolve(true);
+let prefsSaveFailed = false;
+function savePreferences() {
+  const snapshot = structuredClone(prefs);
+  prefsSavePromise = prefsSavePromise.then(() => window.api.savePrefs(snapshot)).then(() => {
+    prefsSaveFailed = false;
+    return true;
+  }).catch(error => {
+    prefsSaveFailed = true;
+    alert(`Les préférences n’ont pas été enregistrées. Les copies précédentes sont conservées.\n\n${error.message}`);
+    return false;
+  });
+  return prefsSavePromise;
+}
 let entries = []; // index pour la liste
 let entriesByKey = new Map();
 let filtered = [];
@@ -23,6 +42,8 @@ let savePromise = null;
 let saveAndNextRunning = false;
 let closePromptOpen = false;
 let preview = null;
+let targetFonts = {};
+let englishFonts = {};
 let sequences = new Map(); // key -> [keys de la même séquence]
 const editHistories = new Map(); // historique indépendant pour chaque clé
 let pendingEdit = null;
@@ -202,11 +223,12 @@ function renderUpdateStatus(status) {
 }
 
 async function installDownloadedUpdate() {
-  if (updateInstallRunning) return;
+  if (updateInstallRunning || importing || installingUtmt || setupDone || runedeltaBusy || codeApplyRunning) return;
   updateInstallRunning = true;
   try {
     if (codeState.dirty && !(await saveCodeOverride())) return;
     if (dirty && !(await save())) return;
+    if (dirty) return;
     const result = await window.api.installUpdate();
     if (!result.ok) alert(`Impossible d’installer la mise à jour.\n\n${result.error}`);
   } finally {
@@ -256,21 +278,27 @@ async function init() {
   backupsToggle.checked = prefs.backupsEnabled !== false;
   backupsToggle.addEventListener("change", () => {
     prefs.backupsEnabled = backupsToggle.checked;
-    window.api.savePrefs(prefs);
+    savePreferences();
   });
   applyTheme(prefs.theme === "classic" ? "classic" : "deltarune");
   $("btn-theme").onclick = toggleTheme;
-  await refreshRunedeltaStatus(null, data.runedeltaSync);
-
   if (!data.ready) {
     openImportModal(true);
     return;
   }
 
   appReady = true;
+  const languageCode = (appConfig.targetLanguage ?? "fr").replaceAll("_", "-");
+  let languageLabel = languageCode.toUpperCase();
+  try { languageLabel = new Intl.DisplayNames(["fr"], { type: "language" }).of(languageCode); } catch {}
+  $("translation-language-label").textContent = `Traduction — ${languageLabel}`;
+  $("fr-input").placeholder = `Traduction (${languageLabel})…`;
+  await refreshRunedeltaStatus(null, data.runedeltaSync);
   lang = data.lang;
+  languageRevision = data.revision;
   japanese = data.japanese ?? {};
   reference = data.reference;
+  migrationReview = new Set(data.migration?.review ?? []);
   runedeltaAttributions = data.runedeltaSync?.attributions ?? {};
   if (appConfig.runedelta?.enabled && Object.keys(runedeltaAttributions).length === 0) {
     const attributionData = await window.api.getRunedeltaAttributions();
@@ -279,11 +307,14 @@ async function init() {
   }
   spriteEditor.init(data.spriteCatalog);
 
-  const fonts = await loadFonts(data.extractedDir, parseFontCsvs(data.fonts));
+  [targetFonts, englishFonts] = await Promise.all([
+    loadFonts(data.extractedDir, parseFontCsvs(data.fonts), appConfig.targetLanguage ?? "fr"),
+    loadFonts(data.extractedDir, parseFontCsvs(data.fonts), "en"),
+  ]);
   preview = new Preview(
     $("preview-canvas"),
     data.extractedDir,
-    fonts,
+    targetFonts,
     data.spriteFiles,
     data.spriteMeta
   );
@@ -291,6 +322,16 @@ async function init() {
   buildIndex();
   buildSpeakerFilterOptions();
   savedTranslations = new Map(entries.map((entry) => [entry.key, entry.fr]));
+  for (const [key, suggestion] of Object.entries(data.migration?.suggestions ?? {})) {
+    if (!entriesByKey.has(key) || (Object.hasOwn(lang, key) && lang[key] !== reference[key]?.en)) continue;
+    lang[key] = suggestion.value;
+    const entry = entriesByKey.get(key);
+    entry.fr = suggestion.value;
+    entry.todo = computeTodo(entry);
+    entry.searchable = buildSearchable(entry);
+    unsavedKeys.add(key);
+  }
+  setDirty(unsavedKeys.size > 0);
   buildSequences();
   buildFaceSelectors();
   buildColorSwatches();
@@ -329,7 +370,7 @@ function applyTheme(theme) {
 function toggleTheme() {
   prefs.theme = document.documentElement.dataset.theme === "classic" ? "deltarune" : "classic";
   applyTheme(prefs.theme);
-  window.api.savePrefs(prefs);
+  savePreferences();
 }
 
 // Version « lisible » d'un texte pour la recherche : tags retirés, de sorte
@@ -385,15 +426,9 @@ function computeTodo(e) {
 function buildIndex() {
   entries = [];
   entriesByKey = new Map();
-  const referencedKeys = new Set(Object.keys(reference));
-  const orderedKeys = Object.keys(lang).filter(
-    (key) => key !== "date" && referencedKeys.has(key)
-  );
-  for (const key of referencedKeys) {
-    if (!Object.prototype.hasOwnProperty.call(lang, key)) orderedKeys.push(key);
-  }
+  const orderedKeys = catalogKeys(lang, reference);
   for (const key of orderedKeys) {
-    const ref = reference[key];
+    const ref = reference[key] ?? {};
     const fr = lang[key] ?? ref.en;
     const en = ref.en;
     const e = {
@@ -404,7 +439,7 @@ function buildIndex() {
       channel: ref.channel,
       file: ref.file,
       line: ref.line,
-      noref: false,
+      noref: !Object.hasOwn(reference, key),
       sourceIndex: entries.length,
       todo: false,
       searchable: "",
@@ -641,7 +676,7 @@ function shortKey(k) {
 function renderKeyMeta(e) {
   if (e.noref) {
     $("key-meta").textContent =
-      "aucune référence trouvée dans le code du chapitre 5 (clé d'un autre chapitre ?)";
+      "Aucune référence dans ce chapitre. Cette traduction reste conservée et modifiable.";
     return;
   }
   const identity = speakerIdentity(e);
@@ -700,7 +735,7 @@ function toggleValidated() {
   const wasValidated = !!prefs.validated[selectedKey];
   if (wasValidated) delete prefs.validated[selectedKey];
   else prefs.validated[selectedKey] = true;
-  window.api.savePrefs(prefs);
+  savePreferences();
   e.todo = computeTodo(e);
   updateValidateButton();
   updateProgress();
@@ -842,9 +877,15 @@ function visualLines(text, hashBreak = false) {
 // Preview
 // ---------------------------------------------------------------------------
 let previewTimer = null;
+let previewQueue = Promise.resolve();
+let previewGeneration = 0;
 function schedulePreview() {
+  const generation = ++previewGeneration;
   clearTimeout(previewTimer);
-  previewTimer = setTimeout(runPreview, 120);
+  previewTimer = setTimeout(() => {
+    previewQueue = previewQueue.then(() => generation === previewGeneration ? runPreview() : undefined)
+      .catch(error => { $("preview-info").textContent = `Aperçu impossible : ${error.message}`; });
+  }, 120);
 }
 
 // Compatibilité avec une référence générée par une ancienne version : les
@@ -926,7 +967,7 @@ function effectiveMode() {
 }
 
 // Hérite fc/fe du contexte GML (précalculé) puis des lignes précédentes de la séquence
-function inheritedState() {
+function inheritedState(key = selectedKey) {
   const state = {
     fc: 0,
     fe: 0,
@@ -936,7 +977,7 @@ function inheritedState() {
     speakerOverlay: null,
     deviceStyle: null,
   };
-  const ref = reference[selectedKey];
+  const ref = reference[key];
   state.typer = ref?.typer ?? null;
   state.miniFaceBank = ref?.miniFaceBank ?? null;
   state.speakerOverlay = ref?.speakerOverlay ?? null;
@@ -946,10 +987,10 @@ function inheritedState() {
     state.fe = ref.face.fe ?? 0;
     state.faceVariant = ref.face.variant ?? null;
   }
-  const seq = sequences.get(selectedKey);
+  const seq = sequences.get(key);
   if (!seq) return state;
   for (const s of seq) {
-    if (s.key === selectedKey) break;
+    if (s.key === key) break;
     const t = s.fr || s.en || "";
     scanStateTags(t, state);
   }
@@ -975,11 +1016,11 @@ function sceneContextKey(context) {
   return `${context.image}|${context.focusX ?? ""}|${context.focusY ?? ""}`;
 }
 
-function selectedSceneContext() {
-  if (!roomSceneApplies()) return null;
-  const contexts = reference[selectedKey]?.sceneContexts ?? [];
+function selectedSceneContext(key = selectedKey, mode = effectiveMode()) {
+  if (!["darkbox", "lightbox", "platform"].includes(mode)) return null;
+  const contexts = reference[key]?.sceneContexts ?? [];
   if (!contexts.length) return null;
-  const override = prefs.sceneOverrides[selectedKey];
+  const override = prefs.sceneOverrides[key];
   return contexts.find((context) => sceneContextKey(context) === override) ?? contexts[0];
 }
 
@@ -1029,32 +1070,33 @@ function updateSceneContextControls() {
     ` · ancre ${selected.focusX}, ${selected.focusY}`;
 }
 
-async function runPreview() {
-  if (!preview || !selectedKey) return;
-  const e = entriesByKey.get(selectedKey);
-  const showEn = $("chk-en-preview").checked;
-  const sourceText = showEn ? (e.en ?? "") : $("fr-input").value;
+async function runPreview({ key = selectedKey, target = preview, quality = false } = {}) {
+  if (!target || !key) return;
+  const e = entriesByKey.get(key);
+  const showEn = quality ? false : $("chk-en-preview").checked;
+  if (target === preview) target.fonts = showEn ? englishFonts : targetFonts;
+  const sourceText = showEn ? (e.en ?? "") : quality ? e.fr : $("fr-input").value;
   const substitution = substituteArgs(
     sourceText,
-    reference[selectedKey]?.substitutions,
-    reference[selectedKey]?.substitutionSamples
+    reference[key]?.substitutions,
+    reference[key]?.substitutionSamples
   );
-  const mode = effectiveMode();
-  const state = inheritedState();
+  const mode = quality ? prefs.modeOverrides[key] ?? autoMode(e) : effectiveMode();
+  const state = inheritedState(key);
   const choiceWarnings = [];
-  state.language = showEn ? "en" : "fr";
-  state.sceneContext = selectedSceneContext();
+  state.language = showEn ? "en" : appConfig.targetLanguage ?? "fr";
+  state.sceneContext = selectedSceneContext(key, mode);
   state.platformSide =
-    prefs.platformSides[selectedKey] ??
-    reference[selectedKey]?.platformSide ??
+    prefs.platformSides[key] ??
+    reference[key]?.platformSide ??
     state.sceneContext?.platformSide ??
     0;
-  state.trialCase = reference[selectedKey]?.trialCase ?? 0;
+  state.trialCase = reference[key]?.trialCase ?? 0;
   const trialPromptKey = "obj_yellow_trial_manager_slash_Draw_0_gml_33_0";
   state.trialPrompt = showEn
     ? reference[trialPromptKey]?.en
     : lang[trialPromptKey] ?? reference[trialPromptKey]?.en;
-  const sourceFile = reference[selectedKey]?.file ?? e.file ?? "";
+  const sourceFile = reference[key]?.file ?? e.file ?? "";
   if (/obj_shop1(?:_|$)/i.test(sourceFile)) state.scene = "shop-seam";
   if (/obj_trashy_trio(?:_|$)/i.test(sourceFile)) state.scene = "trashy-trio";
   if (/obj_shop_music(?:_|$)/i.test(sourceFile)) {
@@ -1063,10 +1105,10 @@ async function runPreview() {
   }
   // Acteur de la bulle (détection statique, reference.json). Un héros parle
   // via scr_heroblcon → side -1 (bulle à droite, queue vers la gauche).
-  state.bubbleActor = reference[selectedKey]?.bubbleActor ?? null;
+  state.bubbleActor = reference[key]?.bubbleActor ?? null;
   state.bubbleSide =
-    prefs.bubbleSides[selectedKey] ?? (state.bubbleActor?.kind === "hero" ? -1 : 1);
-  const choice = reference[selectedKey]?.choice;
+    prefs.bubbleSides[key] ?? (state.bubbleActor?.kind === "hero" ? -1 : 1);
+  const choice = reference[key]?.choice;
   if (choice?.options?.length) {
     state.choiceOptions = choice.options.map((option) => {
       const optionRef = option.key ? reference[option.key] : null;
@@ -1099,7 +1141,7 @@ async function runPreview() {
     state.speakerOverlay = null;
     if (mode === "platform") state.platformSide = 1;
   }
-  const smallFace = reference[selectedKey]?.smallFace;
+  const smallFace = reference[key]?.smallFace;
   if (smallFace?.dialogueKey) {
     const dialogueKey = smallFace.dialogueKey;
     const dialogueRef = dialogueKey ? reference[dialogueKey] : null;
@@ -1119,7 +1161,7 @@ async function runPreview() {
     state.typer = dialogueRef?.typer ?? state.typer;
     state.miniFaceBank = dialogueRef?.miniFaceBank ?? state.miniFaceBank;
     state.speakerOverlay = dialogueRef?.speakerOverlay ?? state.speakerOverlay;
-    if (prefs.platformSides[selectedKey] == null && dialogueRef?.platformSide != null)
+    if (prefs.platformSides[key] == null && dialogueRef?.platformSide != null)
       state.platformSide = dialogueRef.platformSide;
     state.smallFace = {
       ...smallFace,
@@ -1128,16 +1170,14 @@ async function runPreview() {
     };
   }
   // forçage manuel du visage pour la preview
-  const fo = prefs.faceOverrides[selectedKey];
+  const fo = prefs.faceOverrides[key];
   if (fo) {
     state.fc = fo.fc;
     state.fe = fo.fe;
   }
 
-  const res = await preview.render(substitution.text, mode, state);
+  const res = await target.render(substitution.text, mode, state);
 
-  const warnEl = $("preview-warnings");
-  warnEl.innerHTML = "";
   const substitutionWarnings = [
     ...substitution.sampled.map(
       ({ index, value }) => `~${index} → « ${value} » (exemple — valeur dynamique en jeu)`
@@ -1146,7 +1186,12 @@ async function runPreview() {
       (id) => `~${id} : valeur dynamique inconnue hors du jeu`
     ),
   ];
-  for (const w of [...substitutionWarnings, ...choiceWarnings, ...(res.warnings ?? [])]) {
+  res.warnings = [...substitutionWarnings, ...choiceWarnings, ...(res.warnings ?? [])];
+  if (quality) return res;
+  if (key !== selectedKey) return;
+  const warnEl = $("preview-warnings");
+  warnEl.innerHTML = "";
+  for (const w of res.warnings) {
     const d = document.createElement("div");
     d.className = "warn";
     d.textContent = w;
@@ -1189,7 +1234,7 @@ function applyFaceOverride() {
       fc: Number(v),
       fe: Math.max(0, Number($("inp-preview-fe").value) || 0),
     };
-  window.api.savePrefs(prefs);
+  savePreferences();
   const e = entriesByKey.get(selectedKey);
   if (e) renderKeyMeta(e);
   if (prefs.listSort === "speaker") {
@@ -1909,6 +1954,7 @@ function bindCodeModal() {
 function onEdit(historyEntry = null) {
   const e = entriesByKey.get(selectedKey);
   if (!e) return;
+  if ($("fr-input").readOnly) { $("fr-input").value = e.fr; return; }
   const v = $("fr-input").value;
   if (v !== e.fr) {
     if (!applyingHistory) {
@@ -1961,29 +2007,31 @@ function setDirty(d) {
   if (!d) updateProgress();
 }
 
-function save() {
+function save({ allowPublish = false } = {}) {
+  if (importing || setupDone || (runedeltaBusy && !allowPublish)) return Promise.resolve(false);
   if (!dirty) return Promise.resolve(true);
   if (savePromise) return savePromise;
 
   savePromise = (async () => {
     try {
       const langSnapshot = { ...lang };
-      const r = await window.api.saveLang(langSnapshot);
+      const r = await window.api.saveLang(langSnapshot, languageRevision);
       if (!r.ok) {
         alert(`La sauvegarde a échoué.\n\n${r.error ?? "Erreur inconnue"}`);
         return false;
       }
       const savedLanguage = r.language ?? langSnapshot;
-      lang = savedLanguage;
+      languageRevision = r.revision;
+      lang = mergeSavedEdits(lang, langSnapshot, savedLanguage);
       if (r.attributions) runedeltaAttributions = r.attributions;
       for (const entry of entries) {
-        if (Object.hasOwn(savedLanguage, entry.key)) {
-          entry.fr = savedLanguage[entry.key];
+        if (Object.hasOwn(lang, entry.key)) {
+          entry.fr = lang[entry.key];
           entry.todo = computeTodo(entry);
           entry.searchable = buildSearchable(entry);
         }
       }
-      savedTranslations = new Map(entries.map((entry) => [entry.key, savedLanguage[entry.key]]));
+      savedTranslations = new Map(entries.map((entry) => [entry.key, savedLanguage[entry.key] ?? reference[entry.key]?.en]));
       unsavedKeys.clear();
       for (const entry of entries) {
         if (entry.fr !== savedTranslations.get(entry.key)) unsavedKeys.add(entry.key);
@@ -1999,15 +2047,15 @@ function save() {
       if (appConfig.runedelta?.enabled) await refreshRunedeltaStatus();
       updateProgress();
       renderList();
-      if (selectedKey) selectKey(selectedKey);
-      if (r.remoteChanges > 0) setTimeout(() => location.reload(), 350);
+      refreshHighlight();
+      schedulePreview();
       return true;
     } catch (error) {
       alert(`La sauvegarde a échoué.\n\n${error.message ?? error}`);
       return false;
     } finally {
-      setSaveButtonLoading(false);
       savePromise = null;
+      setSaveButtonLoading(false);
     }
   })();
   setSaveButtonLoading(true);
@@ -2037,7 +2085,7 @@ function gotoNextDialogue() {
 }
 
 function backupIfModified() {
-  if (prefs.backupsEnabled === false || !dirty || backupPromise) return;
+  if (importing || setupDone || prefs.backupsEnabled === false || !dirty || backupPromise) return;
   backupPromise = window.api
     .backupLang({ ...lang })
     .then((result) => {
@@ -2052,16 +2100,24 @@ function backupIfModified() {
 setTimeout(() => {
   backupIfModified();
   setInterval(backupIfModified, BACKUP_CHECK_MS);
-}, BACKUP_INTERVAL_MS);
+}, BACKUP_CHECK_MS);
 
 async function handleCloseRequest() {
   if (closePromptOpen) return;
+  if (importing || installingUtmt || codeApplyRunning || runedeltaBusy) {
+    showSetupError("La préparation est en cours. Attends sa fin avant de fermer DELTATRANSLATE.");
+    return;
+  }
   closePromptOpen = true;
   try {
+    await prefsSavePromise;
+    if (prefsSaveFailed && !(await savePreferences())) return;
+    if (savePromise) await savePromise;
     if (codeState.dirty && !confirm("Quitter sans enregistrer les modifications GML ?")) return;
     const choice = await window.api.confirmClose(unsavedKeys.size);
     if (choice === "cancel") return;
     if (choice === "save" && !(await save())) return;
+    if (choice === "save" && dirty) return;
     await window.api.closeWindow();
   } finally {
     closePromptOpen = false;
@@ -2151,14 +2207,14 @@ function bindEvents() {
   $("btn-close-search").addEventListener("click", closeDialogueSearch);
   $("sel-list-sort").addEventListener("change", () => {
     prefs.listSort = $("sel-list-sort").value;
-    window.api.savePrefs(prefs);
+    savePreferences();
     $("speaker-filter-row").classList.toggle("hidden", prefs.listSort !== "speaker");
     $("list-container").scrollTop = 0;
     applyFilter();
   });
   $("sel-speaker-filter").addEventListener("change", () => {
     prefs.speakerFilter = $("sel-speaker-filter").value;
-    window.api.savePrefs(prefs);
+    savePreferences();
     $("list-container").scrollTop = 0;
     applyFilter();
   });
@@ -2198,7 +2254,32 @@ function bindEvents() {
   });
 
   $("btn-save").onclick = save;
-  $("btn-backups").onclick = () => window.api.openBackups();
+  $("btn-backups").onclick = () => showHistory(window.api, { current: () => lang, restore: (key, value) => {
+    if (!entriesByKey.has(key)) { lang[key] = ""; buildIndex(); buildSequences(); applyFilter(); }
+    selectKey(key);
+    const before = editorState();
+    $("fr-input").value = value;
+    onEdit({ state: before, inputType: "insertReplacementText" });
+    scrollToSelected();
+  } });
+  $("btn-quality").onclick = async () => {
+    const canvas = document.createElement("canvas");
+    let missing = new Set();
+    const fonts = Object.fromEntries(Object.entries(targetFonts).map(([name, font]) => {
+      const probe = Object.create(font);
+      probe.drawChar = function(ctx, character, ...args) {
+        if (!this.hasChar(character) && !/\s/.test(character)) missing.add(character + " (" + name + ")");
+        return font.drawChar(ctx, character, ...args);
+      };
+      return [name, probe];
+    }));
+    const target = new Preview(canvas, preview.extractedDir, fonts, [...preview.spriteFiles], preview.spriteMeta);
+    await showQuality([...entries], async entry => {
+      missing = new Set();
+      const result = await runPreview({ key: entry.key, target, quality: true });
+      return [...new Set([...textIssues(entry.en, entry.fr), ...(migrationReview.has(entry.key) ? ["Le texte anglais a changé depuis l’import précédent : traduction à relire."] : []), ...(result.warnings ?? []), ...[...missing].map(character => "Glyphe absent : " + character)])];
+    }, key => { selectKey(key); scrollToSelected(); });
+  };
   $("btn-reload").onclick = async () => {
     if (
       (dirty || codeState.dirty) &&
@@ -2212,7 +2293,7 @@ function bindEvents() {
     const v = $("sel-mode").value;
     if (v === "auto") delete prefs.modeOverrides[selectedKey];
     else prefs.modeOverrides[selectedKey] = v;
-    window.api.savePrefs(prefs);
+    savePreferences();
     if (prefs.listSort === "type") {
       applyFilter();
       scrollToSelected();
@@ -2231,7 +2312,7 @@ function bindEvents() {
       const fallback = reference[selectedKey]?.bubbleActor?.kind === "hero" ? -1 : 1;
       prefs.bubbleSides[selectedKey] = (prefs.bubbleSides[selectedKey] ?? fallback) * -1;
     }
-    window.api.savePrefs(prefs);
+    savePreferences();
     schedulePreview();
   };
   $("chk-en-preview").addEventListener("change", schedulePreview);
@@ -2240,7 +2321,7 @@ function bindEvents() {
   $("inp-preview-fe").addEventListener("input", debounce(applyFaceOverride, 150));
   $("sel-scene-context").addEventListener("change", () => {
     prefs.sceneOverrides[selectedKey] = $("sel-scene-context").value;
-    window.api.savePrefs(prefs);
+    savePreferences();
     if (prefs.listSort === "type") {
       applyFilter();
       scrollToSelected();
@@ -2275,7 +2356,8 @@ function bindEvents() {
   };
 
   window.addEventListener("keydown", (ev) => {
-    if (!$("code-modal").classList.contains("hidden")) return;
+    if (document.querySelector("dialog[open]")) return;
+    if (!$("code-modal").classList.contains("hidden") || !$("import-modal").classList.contains("hidden")) return;
     const shortcut = ev.ctrlKey || ev.metaKey;
     if (
       shortcut &&
@@ -2333,20 +2415,13 @@ let installingUtmt = false;
 let utmtReady = false;
 let importModalBound = false;
 let runedeltaBusy = false;
+let selectedChapter = null;
+let setupDone = false;
+let setupFontDonor = null;
+let discoveryGeneration = 0;
+let pickingChapter = false;
+let setupReturnFocus = null;
 
-function askRunedeltaConflictResolution(result) {
-  const choice = prompt(
-    `${result.error}\n\nTape LOCAL pour conserver et publier tes versions, ` +
-      "ou GITHUB pour prendre les versions distantes sur les clés en conflit."
-  );
-  if (choice == null) return null;
-  const normalized = choice.trim().toLowerCase();
-  if (normalized === "local" || normalized === "github") {
-    return normalized === "github" ? "remote" : "local";
-  }
-  alert("Réponse non reconnue. Tape exactement LOCAL ou GITHUB.");
-  return null;
-}
 
 function renderRunedeltaStatus(status = {}, sync = null) {
   const label = $("runedelta-status");
@@ -2410,7 +2485,7 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   remoteInput.disabled = enabled || runedeltaBusy;
   const connectButton = $("btn-connect-runedelta");
   connectButton.classList.toggle("hidden", enabled);
-  connectButton.disabled = !status.available || !appConfig.dataWinPath || runedeltaBusy;
+  connectButton.disabled = !status.available || !appConfig.dataWinPath || runedeltaBusy || (appConfig.targetLanguage ?? "fr") !== "fr";
   $("btn-open-runedelta").disabled = !status.connected || runedeltaBusy;
   $("btn-disconnect-runedelta").disabled = !(status.configured || enabled) || runedeltaBusy;
 }
@@ -2430,7 +2505,9 @@ async function refreshRunedeltaStatus(sync = null, startupSync = null) {
 }
 
 async function connectRunedelta() {
-  if (runedeltaBusy) return;
+  if (runedeltaBusy || savePromise || importing || codeApplyRunning) return;
+  if (dirty && !(await save())) return;
+  if (dirty) return;
   if (!appConfig.dataWinPath) {
     alert("Importe d’abord le data.win du chapitre à traduire.");
     return;
@@ -2449,7 +2526,9 @@ async function connectRunedelta() {
   const button = $("btn-connect-runedelta");
   button.disabled = true;
   button.textContent = "⏳ Clone et installation…";
-  const result = await window.api.connectRunedelta($("runedelta-remote").value);
+  $("fr-input").readOnly = true;
+  const result = await window.api.connectRunedelta($("runedelta-remote").value).catch(error => ({ ok: false, error: error.message }));
+  $("fr-input").readOnly = false;
   runedeltaBusy = false;
   button.disabled = false;
   button.textContent = "Connecter et installer";
@@ -2466,17 +2545,21 @@ async function publishRunedeltaNow() {
   if (runedeltaBusy) return;
   runedeltaBusy = true;
   renderRunedeltaStatus({ available: true, enabled: true });
-  if (dirty && !(await save())) {
+  if (dirty && !(await save({ allowPublish: true }))) {
     runedeltaBusy = false;
     await refreshRunedeltaStatus();
     return;
   }
   let result;
+  const snapshot = { ...lang };
+  const resolutions = {};
   try {
-    result = await window.api.syncRunedelta(lang);
-    if (!result.ok && result.conflict) {
-      const resolution = askRunedeltaConflictResolution(result);
-      if (resolution) result = await window.api.syncRunedelta(lang, resolution);
+    result = await window.api.syncRunedelta(snapshot, null, languageRevision);
+    while (!result.ok && result.conflict) {
+      const resolution = await resolveConflicts(result);
+      if (!resolution) { await refreshRunedeltaStatus(result); return; }
+      resolutions[result.phase] = resolution;
+      result = await window.api.syncRunedelta(snapshot, resolutions, languageRevision);
     }
   } catch (error) {
     result = { ok: false, error: error.message ?? String(error) };
@@ -2499,12 +2582,21 @@ async function publishRunedeltaNow() {
     state.className = "saved";
     state.textContent = `✔ Sauvegardé et publié à ${new Date().toLocaleTimeString()}`;
   }
-  if (result.remoteChanges > 0) location.reload();
+  lang = mergeSavedEdits(lang, snapshot, result.language);
+  languageRevision = result.revision;
+  const active = selectedKey;
+  buildIndex(); buildSequences();
+  savedTranslations = new Map(entries.map(entry => [entry.key, result.language[entry.key] ?? reference[entry.key]?.en]));
+  unsavedKeys.clear();
+  for (const entry of entries) if (entry.fr !== savedTranslations.get(entry.key)) unsavedKeys.add(entry.key);
+  setDirty(unsavedKeys.size > 0);
+  applyFilter();
+  if (active) selectKey(active);
 }
 
 function appendImportLog(line) {
   const log = $("import-log");
-  log.classList.remove("hidden");
+  $("setup-log-details").classList.remove("hidden");
   log.textContent += `${line}\n`;
   log.scrollTop = log.scrollHeight;
 }
@@ -2524,30 +2616,127 @@ async function refreshUtmtStatus(status = null) {
   label.className = `setup-status ${utmtReady ? "ready" : "missing"}`;
   label.textContent = utmtReady
     ? `✓ UTMT CLI détecté : ${value.cliPath}`
-    : "UTMT CLI n'est pas encore configuré.";
-  $("datawin-dropzone").classList.toggle("disabled", !utmtReady);
-  $("btn-pick-datawin").disabled = !utmtReady || importing;
-  if (appReady && $("import-modal").dataset.required === "false") {
-    $("utmt-setup-section").classList.toggle("hidden", utmtReady);
-  }
+    : "Installation automatique lors de la préparation du chapitre.";
+  $("setup-download-note").textContent = utmtReady
+    ? "L’outil de lecture du jeu est déjà installé. Aucun téléchargement n’est nécessaire."
+    : "L’outil de lecture du jeu (UTMT) sera téléchargé automatiquement. Une connexion Internet est requise pour cette première préparation.";
   return value;
 }
 
-function openImportModal(required = false) {
+function showSetupError(message) {
+  const error = $("setup-error");
+  error.textContent = message;
+  error.classList.remove("hidden");
+}
+
+function setSetupStep(step) {
+  const order = ["choose", "prepare", "done"];
+  document.querySelectorAll("[data-setup-step]").forEach((item) => {
+    const active = item.dataset.setupStep === step;
+    if (active) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+    item.classList.toggle("complete", order.indexOf(item.dataset.setupStep) < order.indexOf(step));
+  });
+}
+
+function updateSetupControls() {
+  const busy = importing || installingUtmt || pickingChapter;
+  for (const id of ["btn-pick-datawin", "btn-pick-game-folder", "btn-pick-utmt", "btn-install-utmt", "btn-close-import", "setup-language", "setup-language-custom", "btn-font-donor", "btn-clear-font-donor"]) {
+    $(id).disabled = busy;
+  }
+  $("btn-prepare-chapter").disabled = busy || !selectedChapter;
+  $("datawin-dropzone").classList.toggle("disabled", busy);
+  $("datawin-dropzone").setAttribute("aria-disabled", String(busy));
+  document.querySelectorAll(".chapter-option").forEach((button) => { button.disabled = busy; });
+}
+
+async function selectChapter(file, label = null) {
+  if (importing || installingUtmt || pickingChapter || setupDone) return;
+  pickingChapter = true;
+  discoveryGeneration++;
+  updateSetupControls();
+  try {
+    const validation = await window.api.validateDataWin(file);
+    if (!validation.ok) throw new Error(validation.error);
+    selectedChapter = { path: file, label: label ?? `Chapitre ${file.match(/chapter[ _-]?(\d+)/i)?.[1] ?? "DELTARUNE"}` };
+    $("setup-selected-label").textContent = selectedChapter.label;
+    $("setup-selected-path").textContent = file;
+    $("setup-selected").classList.remove("hidden");
+    $("chapter-discovery-status").textContent = "Chapitre sélectionné. Tu peux lancer sa préparation.";
+    $("setup-error").classList.add("hidden");
+    $("btn-prepare-chapter").textContent = "Préparer ce chapitre";
+    document.querySelectorAll(".chapter-option").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.path === file));
+    });
+  } catch (error) {
+    showSetupError(error.message);
+  } finally {
+    pickingChapter = false;
+    updateSetupControls();
+  }
+}
+
+function renderChapters(chapters) {
+  const container = $("detected-chapters");
+  container.replaceChildren();
+  $("chapter-discovery-status").textContent = chapters.length
+    ? `${chapters.length} chapitre${chapters.length > 1 ? "s" : ""} trouvé${chapters.length > 1 ? "s" : ""}. Choisis celui que tu veux traduire.`
+    : "Aucun chapitre trouvé ici. Choisis le dossier de ton jeu ou son fichier data.win.";
+  for (const chapter of chapters) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chapter-option";
+    button.dataset.path = chapter.path;
+    button.setAttribute("aria-pressed", String(selectedChapter?.path === chapter.path));
+    const label = document.createElement("strong");
+    label.textContent = chapter.label;
+    const detail = document.createElement("small");
+    detail.textContent = chapter.path;
+    button.append(label, detail);
+    button.onclick = () => selectChapter(chapter.path, chapter.label);
+    container.append(button);
+  }
+  updateSetupControls();
+}
+
+async function discoverSetupChapters() {
+  const generation = ++discoveryGeneration;
+  try {
+    const chapters = await window.api.discoverChapters();
+    if (generation === discoveryGeneration) renderChapters(chapters);
+  } catch {
+    if (generation === discoveryGeneration) renderChapters([]);
+  }
+}
+
+function closeImportModal() {
+  if (importing || installingUtmt || pickingChapter || $("import-modal").dataset.required === "true") return;
+  if (setupDone) { location.reload(); return; }
+  discoveryGeneration++;
+  $("import-modal").classList.add("hidden");
+  setupReturnFocus?.focus();
+}
+
+function openImportModal(required = false, runedelta = false) {
+  if (importing || installingUtmt) return;
+  setupReturnFocus = document.activeElement;
   updateCurrentChapter();
+  required = required || !appReady;
+  runedelta = runedelta && !required;
   $("import-modal").dataset.required = required ? "true" : "false";
-  $("import-title").textContent = required
-    ? "Configurer DELTATRANSLATE"
-    : "Importer un autre chapitre";
-  $("datawin-step-title").textContent = required
-    ? "2. Importer un chapitre"
-    : "Choisir le data.win";
+  $("import-title").textContent = runedelta ? "Projet Runedelta" : required ? "Bienvenue !" : "Choisir un chapitre";
+  $("chapter-setup").classList.toggle("hidden", runedelta);
+  $("runedelta-section").classList.toggle("hidden", !runedelta);
+  $("setup-primary-actions").classList.toggle("hidden", runedelta);
   $("current-chapter").classList.toggle("hidden", required || !appConfig.dataWinPath);
-  $("utmt-setup-section").classList.toggle("hidden", !required && utmtReady);
   $("btn-close-import").classList.toggle("hidden", required);
   $("import-modal").classList.remove("hidden");
-  refreshUtmtStatus();
-  refreshRunedeltaStatus();
+  $("import-title").focus();
+  if (runedelta) refreshRunedeltaStatus();
+  else {
+    refreshUtmtStatus().catch((error) => showSetupError(error.message));
+    discoverSetupChapters();
+  }
 }
 
 function bindImportModal() {
@@ -2555,8 +2744,7 @@ function bindImportModal() {
   importModalBound = true;
   $("btn-import").onclick = () => openImportModal(false);
   $("btn-runedelta").onclick = () => {
-    openImportModal(false);
-    $("runedelta-section").scrollIntoView({ behavior: "smooth", block: "start" });
+    openImportModal(false, true);
   };
   $("btn-connect-runedelta").onclick = connectRunedelta;
   $("btn-publish").onclick = publishRunedeltaNow;
@@ -2574,49 +2762,90 @@ function bindImportModal() {
     appConfig = await window.api.disconnectRunedelta();
     await refreshRunedeltaStatus();
   };
-  $("btn-close-import").onclick = () => {
-    if (!importing) $("import-modal").classList.add("hidden");
+  $("btn-close-import").onclick = closeImportModal;
+  $("btn-prepare-chapter").onclick = startImport;
+  $("btn-cancel-import").onclick = async () => {
+    $("btn-cancel-import").disabled = true;
+    await window.api.cancelImport();
   };
-  $("btn-pick-datawin").onclick = startImport;
-  $("datawin-dropzone").onclick = startImport;
+  $("btn-open-editor").onclick = () => location.reload();
+  const pickFile = async () => {
+    if (importing || installingUtmt || pickingChapter) return;
+    pickingChapter = true;
+    updateSetupControls();
+    let file;
+    try {
+      file = await window.api.pickDataWin();
+    } catch (error) { showSetupError(error.message); }
+    finally { pickingChapter = false; updateSetupControls(); }
+    if (file) await selectChapter(file);
+  };
+  $("btn-pick-datawin").onclick = pickFile;
+  $("datawin-dropzone").onclick = pickFile;
+  $("btn-pick-game-folder").onclick = async () => {
+    if (importing || installingUtmt || pickingChapter) return;
+    const generation = ++discoveryGeneration;
+    pickingChapter = true;
+    updateSetupControls();
+    try {
+      const chapters = await window.api.pickGameFolder();
+      if (chapters && generation === discoveryGeneration) {
+        selectedChapter = null;
+        $("setup-selected").classList.add("hidden");
+        $("setup-error").classList.add("hidden");
+        renderChapters(chapters);
+      }
+    } catch (error) { showSetupError(error.message); }
+    finally { pickingChapter = false; updateSetupControls(); }
+  };
   $("datawin-dropzone").onkeydown = (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      startImport();
+      pickFile();
     }
   };
 
   $("btn-pick-utmt").onclick = async () => {
-    const result = await window.api.pickUtmtFolder();
-    if (!result) return;
-    if (!result.ok) {
-      appendImportLog(`✖ ${result.error}`);
-      return;
-    }
-    appendImportLog(`✓ UTMT lié : ${result.cliPath}`);
-    await refreshUtmtStatus(result);
+    if (importing || installingUtmt) return;
+    try {
+      const result = await window.api.pickUtmtFolder();
+      if (!result) return;
+      if (!result.ok) throw new Error(result.error);
+      $("setup-error").classList.add("hidden");
+      await refreshUtmtStatus(result);
+    } catch (error) { showSetupError(error.message); }
   };
   $("btn-install-utmt").onclick = async () => {
-    if (installingUtmt) return;
+    if (installingUtmt || importing) return;
     installingUtmt = true;
-    $("btn-install-utmt").disabled = true;
-    $("btn-pick-utmt").disabled = true;
+    updateSetupControls();
     $("utmt-progress").classList.remove("hidden");
     $("utmt-progress-label").textContent = "Préparation…";
-    const result = await window.api.installUtmt();
-    installingUtmt = false;
-    $("btn-install-utmt").disabled = false;
-    $("btn-pick-utmt").disabled = false;
-    if (!result.ok) {
-      appendImportLog(`✖ Installation UTMT : ${result.error}`);
-      return;
+    $("setup-error").classList.add("hidden");
+    try {
+      const result = await window.api.installUtmt();
+      if (!result.ok) throw new Error(result.error);
+      await refreshUtmtStatus();
+    } catch (error) { showSetupError(error.message); }
+    finally {
+      installingUtmt = false;
+      $("utmt-progress").classList.add("hidden");
+      updateSetupControls();
     }
-    appendImportLog(`✓ UTMT CLI ${result.version} installé.`);
-    await refreshUtmtStatus();
   };
 
   window.api.onImportProgress((line) => {
+    if (line === "IMPORT_INSTALLING") {
+      $("btn-cancel-import").disabled = true;
+      $("setup-progress-title").textContent = "Installation et sauvegardes de sécurité…";
+      return;
+    }
     appendImportLog(line);
+    if (!importing) return;
+    if (line.includes("Étape 1/3")) $("setup-progress-title").textContent = "Extraction des textes et des images…";
+    if (line.includes("Étape 2/3")) $("setup-progress-title").textContent = "Préparation des dialogues et des portraits…";
+    if (line.includes("décors et placements")) $("setup-progress-title").textContent = "Préparation des décors de l’aperçu…";
+    if (line.includes("Étape 3/3")) $("setup-progress-title").textContent = "Dernière étape : préparation de l’éditeur…";
   });
   window.api.onUtmtProgress((progress) => {
     $("utmt-progress").classList.remove("hidden");
@@ -2643,42 +2872,130 @@ function bindImportModal() {
     const file = event.dataTransfer?.files?.[0];
     if (!file) return;
     const filePath = window.api.getPathForFile(file);
-    if (!/data\.win$/i.test(filePath)) {
-      appendImportLog("✖ Le fichier déposé doit être un data.win.");
-      return;
+    selectChapter(filePath);
+  });
+  $("import-modal").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.preventDefault(); closeImportModal(); }
+    if (event.key !== "Tab") return;
+    const controls = [...$("import-modal").querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [tabindex="0"]')]
+      .filter((element) => element.getClientRects().length && element.getAttribute("aria-disabled") !== "true");
+    const index = controls.indexOf(document.activeElement);
+    if (index < 0 || (event.shiftKey && index === 0) || (!event.shiftKey && index === controls.length - 1)) {
+      event.preventDefault();
+      (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
     }
-    startImport(filePath);
   });
 }
 
-async function startImport(selectedPath = null) {
-  if (importing || !utmtReady) return;
-  const dataWinPath =
-    typeof selectedPath === "string" ? selectedPath : await window.api.pickDataWin();
-  if (!dataWinPath) return;
+async function startImport() {
+  if (importing || installingUtmt || pickingChapter || !selectedChapter || setupDone) return;
+  if (savePromise || codeApplyRunning || runedeltaBusy || updateInstallRunning) {
+    showSetupError("Attends la fin de l’opération en cours avant de changer de chapitre.");
+    return;
+  }
   if (dirty && !confirm("Des modifications non sauvegardées seront perdues. Continuer ?"))
     return;
+  if (codeState.dirty && !confirm("Changer de chapitre sans enregistrer les modifications GML ?")) return;
+  const language = $("setup-language").value === "custom"
+    ? $("setup-language-custom").value.trim().toLowerCase().replaceAll("-", "_")
+    : $("setup-language").value;
+  if (!/^[a-z]{2,3}(?:_[a-z0-9]{2,8}){0,2}$/.test(language) || ["en", "ja"].includes(language)) {
+    showSetupError("Indique le code d’une nouvelle langue : fr, es, de, pt-BR…");
+    return;
+  }
   importing = true;
-  const log = $("import-log");
-  log.classList.remove("hidden");
-  log.textContent = "";
-  $("btn-pick-datawin").disabled = true;
-  $("btn-pick-datawin").textContent = "⏳ Import en cours…";
-  $("datawin-dropzone").classList.add("disabled");
-  const r = await window.api.importDataWin(dataWinPath);
-  importing = false;
-  if (r.ok) {
-    log.textContent += "\nRechargement de l'éditeur…\n";
-    setTimeout(() => location.reload(), 900);
-  } else {
-    $("btn-pick-datawin").disabled = false;
-    $("btn-pick-datawin").textContent = "📂 Choisir un data.win…";
-    $("datawin-dropzone").classList.remove("disabled");
-    log.textContent += "\n✖ " + r.error + "\n";
+  discoveryGeneration++;
+  updateSetupControls();
+  setSetupStep("prepare");
+  $("setup-error").classList.add("hidden");
+  $("setup-selection").classList.add("hidden");
+  $("setup-advanced").classList.add("hidden");
+  $("setup-progress").classList.remove("hidden");
+  $("setup-log-details").classList.add("hidden");
+  $("setup-log-details").open = false;
+  $("import-log").textContent = "";
+  $("btn-prepare-chapter").textContent = "Préparation en cours…";
+  $("setup-progress-title").textContent = "Vérification du chapitre…";
+  $("setup-progress-description").textContent = "Cette première préparation peut prendre plusieurs minutes. Garde cette fenêtre ouverte.";
+  const startedAt = Date.now();
+  $("setup-elapsed").textContent = "";
+  const elapsedTimer = setInterval(() => {
+    const seconds = Math.floor((Date.now() - startedAt) / 1000);
+    $("setup-elapsed").textContent = `Temps écoulé : ${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s · La préparation continue…`;
+  }, 1000);
+  try {
+    const result = await prepareChapter(window.api, selectedChapter.path, (stage) => {
+      if (stage === "tools") $("setup-progress-title").textContent = "Préparation de l’outil de lecture…";
+      if (stage === "import") {
+        $("btn-cancel-import").classList.remove("hidden");
+        $("btn-cancel-import").disabled = false;
+        $("utmt-progress").classList.add("hidden");
+        $("setup-progress-title").textContent = "Lecture de ton chapitre…";
+      }
+    }, { language, fontDonor: setupFontDonor, force: $("setup-force").checked, newOriginal: $("setup-new-original").checked });
+    appConfig = result.config;
+    setupDone = true;
+    unsavedKeys.clear();
+    dirty = false;
+    codeState.dirty = false;
+    setSetupStep("done");
+    $("setup-success").classList.remove("hidden");
+    $("setup-download-note").classList.add("hidden");
+    $("setup-save-target").textContent = appConfig.storageMode === "datawin"
+      ? "À chaque sauvegarde, les traductions seront appliquées au data.win sélectionné. Une copie originale est conservée."
+      : `Tes traductions seront enregistrées dans : ${appConfig.langFrPath}`;
+    if (appConfig.fontWarnings?.length) {
+      $("setup-save-target").textContent += ` Polices conservées faute de donneur compatible : ${appConfig.fontWarnings.join(" ; ")}. Le contrôle qualité signale les glyphes manquants.`;
+    }
+    $("btn-prepare-chapter").classList.add("hidden");
+    $("btn-open-editor").classList.remove("hidden");
+    $("btn-close-import").classList.add("hidden");
+    $("btn-open-editor").focus();
+  } catch (error) {
+    setSetupStep("choose");
+    showSetupError(`La préparation n’a pas abouti. Tu peux réessayer ou choisir un autre chapitre.\n\n${error.message}`);
+    appendImportLog(`✖ ${error.message}`);
+    $("setup-selection").classList.remove("hidden");
+    $("setup-advanced").classList.remove("hidden");
+    $("btn-prepare-chapter").textContent = "Réessayer la préparation";
+  } finally {
+    clearInterval(elapsedTimer);
+    $("btn-cancel-import").classList.add("hidden");
+    importing = false;
+    $("setup-progress").classList.add("hidden");
+    $("utmt-progress").classList.add("hidden");
+    updateSetupControls();
   }
 }
 
 setupTooltips();
+$("setup-language").addEventListener("change", () => {
+  const custom = $("setup-language").value === "custom";
+  $("setup-language-custom").classList.toggle("hidden", !custom);
+  $("setup-language-custom-label").classList.toggle("hidden", !custom);
+});
+$("btn-font-donor").addEventListener("click", async () => {
+  if (importing || installingUtmt || pickingChapter) return;
+  pickingChapter = true;
+  updateSetupControls();
+  try {
+    const donor = await window.api.pickDataWin();
+    if (donor) {
+      setupFontDonor = donor;
+      $("setup-font-donor").textContent = `Polices du mod : ${donor}`;
+      $("btn-clear-font-donor").classList.remove("hidden");
+    }
+  } catch (error) { showSetupError(error.message); }
+  finally { pickingChapter = false; updateSetupControls(); }
+});
+$("btn-clear-font-donor").addEventListener("click", () => {
+  setupFontDonor = null;
+  $("setup-font-donor").textContent = "Les polices du chapitre seront utilisées. Les caractères absents nécessitent un mod donneur adapté.";
+  $("btn-clear-font-donor").classList.add("hidden");
+});
 setupUpdates().catch((error) => console.error("Initialisation des mises à jour impossible :", error));
 window.api.onCloseRequested(handleCloseRequest);
-init();
+init().catch(error => {
+  openImportModal(true);
+  showSetupError(`Impossible de charger le projet : ${error.message}`);
+});

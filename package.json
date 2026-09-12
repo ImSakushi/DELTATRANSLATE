@@ -1,7 +1,7 @@
 {
   "name": "deltatranslate",
   "productName": "DELTATRANSLATE",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "desktopName": "DELTATRANSLATE",
   "description": "Éditeur de traduction pour tous les chapitres de DELTARUNE avec preview fidèle au jeu",
   "author": "ImSakushi",
@@ -9,7 +9,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test updater.test.js runedelta-sync.test.js writer.test.js choice-layout.test.js extraction/bubble-actor-detection.test.mjs extraction/chapter-scope.test.mjs extraction/choice-detection.test.mjs extraction/code-overrides.test.mjs extraction/platform-dialogue-detection.test.mjs extraction/shop-dialogue-detection.test.mjs extraction/speaker-detection.test.mjs extraction/trial-case-detection.test.mjs",
+    "test": "node --test extraction/multilang.test.mjs safety.test.js game-setup.test.js updater.test.js runedelta-sync.test.js writer.test.js choice-layout.test.js extraction/bubble-actor-detection.test.mjs extraction/chapter-scope.test.mjs extraction/choice-detection.test.mjs extraction/code-overrides.test.mjs extraction/platform-dialogue-detection.test.mjs extraction/shop-dialogue-detection.test.mjs extraction/speaker-detection.test.mjs extraction/trial-case-detection.test.mjs",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --x64 --publish never",
     "dist:mac": "electron-builder --mac --universal --publish never",
@@ -33,11 +33,14 @@
     "electronUpdaterCompatibility": ">=2.16",
     "files": [
       "main.js",
+      "storage.js",
       "preload.js",
       "runedelta-sync.js",
       "updater.js",
       "utmt-manager.js",
+      "game-discovery.js",
       "extraction/**/*",
+      "!extraction/**/*.test.mjs",
       "src/**/*",
       "package.json"
     ],
@@ -70,8 +73,9 @@
     },
     "nsis": {
       "artifactName": "${productName}-Setup-${version}-Windows-${arch}.${ext}",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
