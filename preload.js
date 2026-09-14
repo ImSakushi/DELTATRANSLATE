@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("api", {
   getUpdateStatus: () => ipcRenderer.invoke("get-update-status"),
   installUpdate: () => ipcRenderer.invoke("install-update"),
   getRunedeltaStatus: () => ipcRenderer.invoke("get-runedelta-status"),
+  setRunedeltaOptions: (options) => ipcRenderer.invoke("set-runedelta-options", options),
   getRunedeltaAttributions: () => ipcRenderer.invoke("get-runedelta-attributions"),
   connectRunedelta: (remoteUrl) => ipcRenderer.invoke("connect-runedelta", remoteUrl),
   syncRunedelta: (language, conflictResolution, revision) =>

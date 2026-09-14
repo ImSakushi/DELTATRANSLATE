@@ -199,6 +199,7 @@ function mainHarness(t) {
 
 test("IPC sauvegarde : protège le fichier externe et conserve une copie de la saisie refusée", async t => {
   const harness = mainHarness(t);
+  fs.writeFileSync(path.join(harness.root, "prefs.json"), JSON.stringify({ backupsEnabled: true }));
   const expected = storage.revision(harness.languageFile);
   fs.writeFileSync(harness.languageFile, '{"date":"0","key":"Externe"}');
   const result = await harness.handlers.get("save-lang")({}, { date: "0", key: "Saisie" }, expected, storage.projectId(harness.config));
@@ -212,12 +213,38 @@ test("IPC sauvegarde : protège le fichier externe et conserve une copie de la s
 
 test("IPC sauvegarde : conserve date et ordre et retourne la nouvelle révision", async t => {
   const harness = mainHarness(t);
+  fs.writeFileSync(path.join(harness.root, "prefs.json"), JSON.stringify({ backupsEnabled: true }));
   const expected = storage.revision(harness.languageFile);
   const result = await harness.handlers.get("save-lang")({}, { date: "0", key: "Nouveau" }, expected, storage.projectId(harness.config));
   assert.equal(result.ok, true);
   assert.equal(result.revision, storage.revision(harness.languageFile));
   assert.equal(fs.readFileSync(harness.languageFile, "utf8"), '{\n  "date": "0",\n  "key": "Nouveau"\n}');
   assert.equal(result.backupCreated, true);
+});
+
+test("IPC backups : désactivés par défaut, activables et désactivables sans perdre les préférences", async t => {
+  const harness = mainHarness(t);
+  const project = storage.projectId(harness.config);
+  const prefsFile = path.join(harness.root, "prefs.json");
+  const backups = path.join(harness.root, "backups");
+  const save = () => harness.handlers.get("save-lang")({}, { date: "0", key: "Nouveau" }, storage.revision(harness.languageFile), project);
+  const draft = () => harness.handlers.get("backup-lang")({}, { date: "0", key: "Brouillon" }, project);
+  assert.equal((await save()).backupCreated, false);
+  assert.equal(draft().disabled, true);
+  harness.handlers.get("save-prefs")({}, { validated: { key: true } }, project);
+  assert.equal(fs.existsSync(backups), false);
+  harness.handlers.get("save-prefs")({}, { backupsEnabled: true }, project);
+  assert.equal(draft().backupCreated, true);
+  const count = storage.listBackups(backups, prefsFile).length;
+  harness.handlers.get("save-prefs")({}, { backupsEnabled: false }, project);
+  assert.equal(storage.listBackups(backups, prefsFile).length, count);
+  assert.equal(storage.scopedPreferences(storage.readJson(prefsFile), project).validated.key, true);
+  assert.equal((await save()).backupCreated, false);
+  assert.equal(draft().disabled, true);
+  const before = storage.listBackups(backups, harness.languageFile).length;
+  const rejected = await harness.handlers.get("save-lang")({}, { key: "Conflit" }, "ancienne révision", project);
+  assert.equal(rejected.ok, false);
+  assert.equal(storage.listBackups(backups, harness.languageFile).length, before);
 });
 
 test("IPC fermeture : Échap annule sans abandonner la traduction", async t => {
@@ -262,4 +289,34 @@ test("le lanceur non interactif ferme stdin et transmet les résultats sans bloq
   const result = await runTool(process.execPath, ["-e", "process.stdin.resume(); process.stdin.on('end', () => console.log('DT_TEST_COMPLETED')); "]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /DT_TEST_COMPLETED/);
+});
+
+test("l’import coordonné se termine même si le parent garde son entrée ouverte", { timeout: 8000 }, async t => {
+  const { spawn } = require("node:child_process");
+  const source = fs.readFileSync(path.join(__dirname, "extraction/import-datawin.mjs"), "utf8");
+  const handshake = source.slice(source.indexOf("const beforeInstall ="), source.indexOf("const languageConfig ="));
+  assert.ok(handshake.includes("IMPORT_INSTALLING"));
+  const file = path.join(workspace(t), "import-coordonne.mjs");
+  fs.writeFileSync(file, `const log = console.log;\n${handshake}\nawait beforeInstall();\nconsole.log('IMPORT_DONE {}');\n`);
+  const child = spawn(process.execPath, [file, "--coordinated-install"], { windowsHide: true });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  let output = "", sent = false, timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 4000);
+  t.after(() => clearTimeout(timer));
+  child.stdout.on("data", chunk => {
+    output += chunk.toString();
+    if (!sent && output.includes("IMPORT_INSTALLING\n")) {
+      sent = true;
+      child.stdin.write("INSTALL\n");
+    }
+  });
+  let errors = "";
+  child.stderr.on("data", chunk => { errors += chunk.toString(); });
+  const code = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  assert.match(output, /IMPORT_DONE \{\}/);
+  assert.equal(timedOut, false, "L’import a annoncé sa réussite mais son processus reste ouvert.");
+  assert.equal(code, 0, errors);
 });

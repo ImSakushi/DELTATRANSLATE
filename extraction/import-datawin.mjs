@@ -226,6 +226,7 @@ if (Object.keys(ref).length < 50) {
 
 const scope = scopeReferenceToChapter({
   reference: ref,
+  retainedKeys: Object.keys(previousLanguage),
   codeDir,
   dataWinPath: dataWin,
   cli,
@@ -301,7 +302,8 @@ const beforeInstall = async () => {
   if (!process.argv.includes("--coordinated-install")) return;
   await new Promise((resolve, reject) => {
     process.stdin.once("data", (data) => {
-      process.stdin.pause();
+      // Sous Windows, pause() laisse le pipe actif et empêche la fin du processus.
+      process.stdin.destroy();
       if (data.toString().trim() === "INSTALL") resolve();
       else reject(new Error("Installation interrompue avant toute écriture."));
     });

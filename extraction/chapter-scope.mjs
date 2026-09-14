@@ -106,12 +106,15 @@ function identity(entry) {
   return `${file}\u0000${english}`;
 }
 
-export function removeInheritedEntries(reference, previousEntries) {
+export function removeInheritedEntries(reference, previousEntries, retainedKeys = []) {
   const inherited = new Set(previousEntries.map(identity));
+  const retained = new Set(retainedKeys);
   const scoped = {};
   let removed = 0;
   for (const [id, entry] of Object.entries(reference)) {
-    if (inherited.has(identity(entry))) {
+    // Une ligne conservée dans le fichier de langue doit garder son anglais
+    // pour distinguer une traduction d'un texte encore identique à l'original.
+    if (inherited.has(identity(entry)) && !retained.has(id)) {
       removed++;
       continue;
     }
@@ -126,6 +129,7 @@ export function scopeReferenceToChapter({
   dataWinPath,
   cli,
   outDir,
+  retainedKeys = [],
   force = false,
   log = () => {},
 }) {
@@ -159,9 +163,9 @@ export function scopeReferenceToChapter({
     previousEntries = Object.values(buildReferenceFromLangJson(previousCodeDir, english, log));
   }
 
-  const result = removeInheritedEntries(reference, previousEntries);
+  const result = removeInheritedEntries(reference, previousEntries, retainedKeys);
   log(
-    `  périmètre chapitre ${chapter} : ${Object.keys(result.reference).length} textes propres ou modifiés, ` +
+    `  périmètre chapitre ${chapter} : ${Object.keys(result.reference).length} textes propres, modifiés ou déjà présents dans la traduction, ` +
       `${result.removed} textes hérités masqués.`
   );
   return { ...result, chapter, scoped: true, previousDataWin };

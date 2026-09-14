@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { normalizeLanguage, prepareLanguage, installedLanguages } from "./languages.mjs";
 import { routeDrawCalls, prepareMultilangGml, runtimeGml } from "./multilang-gml.mjs";
-import { installTransaction, restoreTransaction, hashFile } from "./install-language.mjs";
+import { installTransaction, restoreTransaction, hashFile, makeLanguageVerifyCsx } from "./install-language.mjs";
 import { prepareLauncherGml } from "./launcher-language.mjs";
 
 function fixture(t) {
@@ -16,6 +16,21 @@ function fixture(t) {
   });
   return root;
 }
+
+test("vérification : la taille du script reste constante avec des milliers de frames", (t) => {
+  const root = fixture(t);
+  const sprites = path.join(root, "sprites");
+  fs.mkdirSync(sprites);
+  const options = { languages: ["fr", "pt_br"], reportPath: path.join(root, "report"), workspace: root, source: path.join(root, "source.win") };
+  const empty = makeLanguageVerifyCsx(options);
+  for (let frame = 0; frame < 1000; frame++)
+    fs.writeFileSync(path.join(sprites, `acteur_${frame}.png`), "");
+  const populated = makeLanguageVerifyCsx(options);
+  assert.equal(populated, empty, "Les frames sont traitées en boucle au runtime, sans agrandir Initialize");
+  assert.ok(Buffer.byteLength(populated) < 12000);
+  assert.ok(populated.lastIndexOf('ScriptMessage("DT_VERIFIED")') > populated.lastIndexOf("worker.ExportAsPNG"),
+    "La réussite ne doit être annoncée qu’après les exports");
+});
 
 test("codes de langue : régions, normalisation, langues natives et chemins refusés", () => {
   assert.equal(normalizeLanguage(" FR "), "fr");

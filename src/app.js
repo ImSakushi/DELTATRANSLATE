@@ -255,6 +255,7 @@ async function init() {
   spriteEditor.bind();
   const data = await window.api.loadData();
   appConfig = data.config ?? {};
+  renderRunedeltaStatus();
   utmtReady = Boolean(data.utmt?.ready);
   prefs = Object.assign(
     {
@@ -264,6 +265,7 @@ async function init() {
       validated: {},
       faceOverrides: {},
       sceneOverrides: {},
+      backupsEnabled: false,
     },
     data.prefs
   );
@@ -275,7 +277,7 @@ async function init() {
   prefs.speakerFilter = typeof prefs.speakerFilter === "string" ? prefs.speakerFilter : "all";
   $("sel-list-sort").value = prefs.listSort;
   const backupsToggle = $("chk-backups");
-  backupsToggle.checked = prefs.backupsEnabled !== false;
+  backupsToggle.checked = prefs.backupsEnabled === true;
   backupsToggle.addEventListener("change", () => {
     prefs.backupsEnabled = backupsToggle.checked;
     savePreferences();
@@ -300,7 +302,7 @@ async function init() {
   reference = data.reference;
   migrationReview = new Set(data.migration?.review ?? []);
   runedeltaAttributions = data.runedeltaSync?.attributions ?? {};
-  if (appConfig.runedelta?.enabled && Object.keys(runedeltaAttributions).length === 0) {
+  if (appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled && Object.keys(runedeltaAttributions).length === 0) {
     const attributionData = await window.api.getRunedeltaAttributions();
     if (attributionData.ok) runedeltaAttributions = attributionData.attributions;
     else console.warn(`Attributions Runedelta indisponibles : ${attributionData.error}`);
@@ -696,13 +698,7 @@ function selectKey(key) {
   if (!e) return;
   $("key-name").textContent = shortKey(key);
   renderKeyMeta(e);
-  const attribution = translatedAttribution(e);
-  const author = $("key-author");
-  author.classList.toggle("hidden", !attribution);
-  author.textContent = attribution
-    ? `✎ Traduit par ${attributionNames(attribution).join(", ")}`
-    : "";
-  author.dataset.tooltip = attribution ? attributionTooltip(attribution) : "";
+  renderKeyAttribution(e);
   $("en-display").innerHTML = e.en != null ? highlight(e.en) : "<i>—</i>";
   $("fr-input").value = e.fr;
   refreshHighlight();
@@ -713,6 +709,16 @@ function selectKey(key) {
   updateFaceOverrideControls();
   updateSceneContextControls();
   schedulePreview();
+}
+
+function renderKeyAttribution(e) {
+  const attribution = translatedAttribution(e);
+  const author = $("key-author");
+  author.classList.toggle("hidden", !attribution);
+  author.textContent = attribution
+    ? `✎ Traduit par ${attributionNames(attribution).join(", ")}`
+    : "";
+  author.dataset.tooltip = attribution ? attributionTooltip(attribution) : "";
 }
 
 function updateValidateButton() {
@@ -2044,7 +2050,7 @@ function save({ allowPublish = false } = {}) {
           `✔ Sauvegardé localement à ${new Date(r.savedAt).toLocaleTimeString()}` +
           (r.backupCreated ? " (backup créé)" : "");
       }
-      if (appConfig.runedelta?.enabled) await refreshRunedeltaStatus();
+      if (appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled) await refreshRunedeltaStatus();
       updateProgress();
       renderList();
       refreshHighlight();
@@ -2085,7 +2091,7 @@ function gotoNextDialogue() {
 }
 
 function backupIfModified() {
-  if (importing || setupDone || prefs.backupsEnabled === false || !dirty || backupPromise) return;
+  if (importing || setupDone || prefs.backupsEnabled !== true || !dirty || backupPromise) return;
   backupPromise = window.api
     .backupLang({ ...lang })
     .then((result) => {
@@ -2428,19 +2434,29 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   const topButton = $("btn-runedelta");
   const publishButton = $("btn-publish");
   const modalPublishButton = $("btn-publish-runedelta");
-  const enabled = Boolean(status.enabled ?? appConfig.runedelta?.enabled);
+  const modeEnabled = appConfig.runedelta?.modeEnabled === true;
+  const publishEnabled = modeEnabled && appConfig.runedelta?.publishEnabled === true;
+  const enabled = modeEnabled && Boolean(status.enabled ?? appConfig.runedelta?.enabled);
   const warning = sync?.error || sync?.pushError || status.error || status.dirtyFiles?.length;
+  topButton.classList.toggle("hidden", !modeEnabled);
+  $("chk-runedelta-mode").checked = modeEnabled;
+  $("chk-runedelta-mode").disabled = runedeltaBusy;
+  $("chk-runedelta-publish").checked = publishEnabled;
+  $("chk-runedelta-publish").disabled = !modeEnabled || runedeltaBusy;
   topButton.classList.toggle("sync-ready", enabled && !warning);
   topButton.classList.toggle("sync-warning", Boolean(warning));
-  publishButton.classList.toggle("hidden", !enabled);
   for (const button of [publishButton, modalPublishButton]) {
+    button.classList.toggle("hidden", !enabled || !publishEnabled);
     button.classList.toggle("action-loading", runedeltaBusy);
     button.setAttribute("aria-busy", String(runedeltaBusy));
-    button.disabled = !enabled || runedeltaBusy;
+    button.disabled = !enabled || !publishEnabled || runedeltaBusy;
     button.textContent = runedeltaBusy ? "Publication…" : "↑ Publier";
   }
 
-  if (!status.available) {
+  if (!modeEnabled) {
+    label.className = "setup-status";
+    label.textContent = "Mode local — Runedelta est désactivé.";
+  } else if (!status.available) {
     label.className = "setup-status missing";
     label.textContent = "Git est introuvable. Installe Git pour connecter Runedelta.";
   } else if (warning) {
@@ -2458,6 +2474,7 @@ function renderRunedeltaStatus(status = {}, sync = null) {
     } else if (behind > 0) {
       publicationState = ` — ${behind} commit${behind > 1 ? "s" : ""} distant${behind > 1 ? "s" : ""} à récupérer`;
     }
+    if (!publishEnabled) publicationState = " — sauvegardes locales, publication GitHub désactivée";
     if (!runedeltaBusy) {
       const needsPublication = unpublished > 0 || pending > 0 || behind > 0;
       publishButton.textContent = needsPublication ? "↑ Publier" : "✓ Publié";
@@ -2485,12 +2502,16 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   remoteInput.disabled = enabled || runedeltaBusy;
   const connectButton = $("btn-connect-runedelta");
   connectButton.classList.toggle("hidden", enabled);
-  connectButton.disabled = !status.available || !appConfig.dataWinPath || runedeltaBusy || (appConfig.targetLanguage ?? "fr") !== "fr";
-  $("btn-open-runedelta").disabled = !status.connected || runedeltaBusy;
-  $("btn-disconnect-runedelta").disabled = !(status.configured || enabled) || runedeltaBusy;
+  connectButton.disabled = !modeEnabled || !status.available || !appConfig.dataWinPath || runedeltaBusy || (appConfig.targetLanguage ?? "fr") !== "fr";
+  $("btn-open-runedelta").disabled = !modeEnabled || !status.connected || runedeltaBusy;
+  $("btn-disconnect-runedelta").disabled = !modeEnabled || !(status.configured || enabled) || runedeltaBusy;
 }
 
 async function refreshRunedeltaStatus(sync = null, startupSync = null) {
+  if (appConfig.runedelta?.modeEnabled !== true) {
+    renderRunedeltaStatus();
+    return { enabled: false };
+  }
   try {
     const status = await window.api.getRunedeltaStatus();
     renderRunedeltaStatus(status, sync ?? startupSync);
@@ -2505,6 +2526,7 @@ async function refreshRunedeltaStatus(sync = null, startupSync = null) {
 }
 
 async function connectRunedelta() {
+  if (appConfig.runedelta?.modeEnabled !== true) return;
   if (runedeltaBusy || savePromise || importing || codeApplyRunning) return;
   if (dirty && !(await save())) return;
   if (dirty) return;
@@ -2542,7 +2564,7 @@ async function connectRunedelta() {
 }
 
 async function publishRunedeltaNow() {
-  if (runedeltaBusy) return;
+  if (runedeltaBusy || appConfig.runedelta?.modeEnabled !== true || appConfig.runedelta?.publishEnabled !== true) return;
   runedeltaBusy = true;
   renderRunedeltaStatus({ available: true, enabled: true });
   if (dirty && !(await save({ allowPublish: true }))) {
@@ -2722,7 +2744,7 @@ function openImportModal(required = false, runedelta = false) {
   setupReturnFocus = document.activeElement;
   updateCurrentChapter();
   required = required || !appReady;
-  runedelta = runedelta && !required;
+  runedelta = runedelta && !required && appConfig.runedelta?.modeEnabled === true;
   $("import-modal").dataset.required = required ? "true" : "false";
   $("import-title").textContent = runedelta ? "Projet Runedelta" : required ? "Bienvenue !" : "Choisir un chapitre";
   $("chapter-setup").classList.toggle("hidden", runedelta);
@@ -2742,6 +2764,34 @@ function openImportModal(required = false, runedelta = false) {
 function bindImportModal() {
   if (importModalBound) return;
   importModalBound = true;
+  const saveRunedeltaOptions = async () => {
+    if (runedeltaBusy) return;
+    const options = {
+      modeEnabled: $("chk-runedelta-mode").checked,
+      publishEnabled: $("chk-runedelta-publish").checked,
+    };
+    runedeltaBusy = true;
+    renderRunedeltaStatus();
+    try {
+      appConfig = await window.api.setRunedeltaOptions(options);
+      runedeltaAttributions = {};
+      if (appReady && appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled) {
+        const result = await window.api.getRunedeltaAttributions();
+        if (result.ok) runedeltaAttributions = result.attributions;
+      }
+      if (appReady) {
+        renderListRaf();
+        if (selectedKey) renderKeyAttribution(entriesByKey.get(selectedKey));
+      }
+    } catch (error) {
+      alert(`Modification des options Runedelta impossible.\n\n${error.message}`);
+    } finally {
+      runedeltaBusy = false;
+      await refreshRunedeltaStatus();
+    }
+  };
+  $("chk-runedelta-mode").onchange = saveRunedeltaOptions;
+  $("chk-runedelta-publish").onchange = saveRunedeltaOptions;
   $("btn-import").onclick = () => openImportModal(false);
   $("btn-runedelta").onclick = () => {
     openImportModal(false, true);

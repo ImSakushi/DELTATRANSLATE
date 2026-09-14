@@ -15,18 +15,35 @@ const cs = (value) => JSON.stringify(value);
 
 function previewSpritesCsx(workspace, languages) {
   const directory = path.join(workspace, "sprites");
-  const files = fs.existsSync(directory) ? fs.readdirSync(directory) : [];
-  const requests = new Map();
-  for (const file of files) {
-    const match = file.match(/^(.+)_(\d+)\.png$/);
-    if (!match) continue;
-    let base = match[1];
-    const suffix = languages.find(code => base.endsWith(`_${code}`));
-    if (suffix) base = base.slice(0, -suffix.length - 1);
-    for (const code of languages) requests.set(`${base}_${code}_${match[2]}`, { name: `${base}_${code}`, frame: Number(match[2]) });
-  }
-  return `using (TextureWorker worker = new())\n{\n${[...requests.values()].map(({ name, frame }) =>
-    `{ var sprite = Data.Sprites.ByName(${cs(name)}); if (sprite != null && sprite.Textures.Count > ${frame} && sprite.Textures[${frame}]?.Texture != null) worker.ExportAsPNG(sprite.Textures[${frame}].Texture, ${cs(path.join(directory, `${name}_${frame}.png`))}, null, true); }`).join("\n")}\n}\n`;
+  // Des milliers de blocs C# dans Initialize font déborder la pile du moteur de scripts.
+  return `string spriteFolder = ${cs(directory)};
+string[] previewLanguages = new string[] { ${languages.map(cs).join(", ")} };
+if (Directory.Exists(spriteFolder))
+{
+    var requested = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+    string[] previewFiles = Directory.GetFiles(spriteFolder);
+    using (TextureWorker worker = new())
+    {
+        foreach (string file in previewFiles)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(Path.GetFileName(file), @"^(.+)_([0-9]+)\\.png$");
+            if (!match.Success || !int.TryParse(match.Groups[2].Value, out int frame)) continue;
+            string baseName = match.Groups[1].Value;
+            string suffix = previewLanguages.FirstOrDefault(code => baseName.EndsWith("_" + code, StringComparison.Ordinal));
+            if (suffix != null) baseName = baseName.Substring(0, baseName.Length - suffix.Length - 1);
+            foreach (string language in previewLanguages)
+            {
+                string name = baseName + "_" + language;
+                string filename = name + "_" + frame + ".png";
+                if (!requested.Add(filename)) continue;
+                var sprite = Data.Sprites.ByName(name);
+                if (sprite != null && sprite.Textures.Count > frame && sprite.Textures[frame]?.Texture != null)
+                    worker.ExportAsPNG(sprite.Textures[frame].Texture, Path.Combine(spriteFolder, filename), null, true);
+            }
+        }
+    }
+}
+`;
 }
 
 export async function runUtmt(cli, args, marker, log) {
@@ -200,9 +217,9 @@ File.WriteAllText(Path.Combine(${cs(reportPath)}, "cycle.gml"), cycle);
 File.WriteAllText(Path.Combine(${cs(reportPath)}, "init.gml"), init);
 File.WriteAllText(Path.Combine(${cs(reportPath)}, "load.gml"), load);
 File.WriteAllLines(Path.Combine(${cs(reportPath)}, "sprites.txt"), Data.Sprites.Select(s => s.Name.Content));
-ScriptMessage("DT_VERIFIED");
 ${previewFontsCsx(workspace)}
 ${previewSpritesCsx(workspace, languages)}
+ScriptMessage("DT_VERIFIED");
 `;
 }
 

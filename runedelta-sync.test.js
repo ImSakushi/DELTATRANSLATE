@@ -12,6 +12,7 @@ const {
   mergeLanguages,
   parseGitBlamePorcelain,
   parseGitLanguageHistory,
+  runedeltaStatus,
   synchronizeRunedelta,
 } = require("./runedelta-sync.js");
 
@@ -41,6 +42,12 @@ function writeLanguage(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, serializeLanguage(value), "utf8");
 }
+
+test("le statut désactivé ne dépend ni de Git ni du dépôt local", async () => {
+  for (const runedelta of [undefined, { enabled: true }, { modeEnabled: false }]) {
+    assert.deepEqual(await runedeltaStatus({ runedelta }, null), { enabled: false, configured: false });
+  }
+});
 
 test("fusionne les modifications Git et locales portant sur des clés différentes", () => {
   const base = language();
@@ -192,13 +199,27 @@ test("installe puis synchronise Runedelta avec un dépôt Git distant", async (t
   runGit(collaborator, "push");
 
   const local = language({ key_1: "Modification locale" });
-  const synced = await synchronizeRunedelta({
+  const remoteHead = runGit(remote, "rev-parse", "main").trim();
+  const localOnly = await synchronizeRunedelta({
     config,
     directory: managed,
     remoteUrl: remote,
     serializeLanguage,
     backupFile: () => null,
     language: local,
+  });
+  assert.equal(localOnly.ok, true);
+  assert.equal(localOnly.pushed, false);
+  assert.equal(runGit(remote, "rev-parse", "main").trim(), remoteHead);
+  assert.equal(JSON.parse(fs.readFileSync(gameLanguage, "utf8")).key_1, "Modification locale");
+  const synced = await synchronizeRunedelta({
+    push: true,
+    config,
+    directory: managed,
+    remoteUrl: remote,
+    serializeLanguage,
+    backupFile: () => null,
+    language: localOnly.language,
   });
   assert.equal(synced.ok, true);
   assert.equal(synced.pushed, true);
@@ -239,6 +260,7 @@ test("installe puis synchronise Runedelta avec un dépôt Git distant", async (t
   assert.equal(JSON.parse(fs.readFileSync(gameLanguage, "utf8")).key_4, "English 4");
 
   const resolved = await synchronizeRunedelta({
+    push: true,
     config,
     directory: managed,
     remoteUrl: remote,

@@ -57,3 +57,22 @@ test("removeInheritedEntries compare le fichier et l'anglais, pas les clés inst
   assert.equal(result.removed, 1);
   assert.deepEqual(Object.keys(result.reference), ["texte_modifie", "autre_fichier"]);
 });
+
+test("le filtrage conserve la référence des lignes héritées déjà dans le fichier de langue", () => {
+  const reference = {
+    anglais: { file: "gml_GlobalScript_scr_text", en: "* Well^1, there was not a man here./%", channel: "msg" },
+    traduit: { file: "gml_GlobalScript_scr_text", en: "* You got the Egg./%" },
+    absent: { file: "gml_GlobalScript_scr_text", en: "Other chapter" },
+    nouveau: { file: "gml_GlobalScript_scr_text", en: "New dialogue" },
+  };
+  const language = { date: "123", anglais: reference.anglais.en, traduit: "* Tu as obtenu l'Œuf./%", orphelin: "À conserver" };
+  const before = structuredClone(language);
+  const previous = Object.entries(reference).filter(([key]) => key !== "nouveau").map(([id, entry]) => ({ id, ...entry }));
+  const result = removeInheritedEntries(reference, previous, Object.keys(language));
+  assert.deepEqual(Object.keys(result.reference), ["anglais", "traduit", "nouveau"]);
+  assert.equal(result.removed, 1);
+  assert.equal(result.reference.anglais.en, language.anglais);
+  assert.notEqual(result.reference.traduit.en, language.traduit);
+  assert.equal(result.reference.orphelin, undefined);
+  assert.deepEqual(language, before);
+});

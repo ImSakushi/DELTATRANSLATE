@@ -80,7 +80,7 @@ function prefsPath() {
 }
 
 function backupsEnabled() {
-  return loadJson(prefsPath(), {}).backupsEnabled !== false;
+  return loadJson(prefsPath(), {}).backupsEnabled === true;
 }
 
 function runedeltaSettings(config = getConfig()) {
@@ -95,6 +95,7 @@ function runedeltaBackup(file, content) {
 }
 
 function runedeltaEnabledForCurrentChapter(config) {
+  if (config.runedelta?.modeEnabled !== true) return false;
   if (config.targetLanguage && config.targetLanguage !== "fr") return false;
   if (!config.runedelta?.enabled) return false;
   const installed = config.runedelta.installedChapters;
@@ -122,6 +123,9 @@ function formatRunedeltaConflict(result) {
 }
 
 async function syncConfiguredRunedelta(config, language = null, conflictResolution = null) {
+  if (config.runedelta?.modeEnabled !== true || config.runedelta?.publishEnabled !== true) {
+    throw new Error("La publication GitHub est désactivée dans les options Runedelta.");
+  }
   const settings = runedeltaSettings(config);
   return synchronizeRunedelta({
     config,
@@ -502,6 +506,7 @@ ipcMain.handle("get-update-status", () => updater.getState());
 ipcMain.handle("install-update", () => updater.install());
 ipcMain.handle("get-runedelta-status", async () => {
   const config = getConfig();
+  if (config.runedelta?.modeEnabled !== true) return { enabled: false, configured: false };
   const settings = runedeltaSettings(config);
   return runedeltaStatus(config, settings.directory, settings.remoteUrl);
 });
@@ -525,11 +530,25 @@ ipcMain.handle("get-runedelta-attributions", async () => {
 });
 
 let runedeltaRunning = false;
+ipcMain.handle("set-runedelta-options", (_event, options = {}) => {
+  if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) throw new Error("Une écriture est déjà en cours.");
+  const config = getConfig();
+  const modeEnabled = options.modeEnabled === true;
+  return updateConfig({
+    runedelta: {
+      ...config.runedelta,
+      modeEnabled,
+      publishEnabled: modeEnabled && options.publishEnabled === true,
+    },
+  });
+});
+
 ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
   if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) return { ok: false, error: "Une écriture est déjà en cours." };
   runedeltaRunning = true;
   try {
     const config = getConfig();
+    if (config.runedelta?.modeEnabled !== true) throw new Error("Active d’abord le mode Runedelta dans Chapitre → Fonctions facultatives.");
     if ((config.targetLanguage ?? "fr") !== "fr") throw new Error("Runedelta fournit la traduction française. Ouvre la langue FR avant de le connecter.");
     const previous = runedeltaSettings(config);
     const remoteUrl = String(requestedRemote ?? "").trim() || DEFAULT_RUNEDDELTA_REMOTE;
@@ -592,12 +611,13 @@ ipcMain.handle("disconnect-runedelta", () => {
   const config = getConfig();
   return updateConfig({
     runedelta: config.runedelta
-      ? { ...config.runedelta, enabled: false }
+      ? { ...config.runedelta, enabled: false, publishEnabled: false }
       : { enabled: false, remoteUrl: DEFAULT_RUNEDDELTA_REMOTE },
   });
 });
 
 ipcMain.handle("open-runedelta", () => {
+  if (getConfig().runedelta?.modeEnabled !== true) return;
   const directory = runedeltaSettings().directory;
   fs.mkdirSync(directory, { recursive: true });
   return shell.openPath(directory);
@@ -651,7 +671,7 @@ ipcMain.handle("load-data", async () => {
   const document = loadJson(prefsPath(), {});
   const migrated = config.dataWinPath ? storage.migratePreferences(document, projectId) : document;
   if (migrated !== document) {
-    if (fs.existsSync(prefsPath())) backupFile(prefsPath(), JSON.stringify(migrated, null, 2));
+    if (backupsEnabled() && fs.existsSync(prefsPath())) backupFile(prefsPath(), JSON.stringify(migrated, null, 2));
     storage.atomicWrite(prefsPath(), JSON.stringify(migrated, null, 2), { json: true });
   }
   const prefs = storage.scopedPreferences(migrated, projectId);
@@ -933,7 +953,9 @@ ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedPro
     };
   } catch (error) {
     if (config?.langFrPath && expectedProject === storage.projectId(config)) {
-      try { storage.backup(runtimeDirectory("backups"), config.langFrPath, serializeLanguage(langObj), { kind: "draft" }); } catch {}
+      try {
+        if (backupsEnabled()) storage.backup(runtimeDirectory("backups"), config.langFrPath, serializeLanguage(langObj), { kind: "draft" });
+      } catch {}
     }
     return { ok: false, error: error.message };
   } finally {
@@ -1153,7 +1175,7 @@ ipcMain.handle("save-prefs", (_event, prefs, projectId) => {
   if (projectId !== storage.projectId(getConfig())) throw new Error("Le chapitre actif a changé. Préférences conservées.");
   const next = storage.mergePreferences(loadJson(prefsPath(), {}), projectId, prefs);
   const serialized = JSON.stringify(next, null, 2);
-  backupFile(prefsPath(), serialized);
+  if (next.backupsEnabled === true) backupFile(prefsPath(), serialized);
   storage.atomicWrite(prefsPath(), serialized, { json: true });
   return true;
 });
@@ -1267,7 +1289,7 @@ ipcMain.handle("import-datawin", async (event, dataWinPath, options = {}) => {
           if (importAbort.signal.aborted) return;
           importInstalling = true;
           event.sender.send("import-progress", "IMPORT_INSTALLING");
-          child.stdin.write("INSTALL\n");
+          child.stdin.end("INSTALL\n");
           return;
         }
         if (line.startsWith("IMPORT_DONE ")) {

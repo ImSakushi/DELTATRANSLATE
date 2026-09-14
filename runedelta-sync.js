@@ -551,7 +551,7 @@ async function synchronizeRunedelta(options) {
     serializeLanguage,
     backupFile,
     language: suppliedLanguage = null,
-    push = true,
+    push = false,
     conflictResolution = null,
   } = options;
   const targetPath = gameLanguagePath(config);
@@ -703,11 +703,12 @@ async function synchronizeRunedelta(options) {
 }
 
 async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE) {
+  if (config.runedelta?.modeEnabled !== true) return { enabled: false, configured: false };
   const version = await gitAvailable();
   const chapter = detectChapter(config);
   const configured = Boolean(config.runedelta?.enabled);
   const installed = config.runedelta?.installedChapters;
-  const enabled = configured && (!installed || Boolean(chapter && installed[String(chapter)]));
+  const enabled = configured && (config.targetLanguage ?? "fr") === "fr" && (!installed || Boolean(chapter && installed[String(chapter)]));
   const status = {
     enabled,
     configured,

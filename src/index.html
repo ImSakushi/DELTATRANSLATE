@@ -24,14 +24,14 @@
     </div>
     <div class="top-actions">
       <button id="btn-update" class="hidden" type="button">Mise à jour</button>
-      <button id="btn-runedelta" type="button" data-tooltip="Configurer la publication sur le projet Runedelta">⇅ Runedelta</button>
+      <button id="btn-runedelta" class="hidden" type="button" data-tooltip="Configurer le projet Runedelta et sa publication facultative">⇅ Runedelta</button>
       <button id="btn-theme" class="theme-toggle" type="button" data-tooltip="Passer au design classique" aria-label="Passer au design classique">
         <span class="theme-icon theme-icon-classic" aria-hidden="true">▣</span>
         <span class="theme-icon theme-icon-dr" aria-hidden="true">♥</span>
       </button>
       <button id="btn-import" data-tooltip="Choisir ou préparer un chapitre de DELTARUNE">📂 Chapitre</button>
       <button id="btn-code" data-tooltip="Lire le GML de la scène sélectionnée et modifier ponctuellement le code">⌘ Code GML</button>
-      <label class="chk backup-toggle" data-tooltip="Créer des backups avant les sauvegardes et pendant les modifications non sauvegardées">
+      <label class="chk backup-toggle" data-tooltip="Activer les backups avant les sauvegardes et pendant les modifications non sauvegardées (désactivés par défaut)">
         <input type="checkbox" id="chk-backups" /> Backups
       </label>
       <button id="btn-backups" data-tooltip="Comparer et restaurer les versions précédentes">🗁 Historique</button>
@@ -120,8 +120,13 @@
         <p>Sélectionne une ligne, écris sa traduction et découvre son rendu dans l’aperçu.</p>
         <p>Enregistre avec <kbd>Ctrl+S</kbd> (ou <kbd>⌘S</kbd> sur Mac).</p>
         <p id="setup-save-target" class="modal-hint"></p>
-        <p class="modal-hint">Pour rejoindre un projet de traduction, tu retrouveras Runedelta dans la barre du haut.</p>
+        <p class="modal-hint">Tu peux traduire et sauvegarder localement sans Runedelta ni compte GitHub.</p>
       </div>
+      <details class="setup-help">
+        <summary>Fonctions facultatives</summary>
+        <label class="chk"><input type="checkbox" id="chk-runedelta-mode" /> Activer le mode Runedelta</label>
+        <p class="modal-hint">Désactivé par défaut. Affiche les outils pour rejoindre ce projet de traduction. Git est requis uniquement pour cette fonction. La désactivation conserve tes fichiers et le dépôt local.</p>
+      </details>
       <details id="setup-advanced" class="setup-help">
         <summary>Options avancées · installation manuelle et chemins</summary>
         <label class="chk"><input type="checkbox" id="setup-force" /> Réextraire toutes les ressources</label>
@@ -151,6 +156,8 @@
       </div>
       <section id="runedelta-section" class="hidden">
         <h3>Projet Runedelta</h3>
+        <label class="chk"><input type="checkbox" id="chk-runedelta-publish" /> Autoriser la publication sur GitHub</label>
+        <p class="modal-hint">Désactivée par défaut. Tu peux utiliser le catalogue Runedelta et sauvegarder localement sans publier. Même activée, la publication nécessite un clic sur Publier. Pour masquer Runedelta, décoche son mode dans Chapitre → Fonctions facultatives.</p>
         <div id="runedelta-status" class="setup-status">Vérification de Git…</div>
         <label class="runedelta-remote" for="runedelta-remote">
           Dépôt GitHub
@@ -164,7 +171,7 @@
         </p>
         <div class="modal-actions runedelta-actions">
           <button id="btn-connect-runedelta" class="primary" type="button">Connecter et installer</button>
-          <button id="btn-publish-runedelta" type="button">↑ Publier</button>
+          <button id="btn-publish-runedelta" class="hidden" type="button">↑ Publier</button>
           <button id="btn-open-runedelta" type="button">🗁 Dépôt local</button>
           <button id="btn-disconnect-runedelta" type="button">Déconnecter</button>
         </div>

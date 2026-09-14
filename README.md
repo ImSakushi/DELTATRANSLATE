@@ -94,7 +94,9 @@ Enregistrez avec `Ctrl+S` (ou `⌘S` sur Mac). L’écran de fin de préparation
 Les lancements suivants ouvrent directement le chapitre configuré. Un échec de préparation permet de
 réessayer sans recommencer un téléchargement d’UTMT déjà terminé ; le journal est disponible dans **Détails de la préparation**.
 
-Pour rejoindre Runedelta après l’import, ouvre **⇅ Runedelta**, conserve l’URL proposée et clique sur
+Runedelta et la publication GitHub sont désactivés par défaut, y compris pour une ancienne configuration.
+Pour rejoindre Runedelta après l’import, active **Chapitre → Fonctions facultatives → Activer le mode Runedelta**,
+ouvre **⇅ Runedelta**, conserve l’URL proposée et clique sur
 **Connecter et installer**. Le catalogue du chapitre est alors installé dans le jeu sous le nom
 `lang/lang_fr.json`.
 
@@ -165,19 +167,26 @@ même schéma que les catalogues du jeu ; l’application installe donc une copi
 `lang_fr.json` sans convertir ni réordonner les clés.
 
 1. Importe le `data.win` du chapitre dans DELTATRANSLATE.
-2. Ouvre **⇅ Runedelta**, puis clique sur **Connecter et installer**.
+2. Active **Chapitre → Fonctions facultatives → Activer le mode Runedelta**, puis ouvre **⇅ Runedelta** et clique sur **Connecter et installer**.
 3. Traduis normalement et sauvegarde avec `Ctrl+S`.
+4. Si tu souhaites contribuer sur GitHub, coche **Autoriser la publication sur GitHub** dans l’écran Runedelta, puis clique sur **Publier**.
+
+Les deux options sont désactivées par défaut. Sans le mode Runedelta, ses boutons sont masqués et aucune
+vérification Git n’est lancée. Tu peux traduire et sauvegarder sans Git ni compte GitHub. Désactiver le mode
+conserve les fichiers, le dépôt et sa configuration, et désactive aussi la publication. Réactiver le mode
+ne réinstalle pas le catalogue ; la publication doit être autorisée à nouveau.
 
 Cette installation est confirmée une fois par chapitre : changer de `data.win` ne mélange donc jamais
 automatiquement le catalogue d’un autre projet avec Runedelta.
 
 À la connexion, le `lang_fr.json` éventuellement présent est sauvegardé avant d’être remplacé par le
-catalogue Runedelta. Ensuite, chaque sauvegarde :
+catalogue Runedelta. Ensuite, les sauvegardes restent locales. Seul un clic sur **Publier**, après activation
+de la publication GitHub :
 
 - récupère les nouveaux commits GitHub ;
 - fusionne les changements clé par clé avec le travail local ;
 - écrit le résultat dans `lang/lang_fr.json` et dans le fichier du dépôt ;
-- crée un commit `trad: synchroniser le chapitre N` ;
+- crée un commit descriptif des traductions ;
 - pousse le commit si l’utilisateur Git configuré possède les droits d’écriture.
 
 Pour chaque valeur différente de l’anglais, la liste et l’éditeur affichent tous les contributeurs Git ayant
@@ -190,8 +199,9 @@ de choisir `LOCAL` ou `GITHUB`. Sans réseau ou sans droit de push, la sauvegard
 conservés ; le bouton Runedelta reste en avertissement et une synchronisation ultérieure reprend le commit.
 
 L’application ne stocke aucun token GitHub. Elle utilise Git et son gestionnaire d’identifiants déjà
-configuré sur la machine. Les membres sans droit d’écriture peuvent cloner et installer le projet, mais le
-push restera en attente jusqu’à l’utilisation d’un compte autorisé ou d’un fork accessible en écriture.
+configuré sur la machine. Les membres sans droit d’écriture peuvent cloner et installer le projet en laissant
+la publication désactivée. Si une publication est tentée puis refusée, le commit reste local jusqu’à
+l’utilisation d’un compte autorisé ou d’un fork accessible en écriture.
 Si aucun nom ou e-mail Git n’existe, DELTATRANSLATE configure uniquement dans son clone une identité
 générique `Traducteur Runedelta`, sans modifier la configuration Git globale.
 
@@ -201,8 +211,8 @@ Le setup multilingue enregistre les textes dans le fichier propre à la langue. 
 
 | Situation détectée | Cible utilisée | Protection appliquée |
 | --- | --- | --- |
-| Langue préparée par le setup | `lang/lang_<code>.json` | Traductions existantes préservées, backup avant sauvegarde |
-| Runedelta est connecté | `lang/lang_fr.json` + `strings_chapitre_N.json` | Fusion clé par clé, commit local, puis push |
+| Langue préparée par le setup | `lang/lang_<code>.json` | Traductions existantes préservées, backup avant sauvegarde si activé |
+| Runedelta est connecté | Sauvegarde locale dans `lang/lang_fr.json` | Le dépôt est modifié uniquement sur clic sur Publier, si la publication est activée : fusion, commit puis push |
 | Installation du sélecteur ou de sprites traduits | `data.win` du chapitre et, si présent, du lanceur | Sources immuables, compilation vérifiée, sauvegarde durable dans `deltatranslate-backups` |
 | Ancien projet en mode recompilation | `data.win` actif | Source conservée et remplacement atomique ; réimporter pour passer au setup multilingue |
 
@@ -210,7 +220,7 @@ Garanties importantes :
 
 - le `data.win` utilisé comme source d’extraction reste en lecture seule ;
 - le fichier anglais de référence n’est jamais normalisé ni réordonné ;
-- jusqu’à **40 sauvegardes avant écriture et 40 brouillons** sont conservés par cible, séparément pour chaque installation et langue ;
+- les backups sont **désactivés par défaut** et activables dans la barre du haut ; une fois activés, jusqu’à **40 sauvegardes avant écriture et 40 brouillons** sont conservés par cible, séparément pour chaque installation et langue ;
 - un brouillon des modifications non enregistrées est conservé toutes les minutes lorsque les backups sont activés ;
 - si le remplacement d’un `data.win` échoue, le fichier précédent est restauré ;
 - si le jeu ou une traduction change pendant la compilation, l’installation est refusée avant remplacement ;
@@ -219,7 +229,7 @@ Garanties importantes :
 
 Le bouton **🗁 Historique** compare les copies avec le texte actuel et permet de restaurer une seule ligne dans l’éditeur. La restauration doit ensuite être enregistrée pour être appliquée au jeu. Les anciennes copies, dont le nom seul ne permet pas d’identifier le chapitre, restent accessibles via **Ouvrir le dossier des backups**.
 
-Les écritures JSON passent par un fichier temporaire validé puis renommé. Si le fichier a été modifié par un autre programme depuis son chargement, la sauvegarde est refusée et une copie de la saisie est conservée dans l’historique. Les caractères saisis pendant une sauvegarde restent dans l’éditeur et sont signalés comme non enregistrés. La fermeture propose **Enregistrer**, **Quitter sans enregistrer** et **Annuler**.
+Les écritures JSON passent par un fichier temporaire validé puis renommé. Si le fichier a été modifié par un autre programme depuis son chargement, la sauvegarde est refusée et, si les backups sont activés, une copie de la saisie est conservée dans l’historique. Les caractères saisis pendant une sauvegarde restent dans l’éditeur et sont signalés comme non enregistrés. La fermeture propose **Enregistrer**, **Quitter sans enregistrer** et **Annuler**.
 
 Les validations et les choix de portrait, de boîte et de scène sont isolés par installation et langue. Les préférences historiques sont rattachées au projet actif à leur première migration, sans suppression du document d’origine. Le thème et le réglage des backups restent communs.
 
@@ -311,7 +321,7 @@ Le processus principal et le preload sont en CommonJS. Le renderer et les script
 
 ### Releases et mises à jour
 
-Le tag GitHub doit toujours correspondre à la version de `package.json` (`v1.1.0` pour la version `1.1.0`) ; le workflow refuse sinon de publier. Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
+Le tag GitHub doit toujours correspondre à la version de `package.json` (`v1.1.1` pour la version `1.1.1`) ; le workflow refuse sinon de publier. Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
 
 Les releases doivent être lisibles publiquement pour que les installations puissent les consulter sans secret. Ne jamais embarquer de token GitHub dans l’application. Sur macOS, les mises à jour automatiques nécessitent également une application signée.
 
