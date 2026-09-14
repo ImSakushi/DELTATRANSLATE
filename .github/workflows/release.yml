@@ -112,6 +112,13 @@ jobs:
 
             Au premier lancement, choisissez votre chapitre détecté dans Steam (ou le dossier du jeu), puis cliquez sur **Préparer ce chapitre**. L’outil de lecture s’installe automatiquement si nécessaire. Node.js et Git ne sont pas nécessaires pour commencer à traduire.
 
-            DELTATRANSLATE vérifiera automatiquement les prochaines releases au démarrage.
+            **Mises à jour GitHub :** vérification au démarrage et toutes les quatre heures, avec un bouton pour vérifier ou réessayer. Le téléchargement et l’installation nécessitent votre action. L’application sauvegarde le travail avant d’installer et de redémarrer.
+
+            Sur Windows Portable, la mise à jour installe la version Setup pour votre compte ; utilisez ensuite le nouveau raccourci. Les builds macOS non signés se remplacent depuis le DMG.
+
+            Le bouton de mise à jour ne tente plus d’installer avant téléchargement. Le bouton Contrôle qualité est temporairement retiré, Publier reste masqué sans dépôt GitHub lié, et les backups sont désactivés par défaut.
+
+            Si vous utilisez déjà une version portant le même numéro, téléchargez cette reconstruction manuellement : republier les livrables ne change pas le numéro de version.
           files: release-assets/*
           fail_on_unmatched_files: true
+          overwrite_files: true

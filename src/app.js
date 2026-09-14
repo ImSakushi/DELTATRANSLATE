@@ -5,7 +5,8 @@ import { extractTags, substituteArgs } from "./engine/writer.js";
 import { SpriteEditor } from "./sprites.js";
 import { prepareChapter } from "./setup-flow.mjs";
 import { mergeSavedEdits, catalogKeys } from "./editor-state.mjs";
-import { resolveConflicts, showHistory, showQuality, textIssues } from "./review-tools.mjs";
+import { resolveConflicts, showHistory } from "./review-tools.mjs";
+import { prepareUpdateInstall, runUpdateAction, updateAction } from "./update-flow.mjs";
 
 // ---------------------------------------------------------------------------
 // État global
@@ -207,37 +208,77 @@ let updateInstallRunning = false;
 
 function renderUpdateStatus(status) {
   const button = $("btn-update");
-  const visible = status?.phase === "downloading" || status?.phase === "downloaded";
-  button.classList.toggle("hidden", !visible);
-  if (!visible) return;
-
-  if (status.phase === "downloading") {
-    button.disabled = true;
+  const action = updateAction(status);
+  button.classList.toggle("hidden", action === "disabled");
+  button.disabled = action === "busy" || action === "disabled";
+  if (status?.phase === "error" && updateInstallRunning) {
+    updateInstallRunning = false;
+    document.body.inert = false;
+  }
+  if (action === "disabled") return;
+  if (status.phase === "checking") {
+    button.textContent = "Recherche…";
+    button.dataset.tooltip = "Vérification des releases GitHub";
+  } else if (status.phase === "installing") {
+    button.textContent = "Installation…";
+    button.dataset.tooltip = "Installation de la mise à jour et redémarrage";
+  } else if (status.phase === "downloading") {
     button.textContent = `↓ Mise à jour ${status.percent ?? 0} %`;
     button.dataset.tooltip = `Téléchargement de DELTATRANSLATE ${status.version ?? ""}`.trim();
-  } else {
-    button.disabled = false;
+  } else if (action === "install") {
     button.textContent = `↻ Installer ${status.version}`;
     button.dataset.tooltip = "Sauvegarder le travail, installer la mise à jour et redémarrer";
+  } else if (action === "download") {
+    button.textContent = `↓ Mettre à jour · ${status.version}`;
+    button.dataset.tooltip = "Télécharger la nouvelle version depuis GitHub";
+  } else {
+    button.textContent = status.phase === "error" ? "↻ Réessayer la mise à jour" : "↻ Mises à jour";
+    button.dataset.tooltip = `Version ${status.currentVersion} · Vérifier les releases GitHub`;
   }
+  if (status.error) button.dataset.tooltip = `${status.error}\nCliquez pour réessayer.`;
 }
 
 async function installDownloadedUpdate() {
-  if (updateInstallRunning || importing || installingUtmt || setupDone || runedeltaBusy || codeApplyRunning) return;
+  if (updateInstallRunning) return;
   updateInstallRunning = true;
+  document.body.inert = true;
+  let installed = false;
   try {
-    if (codeState.dirty && !(await saveCodeOverride())) return;
-    if (dirty && !(await save())) return;
-    if (dirty) return;
-    const result = await window.api.installUpdate();
+    const result = await prepareUpdateInstall({
+      isBusy: () => importing || installingUtmt || pickingChapter || runedeltaBusy || codeApplyRunning || spriteEditor.applyRunning,
+      isDirty: () => dirty || codeState.dirty,
+      savePreferences: async () => {
+        await prefsSavePromise;
+        return !prefsSaveFailed || savePreferences();
+      },
+      saveCode: async () => !codeState.dirty || saveCodeOverride(),
+      saveLanguage: async () => {
+        if (savePromise && !(await savePromise)) return false;
+        return !dirty || save();
+      },
+      install: () => window.api.installUpdate(),
+    });
+    installed = result.ok;
     if (!result.ok) alert(`Impossible d’installer la mise à jour.\n\n${result.error}`);
+  } catch (error) {
+    alert(`Impossible d’installer la mise à jour.\n\n${error.message}`);
   } finally {
-    updateInstallRunning = false;
+    if (!installed) {
+      updateInstallRunning = false;
+      document.body.inert = false;
+    }
   }
 }
 
 async function setupUpdates() {
-  $("btn-update").addEventListener("click", installDownloadedUpdate);
+  $("btn-update").addEventListener("click", async () => {
+    try {
+      const result = await runUpdateAction(window.api, installDownloadedUpdate);
+      if (result && !result.ok) alert(`Mise à jour impossible.\n\n${result.error}`);
+    } catch (error) {
+      alert(`Mise à jour impossible.\n\n${error.message}`);
+    }
+  });
   window.api.onUpdateStatus(renderUpdateStatus);
   window.api.onUpdateInstallRequested(installDownloadedUpdate);
   renderUpdateStatus(await window.api.getUpdateStatus());
@@ -2268,24 +2309,6 @@ function bindEvents() {
     onEdit({ state: before, inputType: "insertReplacementText" });
     scrollToSelected();
   } });
-  $("btn-quality").onclick = async () => {
-    const canvas = document.createElement("canvas");
-    let missing = new Set();
-    const fonts = Object.fromEntries(Object.entries(targetFonts).map(([name, font]) => {
-      const probe = Object.create(font);
-      probe.drawChar = function(ctx, character, ...args) {
-        if (!this.hasChar(character) && !/\s/.test(character)) missing.add(character + " (" + name + ")");
-        return font.drawChar(ctx, character, ...args);
-      };
-      return [name, probe];
-    }));
-    const target = new Preview(canvas, preview.extractedDir, fonts, [...preview.spriteFiles], preview.spriteMeta);
-    await showQuality([...entries], async entry => {
-      missing = new Set();
-      const result = await runPreview({ key: entry.key, target, quality: true });
-      return [...new Set([...textIssues(entry.en, entry.fr), ...(migrationReview.has(entry.key) ? ["Le texte anglais a changé depuis l’import précédent : traduction à relire."] : []), ...(result.warnings ?? []), ...[...missing].map(character => "Glyphe absent : " + character)])];
-    }, key => { selectKey(key); scrollToSelected(); });
-  };
   $("btn-reload").onclick = async () => {
     if (
       (dirty || codeState.dirty) &&
@@ -2437,6 +2460,8 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   const modeEnabled = appConfig.runedelta?.modeEnabled === true;
   const publishEnabled = modeEnabled && appConfig.runedelta?.publishEnabled === true;
   const enabled = modeEnabled && Boolean(status.enabled ?? appConfig.runedelta?.enabled);
+  const remote = String(status.remoteUrl ?? appConfig.runedelta?.remoteUrl ?? "").trim();
+  const githubLinked = enabled && /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)[^/\s]+\/[^/\s]+\/?$/i.test(remote);
   const warning = sync?.error || sync?.pushError || status.error || status.dirtyFiles?.length;
   topButton.classList.toggle("hidden", !modeEnabled);
   $("chk-runedelta-mode").checked = modeEnabled;
@@ -2446,10 +2471,10 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   topButton.classList.toggle("sync-ready", enabled && !warning);
   topButton.classList.toggle("sync-warning", Boolean(warning));
   for (const button of [publishButton, modalPublishButton]) {
-    button.classList.toggle("hidden", !enabled || !publishEnabled);
+    button.classList.toggle("hidden", !githubLinked || !publishEnabled);
     button.classList.toggle("action-loading", runedeltaBusy);
     button.setAttribute("aria-busy", String(runedeltaBusy));
-    button.disabled = !enabled || !publishEnabled || runedeltaBusy;
+    button.disabled = !githubLinked || !publishEnabled || runedeltaBusy;
     button.textContent = runedeltaBusy ? "Publication…" : "↑ Publier";
   }
 

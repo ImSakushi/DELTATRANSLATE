@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld("api", {
   setConfig: (patch) => ipcRenderer.invoke("set-config", patch),
   getUtmtStatus: () => ipcRenderer.invoke("get-utmt-status"),
   getUpdateStatus: () => ipcRenderer.invoke("get-update-status"),
+  checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+  downloadUpdate: () => ipcRenderer.invoke("download-update"),
   installUpdate: () => ipcRenderer.invoke("install-update"),
   getRunedeltaStatus: () => ipcRenderer.invoke("get-runedelta-status"),
   setRunedeltaOptions: (options) => ipcRenderer.invoke("set-runedelta-options", options),

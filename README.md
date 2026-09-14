@@ -76,7 +76,11 @@ L’application utilise UndertaleModTool CLI pour lire les données du jeu. Il e
 lors de la préparation du premier chapitre si nécessaire. Une installation existante peut être liée depuis
 **Options avancées**, notamment pour travailler hors ligne.
 
-Les versions installées vérifient aussi les nouvelles releases GitHub au démarrage. Lorsqu’une version supérieure est disponible, DELTATRANSLATE propose de la télécharger, sauvegarde le travail en cours avant l’installation, puis redémarre automatiquement. Les lancements depuis le code source avec `npm start` ne déclenchent pas cette vérification.
+Les versions distribuées vérifient les releases stables du dépôt **ImSakushi/DELTATRANSLATE** au démarrage, puis toutes les quatre heures. Le bouton **↻ Mises à jour** permet aussi de vérifier à tout moment. Une version strictement supérieure est proposée : **Télécharger et mettre à jour** lance son téléchargement avec progression, puis **Installer et redémarrer** sauvegarde les traductions, les overrides GML et les préférences avant de lancer l’installation et de rouvrir l’application. Rien n’est téléchargé ni installé sans votre action, même à la fermeture. **Plus tard** conserve l’accès à la mise à jour depuis le bouton ; une erreur permet de réessayer.
+
+Sur Windows Portable, la mise à jour utilise le Setup : elle installe l’application pour votre compte et crée un raccourci à utiliser ensuite. Les données locales restent conservées ; l’ancien exécutable portable reste sur le disque. Sur macOS, l’installation intégrée nécessite une application signée : les builds actuels non signés doivent être remplacés depuis le DMG de la release. Les lancements depuis le code source avec `npm start` ne déclenchent pas de mise à jour.
+
+Republier une release sous le même numéro ne constitue pas une version supérieure : une installation 1.1.1 existante doit télécharger la 1.1.1 reconstruite depuis GitHub pour recevoir les correctifs.
 
 ## Premier démarrage
 
@@ -121,8 +125,8 @@ Le lanceur adjacent est également adapté ; un chapitre sans fichier pour la la
 Les sprites et polices ont des variantes propres à chaque langue (`_fr`, `_es`, `_pt_br`…).
 L’outil route leur affichage sans modifier les indices de sprites utilisés par la logique du jeu.
 Le donneur apporte uniquement ses polices compatibles : ni ses textes ni ses images ne remplacent les originaux.
-Les polices de corps différent sont signalées à la fin de la préparation. Le **Contrôle qualité** permet ensuite
-de repérer les glyphes absents. Ajouter un code de langue ne fournit pas automatiquement un alphabet,
+Les polices de corps différent sont signalées à la fin de la préparation. Vérifiez les glyphes dans l’aperçu et en jeu.
+Ajouter un code de langue ne fournit pas automatiquement un alphabet,
 une composition de texte ou une mise en page adaptés à toutes les écritures.
 
 ## Fonctionnalités
@@ -233,9 +237,7 @@ Les écritures JSON passent par un fichier temporaire validé puis renommé. Si 
 
 Les validations et les choix de portrait, de boîte et de scène sont isolés par installation et langue. Les préférences historiques sont rattachées au projet actif à leur première migration, sans suppression du document d’origine. Le thème et le réglage des backups restent communs.
 
-### Contrôle qualité
-
-Le bouton **Contrôle qualité** analyse tout le chapitre avec le moteur de preview : arguments `~1`, `~2`, balises incomplètes, terminaisons de dialogue, glyphes absents et avertissements de débordement. Les valeurs dynamiques et les éléments non simulés sont signalés comme tels. Il ne remplace pas une comparaison visuelle en jeu.
+Le bouton **Contrôle qualité** est temporairement retiré de l’interface.
 
 Les résultats sont filtrables et affichés par groupes de 100 ; cliquer sur une clé ouvre la traduction. L’analyse peut être interrompue. Les clés absentes de la référence anglaise restent accessibles via **Sans réf**.
 

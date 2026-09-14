@@ -46,6 +46,9 @@ const updater = createUpdaterController({
   allowWindowsToClose: () => {
     for (const win of BrowserWindow.getAllWindows()) windowsAllowedToClose.add(win);
   },
+  restoreCloseProtection: () => {
+    for (const win of BrowserWindow.getAllWindows()) windowsAllowedToClose.delete(win);
+  },
 });
 
 function loadJson(file, fallback) {
@@ -503,6 +506,8 @@ ipcMain.handle("get-config", () => getConfig());
 ipcMain.handle("set-config", (_event, patch) => updateConfig(patch));
 ipcMain.handle("get-utmt-status", () => getUtmtStatus());
 ipcMain.handle("get-update-status", () => updater.getState());
+ipcMain.handle("check-for-updates", () => updater.check(true));
+ipcMain.handle("download-update", () => updater.download());
 ipcMain.handle("install-update", () => updater.install());
 ipcMain.handle("get-runedelta-status", async () => {
   const config = getConfig();

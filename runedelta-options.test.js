@@ -97,12 +97,20 @@ test("l’interface masque les outils désactivés sans demander le statut Git",
   assert.equal(node("btn-runedelta").classList.contains("hidden"), true);
   assert.equal(node("runedelta-status").textContent, "Mode local — Runedelta est désactivé.");
   for (const publishEnabled of [false, true]) {
-    context.appConfig.runedelta = { modeEnabled: true, enabled: true, publishEnabled };
+    context.appConfig.runedelta = { modeEnabled: true, enabled: true, publishEnabled, remoteUrl: "https://github.com/Traducteurs-Aurifiques/Runedelta.git" };
     vm.runInContext("renderRunedeltaStatus({ available: true, enabled: true })", context);
     assert.equal(node("btn-runedelta").classList.contains("hidden"), false);
     for (const id of ["btn-publish", "btn-publish-runedelta"]) {
       assert.equal(node(id).classList.contains("hidden"), !publishEnabled);
       assert.equal(node(id).disabled, !publishEnabled);
+    }
+  }
+  for (const remoteUrl of [undefined, "", "C:/depot", "https://gitlab.com/equipe/projet.git"]) {
+    context.appConfig.runedelta = { modeEnabled: true, enabled: true, publishEnabled: true, remoteUrl };
+    vm.runInContext("renderRunedeltaStatus({ available: true, enabled: true })", context);
+    for (const id of ["btn-publish", "btn-publish-runedelta"]) {
+      assert.equal(node(id).classList.contains("hidden"), true);
+      assert.equal(node(id).disabled, true);
     }
   }
 });
