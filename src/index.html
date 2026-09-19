@@ -124,7 +124,7 @@
       <details class="setup-help">
         <summary>Fonctions facultatives</summary>
         <label class="chk"><input type="checkbox" id="chk-runedelta-mode" /> Activer le mode Runedelta</label>
-        <p class="modal-hint">Désactivé par défaut. Affiche les outils pour rejoindre ce projet de traduction. Git est intégré pour cette fonction. La désactivation conserve tes fichiers et le dépôt local.</p>
+        <p class="modal-hint">Désactivé par défaut. Affiche les outils pour rejoindre ce projet de traduction. L’édition Avec-Git inclut les outils nécessaires. La désactivation conserve tes fichiers et le dépôt local.</p>
       </details>
       <details id="setup-advanced" class="setup-help">
         <summary>Options avancées · installation manuelle et chemins</summary>
@@ -176,7 +176,8 @@
         </p>
         <details class="setup-help" id="runedelta-github-setup" open>
           <summary>Configurer l’accès GitHub et l’auteur des traductions</summary>
-          <p>RUNEDELTA est privé : accepte d’abord l’invitation de l’équipe avec ton compte GitHub. Git et la connexion GitHub sont inclus dans cette édition : aucune installation supplémentaire.</p>
+          <p>RUNEDELTA est privé : accepte d’abord l’invitation de l’équipe avec ton compte GitHub.</p>
+          <p id="runedelta-tools-note">Git et GitHub CLI sont inclus dans l’édition Avec-Git.</p>
           <p>Clique sur « Se connecter à GitHub », puis confirme le code dans ton navigateur. Les identifiants sont gérés par GitHub CLI ; DELTATRANSLATE ne demande ni ne conserve de token. Avec des identifiants Git déjà configurés, utilise directement « Vérifier l’accès ».</p>
           <div class="modal-actions">
             <button id="btn-runedelta-install-git" class="hidden" type="button">Installer Git…</button>

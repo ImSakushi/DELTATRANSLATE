@@ -4,141 +4,109 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Tag de la release à remplacer
+        required: true
+        default: v1.2.0
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build ${{ matrix.name }}
+    name: Build ${{ matrix.platform.name }} (${{ matrix.edition }})
     strategy:
       fail-fast: false
       matrix:
-        include:
+        edition: [standard, bundled]
+        platform:
           - name: Windows
             os: windows-latest
             command: npm run dist:win
-            artifact: windows
-            files: |
-              dist/*.exe
-              dist/latest.yml
-              dist/*.blockmap
           - name: macOS
             os: macos-latest
             command: npm run dist:mac
-            artifact: macos
-            files: |
-              dist/*.dmg
-              dist/*.zip
-              dist/latest-mac.yml
-              dist/*.blockmap
           - name: Linux
             os: ubuntu-latest
             command: npm run dist:linux
-            artifact: linux
-            files: |
-              dist/*.AppImage
-              dist/*.deb
-              dist/latest-linux.yml
-
-    runs-on: ${{ matrix.os }}
-
+    runs-on: ${{ matrix.platform.os }}
     steps:
-      - name: Récupérer le dépôt
-        uses: actions/checkout@v5
-
-      - name: Installer Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-
       - name: Installer les dépendances
         run: npm ci
-
-      - name: Préparer Git et GitHub CLI intégrés
+      - name: Préparer les outils de vérification
         run: npm run prepare:tools
-
       - name: Vérifier la version du tag
         shell: bash
-        run: |
-          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
-          test "v${PACKAGE_VERSION}" = "${GITHUB_REF_NAME}" || test "v${PACKAGE_VERSION}-bundled-git" = "${GITHUB_REF_NAME}"
-
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: test "v$(node -p 'require("./package.json").version')" = "$RELEASE_TAG"
       - name: Vérifier les tests avant distribution
         run: npm test
-
       - name: Construire les livrables
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: ${{ matrix.command }}
-
+          DELTATRANSLATE_EDITION: ${{ matrix.edition }}
+        run: ${{ matrix.platform.command }}
       - name: Archiver les livrables
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.files }}
+          name: ${{ matrix.platform.name }}-${{ matrix.edition }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest*.yml
+            dist/bundled*.yml
+            dist/*.blockmap
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    name: Publier la release GitHub
+    name: Remplacer la release avec les deux éditions
     needs: build
     runs-on: ubuntu-latest
-
     steps:
-      - name: Télécharger les livrables
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
-
-      - name: Fournir les sources Git et les scripts de construction
+      - name: Fournir les sources Git
         shell: bash
         run: |
           curl --fail --location --retry 3 https://github.com/git/git/archive/67ad42147a7acc2af6074753ebd03d904476118f.tar.gz -o release-assets/git-2.53.0-sources.tar.gz
           curl --fail --location --retry 3 https://github.com/git-for-windows/git/archive/refs/tags/v2.53.0.windows.4.tar.gz -o release-assets/git-windows-2.53.0.4-sources.tar.gz
           curl --fail --location --retry 3 https://github.com/desktop/dugite-native/archive/refs/tags/v2.53.0-4.tar.gz -o release-assets/dugite-native-build-sources.tar.gz
-
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Vérifier les canaux et les fichiers publiés
+        run: |
+          npm ci --ignore-scripts
+          node scripts/verify-release.cjs release-assets
       - name: Générer les sommes SHA-256
         shell: bash
         run: |
           cd release-assets
           sha256sum * > SHA256SUMS.txt
-
-      - name: Créer la release
+      - name: Publier les deux éditions
         uses: softprops/action-gh-release@v2
         with:
-          name: DELTATRANSLATE ${{ github.ref_name }} — Git intégré
-          body: |
-            Édition 1.2.0 avec Git et GitHub CLI intégrés sur Windows, macOS et Linux.
-            Dans le menu Runedelta, cliquez sur **Se connecter à GitHub**, puis validez le code dans votre navigateur.
-            Le numéro de version reste 1.2.0 : téléchargez et installez cette édition manuellement si vous avez déjà la 1.2.0.
-
-            ## Nouveautés
-
-            - **Runedelta** : ouverture directe du catalogue Git, sélection de branche, synchronisation plus sûre et publication GitHub guidée.
-            - **Sprites traduits** : import avec déplacement pixel par pixel, contrôle des limites, aperçu superposé et conservation des positions lors des recompilations.
-            - **Contexte des dialogues** : détection enrichie des scènes, des choix, des boutiques, des procès et des personnages pour retrouver plus facilement chaque ligne.
-            - **Fiabilité** : nouveaux contrôles de sécurité, sauvegardes et validations supplémentaires avant l’installation ou la publication.
-
-            - Windows : choisissez **Setup** pour l’installation automatique, ou **Portable** pour lancer sans installer (x64)
-            - macOS : DMG et archive ZIP universels (Intel et Apple Silicon)
-            - Linux : AppImage et paquet DEB x64
-
-            Aucun fichier ni aucune donnée extraite de DELTARUNE n’est inclus. L’application extrait localement les ressources depuis le `data.win` fourni par l’utilisateur.
-
-            Au premier lancement, choisissez votre chapitre détecté dans Steam (ou le dossier du jeu), puis cliquez sur **Préparer ce chapitre**. L’outil de lecture s’installe automatiquement si nécessaire. Node.js et Git ne sont pas nécessaires pour commencer à traduire.
-
-            **Mises à jour GitHub :** vérification au démarrage et toutes les quatre heures, avec un bouton pour vérifier ou réessayer. Le téléchargement et l’installation nécessitent votre action. L’application sauvegarde le travail avant d’installer et de redémarrer.
-
-            Sur Windows Portable, la mise à jour installe la version Setup pour votre compte ; utilisez ensuite le nouveau raccourci. Les builds macOS non signés se remplacent depuis le DMG.
-
-            Le bouton de mise à jour ne tente plus d’installer avant téléchargement. Le bouton Contrôle qualité est temporairement retiré, Publier reste masqué sans dépôt GitHub lié, et les backups sont désactivés par défaut.
-
-            Si vous utilisez déjà une version portant le même numéro, téléchargez cette reconstruction manuellement : republier les livrables ne change pas le numéro de version.
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          name: DELTATRANSLATE ${{ inputs.release_tag || github.ref_name }} - Standard et Git intégré
+          body_path: release-notes.md
           files: release-assets/*
           fail_on_unmatched_files: true
           overwrite_files: true
           prerelease: false
+          make_latest: true

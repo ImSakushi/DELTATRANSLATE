@@ -46,6 +46,7 @@ test("le contrôleur télécharge puis installe la release choisie", async () =>
       allowCloseCalls += 1;
     },
     autoUpdater: fakeUpdater,
+    platform: "win32",
     checkDelayMs: 0,
   });
 
@@ -84,6 +85,7 @@ test("aucune vérification n’est lancée depuis le code source", () => {
     dialog: {},
     allowWindowsToClose: () => {},
     autoUpdater: fakeUpdater,
+    platform: "win32",
     checkDelayMs: 0,
   });
   controller.start({ webContents: new EventEmitter() });
@@ -98,6 +100,7 @@ function updaterFixture(t, options = {}) {
   const prompts = [];
   const calls = { checks: 0, downloads: 0, installs: 0, restored: 0 };
   const win = { isDestroyed: () => false, webContents, setProgressBar() {} };
+  const windows = [win];
   let response = 1;
   updater.checkForUpdates = async () => {
     calls.checks++;
@@ -106,19 +109,98 @@ function updaterFixture(t, options = {}) {
   updater.downloadUpdate = async () => { calls.downloads++; };
   updater.quitAndInstall = () => { calls.installs++; };
   const controller = createUpdaterController({
-    app, BrowserWindow: { getAllWindows: () => [win] },
+    app, BrowserWindow: { getAllWindows: () => windows },
     dialog: { showMessageBox: async (_win, prompt) => { prompts.push(prompt); return { response }; } },
     allowWindowsToClose() {},
     restoreCloseProtection() { calls.restored++; },
     autoUpdater: updater,
+    platform: "win32",
     checkDelayMs: 100_000,
     ...options,
   });
   controller.start(win);
   webContents.emit("did-finish-load");
   t.after(() => app.emit("before-quit"));
-  return { controller, updater, calls, prompts, sent, setResponse(value) { response = value; } };
+  return { controller, updater, calls, prompts, sent, win, windows, app, setResponse(value) { response = value; } };
 }
+
+test("chaque démarrage signale une nouvelle version, même après Plus tard à la session précédente", async t => {
+  for (let session = 0; session < 2; session++) {
+    const f = updaterFixture(t, { checkDelayMs: 0 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(f.calls.checks, 1);
+    assert.equal(f.prompts[0].title, "Mise à jour disponible");
+    assert.equal(f.controller.getState().phase, "available");
+    assert.equal(f.calls.downloads, 0);
+  }
+});
+
+test("rouvrir une fenêtre déjà chargée relance la vérification sans doubler les écouteurs", async t => {
+  const f = updaterFixture(t, { checkDelayMs: 0 });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  f.win.isDestroyed = () => true;
+  const webContents = Object.assign(new EventEmitter(), {
+    getURL: () => "file:///app/index.html", isLoadingMainFrame: () => false, send() {},
+  });
+  const next = { isDestroyed: () => false, webContents, setProgressBar() {} };
+  f.windows.push(next);
+  f.controller.start(next);
+  f.controller.start(next);
+  webContents.emit("did-finish-load");
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.calls.checks, 2);
+  assert.equal(f.prompts.length, 2);
+  assert.equal(f.updater.listenerCount("update-available"), 1);
+});
+
+test("les éditions utilisent leurs propres canaux sans autoriser les rétrogradations", t => {
+  for (const bundledGit of [false, true]) {
+    const f = updaterFixture(t, { bundledGit });
+    assert.equal(f.updater.channel, bundledGit ? "bundled" : "latest");
+    assert.equal(f.updater.allowDowngrade, false);
+  }
+});
+
+test("les formats sans installation automatique signalent les nouveautés et ouvrent la release", async t => {
+  for (const platform of ["darwin", "linux"]) {
+    const opened = [];
+    const f = updaterFixture(t, { platform, manualUpdates: true,
+      fetchRelease: async () => ({ version: "1.3.0", manual: true }),
+      openExternal: async url => opened.push(url),
+    });
+    f.setResponse(0);
+    await f.controller.check();
+    await waitForEvents();
+    assert.equal(f.controller.getState().phase, "available");
+    assert.equal(f.prompts[0].buttons[0], "Ouvrir les téléchargements");
+    assert.deepEqual(opened, ["https://github.com/ImSakushi/DELTATRANSLATE/releases/latest"]);
+    assert.equal(f.calls.downloads, 0);
+    assert.equal(f.calls.checks, 0);
+  }
+});
+
+test("un updater natif désactivé ne bloque pas la détection ni le signalement au démarrage", async t => {
+  const f = updaterFixture(t, { checkDelayMs: 0,
+    fetchRelease: async () => ({ version: "1.3.0", manual: true }),
+  });
+  f.updater.checkForUpdates = async () => null;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.controller.getState().phase, "available");
+  assert.equal(f.prompts[0].title, "Mise à jour disponible");
+  assert.equal(f.calls.downloads, 0);
+});
+
+test("la vérification GitHub écarte les versions identiques, anciennes, privées et préversions", async () => {
+  const { checkRelease, newerVersion } = require("./release-check.js");
+  assert.equal(newerVersion("v1.10.0", "1.2.0"), true);
+  for (const release of [{ tag_name: "v1.2.0" }, { tag_name: "v1.1.9" },
+    { tag_name: "v1.3.0-beta" }, { tag_name: "v1.3.0", draft: true }, { tag_name: "v1.3.0", prerelease: true }]) {
+    assert.equal(await checkRelease("1.2.0", async () => ({ ok: true, json: async () => release })), null);
+  }
+  const available = await checkRelease("1.2.0", async () => ({ ok: true, json: async () => ({ tag_name: "v1.3.0", body: "Corrections" }) }));
+  assert.equal(available.version, "1.3.0");
+  await assert.rejects(checkRelease("1.2.0", async () => ({ ok: false, status: 503 })), /503/);
+});
 
 test("Plus tard ne télécharge rien et permet de reprendre sans relancer l’application", async (t) => {
   const f = updaterFixture(t);

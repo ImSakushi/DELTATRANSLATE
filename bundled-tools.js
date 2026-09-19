@@ -16,7 +16,7 @@ function commandEnvironment(command, overrides = {}, resourcesPath = /[\\/]app\.
   for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
   env.PATH = inheritedPath;
   const hasGit = fs.existsSync(gitPath), hasGh = fs.existsSync(ghPath);
-  if (resourcesPath && ((command === "git" && !hasGit) || (command === "gh" && !hasGh))) {
+  if (resourcesPath && require("./package.json").bundledGit !== false && ((command === "git" && !hasGit) || (command === "gh" && !hasGh))) {
     throw new Error("Les outils Git intégrés sont incomplets. Réinstalle cette édition de DELTATRANSLATE.");
   }
   if (hasGit) {
@@ -26,7 +26,7 @@ function commandEnvironment(command, overrides = {}, resourcesPath = /[\\/]app\.
   }
   env.PATH = [hasGit && path.dirname(gitPath), hasGh && path.dirname(ghPath), env.PATH,
     process.platform === "darwin" && "/opt/homebrew/bin:/usr/local/bin"].filter(Boolean).join(path.delimiter);
-  if (hasGh && command === "git") {
+  if (command === "git") {
     // Le helper reste propre aux processus de l'application, même en version portable.
     const count = Number(env.GIT_CONFIG_COUNT || 0);
     env[`GIT_CONFIG_KEY_${count}`] = "credential.https://github.com.helper";

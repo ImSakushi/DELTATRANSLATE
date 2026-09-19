@@ -207,6 +207,11 @@ function setupTooltips() {
 let updateInstallRunning = false;
 
 function renderUpdateStatus(status) {
+  $("runedelta-tools-note").textContent = status?.bundledGit
+    ? "Git et GitHub CLI sont intégrés : aucune installation supplémentaire."
+    : "Pour Runedelta, installe Git et GitHub CLI, puis relance l’application.";
+  $("btn-runedelta-install-git").classList.toggle("hidden", Boolean(status?.bundledGit));
+  $("btn-runedelta-install-gh").classList.toggle("hidden", Boolean(status?.bundledGit));
   const button = $("btn-update");
   const action = updateAction(status);
   button.classList.toggle("hidden", action === "disabled");
@@ -230,7 +235,7 @@ function renderUpdateStatus(status) {
     button.dataset.tooltip = "Sauvegarder le travail, installer la mise à jour et redémarrer";
   } else if (action === "download") {
     button.textContent = `↓ Mettre à jour · ${status.version}`;
-    button.dataset.tooltip = "Télécharger la nouvelle version depuis GitHub";
+    button.dataset.tooltip = status.manual ? "Ouvrir la page de téléchargement de la nouvelle version" : "Télécharger la nouvelle version depuis GitHub";
   } else {
     button.textContent = status.phase === "error" ? "↻ Réessayer la mise à jour" : "↻ Mises à jour";
     button.dataset.tooltip = `Version ${status.currentVersion} · Vérifier les releases GitHub`;

@@ -77,9 +77,9 @@ L’application utilise UndertaleModTool CLI pour lire les données du jeu. Il e
 lors de la préparation du premier chapitre si nécessaire. Une installation existante peut être liée depuis
 **Options avancées**, notamment pour travailler hors ligne.
 
-Les versions distribuées vérifient les releases stables du dépôt **ImSakushi/DELTATRANSLATE** au démarrage, puis toutes les quatre heures. Le bouton **↻ Mises à jour** permet aussi de vérifier à tout moment. Une version strictement supérieure est proposée : **Télécharger et mettre à jour** lance son téléchargement avec progression, puis **Installer et redémarrer** sauvegarde les traductions, les overrides GML et les préférences avant de lancer l’installation et de rouvrir l’application. Rien n’est téléchargé ni installé sans votre action, même à la fermeture. **Plus tard** conserve l’accès à la mise à jour depuis le bouton ; une erreur permet de réessayer.
+Les versions distribuées vérifient les releases stables du dépôt **ImSakushi/DELTATRANSLATE** à chaque démarrage et à la réouverture de la fenêtre, puis toutes les quatre heures. Une fenêtre signale toute nouvelle version ; le choix « Plus tard » ne masque pas cette notification lors du prochain démarrage. Le bouton **↻ Mises à jour** permet aussi de vérifier à tout moment. Une version strictement supérieure est proposée : **Télécharger et mettre à jour** lance son téléchargement avec progression, puis **Installer et redémarrer** sauvegarde les traductions, les overrides GML et les préférences avant de lancer l’installation et de rouvrir l’application. Rien n’est téléchargé ni installé sans votre action, même à la fermeture. **Plus tard** conserve l’accès à la mise à jour depuis le bouton ; une erreur permet de réessayer.
 
-Sur Windows Portable, la mise à jour utilise le Setup : elle installe l’application pour votre compte et crée un raccourci à utiliser ensuite. Les données locales restent conservées ; l’ancien exécutable portable reste sur le disque. Sur macOS, l’installation intégrée nécessite une application signée : les builds actuels non signés doivent être remplacés depuis le DMG de la release. Les lancements depuis le code source avec `npm start` ne déclenchent pas de mise à jour.
+Sur Windows Portable, la mise à jour utilise le Setup : elle installe l’application pour votre compte et crée un raccourci à utiliser ensuite. Les données locales restent conservées ; l’ancien exécutable portable reste sur le disque. Sur macOS, l’installation intégrée nécessite une application signée : les builds actuels non signés signalent la nouvelle version et ouvrent la page de téléchargement pour remplacer l’application depuis le DMG. Le même signalement reste disponible si l’updater natif est désactivé. Les lancements depuis le code source avec `npm start` ne déclenchent pas de mise à jour.
 
 Republier une release sous le même numéro ne constitue pas une version supérieure : une installation existante doit télécharger la reconstruction portant le même numéro depuis GitHub pour recevoir les correctifs.
 
@@ -360,7 +360,7 @@ Le processus principal et le preload sont en CommonJS. Le renderer et les script
 
 ### Releases et mises à jour
 
-Le tag GitHub correspond à la version de `package.json` (`v1.2.0`), avec le suffixe `-bundled-git` autorisé pour une édition intégrant Git sans changer le numéro de version (`v1.2.0-bundled-git`). Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
+Chaque tag (`v1.2.0` pour la version `1.2.0`) construit les éditions Standard et Avec-Git sur Windows, macOS et Linux dans une seule release. Le workflow peut aussi reconstruire une release existante. Les canaux `latest*.yml` et `bundled*.yml` conservent l’édition choisie lors des mises à jour.
 
 Les releases doivent être lisibles publiquement pour que les installations puissent les consulter sans secret. Ne jamais embarquer de token GitHub dans l’application. Sur macOS, les mises à jour automatiques nécessitent également une application signée.
 

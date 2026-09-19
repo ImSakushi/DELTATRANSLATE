@@ -1,5 +1,6 @@
 const CHECK_DELAY_MS = 1500;
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const { checkRelease, RELEASE_URL } = require("./release-check.js");
 
 function releaseNotesText(releaseNotes) {
   const notes = Array.isArray(releaseNotes)
@@ -25,6 +26,10 @@ function createUpdaterController({
   checkIntervalMs = CHECK_INTERVAL_MS,
   platform = process.platform,
   portable = Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
+  bundledGit = require("./package.json").bundledGit === true,
+  manualUpdates = platform === "darwin",
+  fetchRelease = checkRelease,
+  openExternal = url => require("electron").shell.openExternal(url),
 }) {
   const autoUpdater = providedAutoUpdater ?? require("electron-updater").autoUpdater;
   let started = false;
@@ -37,6 +42,9 @@ function createUpdaterController({
   let dialogOpen = false;
   let availableInfo = null;
   const offeredVersions = new Set();
+  const watchedWindows = new WeakSet();
+  const delays = new Set();
+  let interval = null;
   let state = {
     enabled: app.isPackaged,
     phase: "idle",
@@ -44,6 +52,7 @@ function createUpdaterController({
     version: null,
     percent: null,
     downloaded: false,
+    bundledGit,
   };
 
   function windows() {
@@ -80,16 +89,21 @@ function createUpdaterController({
         detail:
           `Version installée : ${app.getVersion()}\n\n` +
           (notes ? `${notes}\n\n` : "") +
-          "La version adaptée à ce système sera téléchargée depuis la release GitHub. " +
-          "Vous choisirez ensuite quand installer et redémarrer." +
-          (platform === "win32" && portable
+          (info.manual
+            ? "La page de téléchargement va s’ouvrir dans votre navigateur. Choisissez votre édition et remplacez l’application après avoir sauvegardé votre travail."
+            : "La version adaptée à ce système sera téléchargée depuis la release GitHub. Vous choisirez ensuite quand installer et redémarrer.") +
+          (!info.manual && platform === "win32" && portable
             ? "\nLa mise à jour installera DELTATRANSLATE pour votre compte. Utilisez ensuite le raccourci créé ; votre ancien fichier portable restera sur le disque."
             : ""),
-        buttons: ["Télécharger et mettre à jour", "Plus tard"],
+        buttons: [info.manual ? "Ouvrir les téléchargements" : "Télécharger et mettre à jour", "Plus tard"],
         defaultId: 0,
         cancelId: 1,
       });
       if (result.response !== 0) return;
+      if (info.manual) {
+        await openExternal(RELEASE_URL);
+        return;
+      }
       downloading = true;
       downloadRequested = true;
       downloadErrorShown = false;
@@ -146,6 +160,7 @@ function createUpdaterController({
   }
 
   function configure() {
+    autoUpdater.channel = bundledGit ? "bundled" : "latest";
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.autoRunAppAfterInstall = true;
@@ -159,14 +174,7 @@ function createUpdaterController({
       availableInfo = null;
       setState({ phase: "idle", version: null, percent: null, error: null });
     });
-    autoUpdater.on("update-available", (info) => {
-      availableInfo = info;
-      setState({ phase: "available", version: info.version, percent: null, error: null });
-      if (!offeredVersions.has(info.version)) {
-        offeredVersions.add(info.version);
-        void offerDownload(info).catch(handleError);
-      }
-    });
+    autoUpdater.on("update-available", announce);
     autoUpdater.on("download-progress", (progress) => {
       const percent = Math.max(0, Math.min(100, Math.round(progress.percent ?? 0)));
       setProgress(percent / 100);
@@ -182,13 +190,30 @@ function createUpdaterController({
     autoUpdater.on("error", handleError);
   }
 
+  function announce(info) {
+    availableInfo = info;
+    setState({ phase: "available", version: info.version, percent: null, error: null, manual: Boolean(info.manual) });
+    if (mainWindow() && !offeredVersions.has(info.version)) {
+      offeredVersions.add(info.version);
+      void offerDownload(info).catch(handleError);
+    }
+  }
+
   async function check(manual = false) {
     if (!started || checking || downloading || downloaded || installing || dialogOpen) return { ok: true };
     checking = true;
     downloadRequested = false;
     setState({ phase: "checking", percent: null, error: null });
     try {
-      await autoUpdater.checkForUpdates();
+      const nativeResult = manualUpdates ? null : await autoUpdater.checkForUpdates();
+      if (nativeResult === null) {
+        const info = await fetchRelease(app.getVersion());
+        if (info) announce(info);
+        else {
+          availableInfo = null;
+          setState({ phase: "idle", version: null, percent: null, error: null });
+        }
+      }
       if (manual && state.phase === "idle") {
         await showMessageBox(mainWindow(), {
           type: "info", title: "Mises à jour",
@@ -217,19 +242,36 @@ function createUpdaterController({
   }
 
   function start(win) {
-    if (started || !app.isPackaged) return;
-    started = true;
-    configure();
-    win.webContents.once("did-finish-load", () => {
-      const delay = setTimeout(() => void check(), checkDelayMs);
-      delay.unref?.();
-      const interval = setInterval(() => void check(), checkIntervalMs);
-      interval.unref?.();
+    if (!app.isPackaged || watchedWindows.has(win)) return;
+    watchedWindows.add(win);
+    if (!started) {
+      started = true;
+      configure();
       app.once?.("before-quit", () => {
-        clearTimeout(delay);
+        for (const timer of delays) clearTimeout(timer);
         clearInterval(interval);
       });
-    });
+    }
+    let scheduled = false;
+    const loaded = () => {
+      if (scheduled || win.isDestroyed()) return;
+      scheduled = true;
+      setState({});
+      const delay = setTimeout(() => {
+        delays.delete(delay);
+        if (win.isDestroyed()) return;
+        offeredVersions.clear();
+        void check();
+      }, checkDelayMs);
+      delays.add(delay);
+      delay.unref?.();
+      if (!interval) {
+        interval = setInterval(() => void check(), checkIntervalMs);
+        interval.unref?.();
+      }
+    };
+    win.webContents.once("did-finish-load", loaded);
+    if (win.webContents.getURL?.() && !win.webContents.isLoadingMainFrame?.()) loaded();
   }
 
   function install() {
