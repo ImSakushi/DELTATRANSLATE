@@ -59,7 +59,7 @@ Téléchargez DELTATRANSLATE depuis la [page des versions](https://github.com/Im
 La version Windows **Portable** permet aussi de lancer l’application sans installation.
 Il vous faut seulement une copie installée de DELTARUNE et une connexion Internet si l’outil de lecture
 du jeu doit être téléchargé. **Ni Node.js ni Git ne sont nécessaires pour traduire avec la version distribuée.**
-Git est uniquement requis pour la fonction facultative Runedelta.
+L’édition **1.2.0 — Git intégré** inclut Git et GitHub CLI pour Runedelta sur Windows, macOS et Linux. Aucune installation supplémentaire de ces outils n’est nécessaire.
 
 ### Depuis le dépôt
 
@@ -69,6 +69,7 @@ Cette option s’adresse au développement et nécessite Node.js avec npm ainsi 
 git clone https://github.com/ImSakushi/DELTATRANSLATE.git
 cd DELTATRANSLATE
 npm install
+npm run prepare:tools
 npm start
 ```
 
@@ -180,7 +181,7 @@ référence extraite lorsque le dépôt ne fournit pas de fichier `strings_og/ch
 
 1. Importe le `data.win` du chapitre dans DELTATRANSLATE.
 2. Active **Chapitre → Fonctions facultatives → Activer le mode Runedelta**, puis ouvre **⇅ Runedelta**.
-3. Ouvre **Configurer l’accès GitHub et l’auteur des traductions**. Le dépôt est privé : accepte l’invitation de l’équipe et installe Git. Si nécessaire, installe [GitHub CLI](https://cli.github.com/), relance l’application puis clique sur **Se connecter à GitHub**. Suis la connexion dans le navigateur avec le code affiché. Cette action configure Git pour GitHub sur ce poste via [gh auth setup-git](https://cli.github.com/manual/gh_auth_setup-git). Les identifiants existants restent utilisables sans GitHub CLI.
+3. Dans **Configurer l’accès GitHub et l’auteur des traductions**, clique sur **Se connecter à GitHub**. Le navigateur s’ouvre : saisis le code affiché dans l’application et autorise ton compte. Le dépôt est privé : accepte aussi l’invitation de l’équipe. Git et GitHub CLI sont intégrés ; la connexion ne modifie pas ta configuration Git globale.
 4. Clique sur **Vérifier l’accès**, **Charger les branches du dépôt**, choisis une branche existante puis **Ouvrir le catalogue Git**. La vérification distingue l’accès Git en lecture des droits du compte GitHub CLI ; des identifiants Git/SSH personnalisés peuvent utiliser un autre compte. Les règles de branche peuvent encore refuser un push malgré le droit d’écriture.
 5. Traduis normalement et sauvegarde avec `Ctrl+S`. Utilise **Récupérer** pour intégrer les traductions de l’équipe sans publier ton travail.
 6. Pour contribuer, vérifie ton auteur Git, coche **Autoriser la publication sur GitHub**, puis clique sur **Publier**.
@@ -359,7 +360,7 @@ Le processus principal et le preload sont en CommonJS. Le renderer et les script
 
 ### Releases et mises à jour
 
-Le tag GitHub doit toujours correspondre à la version de `package.json` (`v1.2.0` pour la version `1.2.0`) ; le workflow refuse sinon de publier. Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
+Le tag GitHub correspond à la version de `package.json` (`v1.2.0`), avec le suffixe `-bundled-git` autorisé pour une édition intégrant Git sans changer le numéro de version (`v1.2.0-bundled-git`). Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
 
 Les releases doivent être lisibles publiquement pour que les installations puissent les consulter sans secret. Ne jamais embarquer de token GitHub dans l’application. Sur macOS, les mises à jour automatiques nécessitent également une application signée.
 
