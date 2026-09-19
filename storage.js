@@ -68,7 +68,8 @@ function backup(root, file, content, { kind = "saved", interval = 0 } = {}) {
   const latest = versions[0];
   if (latest) {
     const previous = fs.readFileSync(path.join(root, identity(file), ...latest.id.split("/")));
-    if (previous.equals(Buffer.from(content)) || Date.now() - latest.date < interval) return null;
+    // mtimeMs peut inclure une fraction de milliseconde, contrairement à Date.now().
+    if (previous.equals(Buffer.from(content)) || (interval > 0 && Date.now() - latest.date < interval)) return null;
   }
   const destination = path.join(directory, `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}.bak`);
   atomicWrite(destination, content);

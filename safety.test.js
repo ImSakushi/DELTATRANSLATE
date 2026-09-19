@@ -85,6 +85,16 @@ test("les préférences historiques migrent vers un seul projet sans perdre les 
   assert.deepEqual(original.validated, { common: true });
 });
 
+test("un horodatage de fichier en avance ne supprime pas les backups sans intervalle", t => {
+  const root = workspace(t), backups = path.join(root, "backups"), file = path.join(root, "lang.json");
+  const first = storage.backup(backups, file, '{"a":"avant"}');
+  const future = new Date(Date.now() + 1000);
+  fs.utimesSync(first, future, future);
+  assert.ok(storage.backup(backups, file, '{"a":"après"}'));
+  assert.equal(storage.listBackups(backups, file).length, 2);
+  assert.equal(storage.backup(backups, file, '{"a":"intervalle"}', { interval: 60_000 }), null);
+});
+
 test("un fichier de préférences corrompu est signalé et préservé", t => {
   const file = path.join(workspace(t), "prefs.json");
   fs.writeFileSync(file, '{"validated":');
