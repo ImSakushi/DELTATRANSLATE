@@ -104,7 +104,8 @@
           ]
         }
       ],
-      "artifactName": "${productName}-${version}-macOS-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-macOS-${arch}.${ext}",
+      "x64ArchFiles": "Contents/Resources/tools/darwin-{x64,arm64}/**/*"
     },
     "linux": {
       "icon": "src/assets/deltatranslate-icon.png",
