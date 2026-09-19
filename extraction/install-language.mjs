@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { spriteImportCsx } from "./sprite-overrides.mjs";
 import storage from "../storage.js";
 import { runTool } from "./process-runner.mjs";
 import { launcherPaths, launcherLanguages, prepareLauncherGml } from "./launcher-language.mjs";
@@ -107,6 +108,7 @@ foreach (var language in languages)
     }
 }
 ${fontImportCsx(fontRoot)}
+${spriteImportCsx}
 string spriteRoot = ${cs(spriteRoot)};
 int frames = 0;
 foreach (string language in languages)
@@ -118,22 +120,7 @@ foreach (string language in languages)
         string name = Path.GetFileName(directory);
         if (!name.EndsWith("_" + language, StringComparison.Ordinal)) throw new Exception("Sprite hors de sa langue : " + name);
         var sprite = Data.Sprites.ByName(name) ?? throw new Exception("Sprite introuvable : " + name);
-        foreach (string file in Directory.GetFiles(directory, "*.png"))
-        {
-            if (!int.TryParse(Path.GetFileNameWithoutExtension(file), out int frame) || frame < 0 || frame >= sprite.Textures.Count) throw new Exception("Frame invalide : " + file);
-            using MagickImage image = TextureWorker.ReadBGRAImageFromFile(file);
-            if (image.Width != sprite.Width || image.Height != sprite.Height) throw new Exception("Dimensions invalides : " + file);
-            var texture = new UndertaleEmbeddedTexture { Name = Data.Strings.MakeString("DT_Texture_" + Data.EmbeddedTextures.Count) };
-            texture.TextureData.Image = GMImage.FromMagickImage(image).ConvertToPng();
-            Data.EmbeddedTextures.Add(texture);
-            var item = new UndertaleTexturePageItem { Name = Data.Strings.MakeString("DT_Page_" + Data.TexturePageItems.Count),
-                SourceWidth = (ushort)image.Width, SourceHeight = (ushort)image.Height,
-                TargetWidth = (ushort)image.Width, TargetHeight = (ushort)image.Height,
-                BoundingWidth = (ushort)image.Width, BoundingHeight = (ushort)image.Height, TexturePage = texture };
-            Data.TexturePageItems.Add(item);
-            sprite.Textures[frame].Texture = item;
-            frames++;
-        }
+        frames += ImportSpriteFrames(sprite, directory);
     }
 }
 var controller = Data.GameObjects.ByName("obj_dt_languages");

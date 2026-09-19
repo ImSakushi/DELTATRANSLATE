@@ -162,14 +162,40 @@
           Dépôt GitHub
           <input id="runedelta-remote" type="url" value="https://github.com/Traducteurs-Aurifiques/Runedelta.git" spellcheck="false" />
         </label>
+        <label class="runedelta-remote" for="runedelta-branch">Branche de travail
+          <select id="runedelta-branch"><option value="">Branche par défaut du dépôt</option></select>
+        </label>
+        <button id="btn-runedelta-branches" type="button">Charger les branches du dépôt</button>
+        <p id="runedelta-branch-status" class="modal-hint" role="status">Choisis une branche existante avant de connecter le chapitre. Les brouillons de chaque branche sont conservés lorsque tu en changes.</p>
+        <label class="chk"><input type="checkbox" id="chk-runedelta-game-copy" /> Copier aussi les traductions dans le jeu (lang/lang_fr.json)</label>
         <p class="modal-hint">
-          DELTATRANSLATE clone le dépôt, installe le fichier du chapitre sous
-          <code>lang/lang_fr.json</code>. Les sauvegardes restent locales jusqu’au clic sur
-          <b>Publier</b>, qui fusionne les changements, crée un commit descriptif et les envoie sur GitHub.
-          L’accès en écriture utilise uniquement les identifiants Git déjà configurés sur cette machine.
+          L’éditeur travaille directement sur <code>strings/strings_chapitre_N.json</code> dans le clone Git.
+          <b>Publier</b> fusionne les changements, crée un commit et envoie ce fichier sur la branche choisie.
+          La copie dans le jeu est désactivée par défaut. Si tu l’actives, chaque sauvegarde ou synchronisation
+          met aussi à jour <code>lang/lang_fr.json</code>, avec une sauvegarde de son contenu précédent.
         </p>
+        <details class="setup-help" id="runedelta-github-setup">
+          <summary>Configurer l’accès GitHub et l’auteur des traductions</summary>
+          <p>RUNEDELTA est privé : accepte d’abord l’invitation de l’équipe avec ton compte GitHub. Git doit être installé sur ce poste.</p>
+          <p>La connexion guidée utilise GitHub CLI et configure Git pour GitHub sur ce poste. Les identifiants sont gérés par GitHub CLI ; DELTATRANSLATE ne demande ni ne conserve de token. Avec des identifiants Git déjà configurés, utilise directement « Vérifier l’accès ».</p>
+          <div class="modal-actions">
+            <button id="btn-runedelta-install-git" type="button">Installer Git…</button>
+            <button id="btn-runedelta-install-gh" type="button">Installer GitHub CLI…</button>
+            <button id="btn-runedelta-login" type="button">Se connecter à GitHub</button>
+            <button id="btn-runedelta-device" type="button">Ouvrir la page du code…</button>
+            <button id="btn-runedelta-check" type="button">Vérifier l’accès</button>
+          </div>
+          <p id="runedelta-access-status" role="status">L’accès en lecture suffit pour installer et récupérer. La publication exige aussi les droits d’écriture.</p>
+          <pre id="runedelta-login-log" aria-live="polite"></pre>
+          <label>Nom de l’auteur <input id="runedelta-author-name" type="text" autocomplete="name" /></label>
+          <label>E-mail Git <input id="runedelta-author-email" type="email" autocomplete="email" /></label>
+          <button id="btn-runedelta-save-identity" type="button">Enregistrer l’auteur</button>
+          <p>Après une connexion guidée, ton compte et son adresse GitHub privée sont utilisés. L’auteur est configuré uniquement dans le clone Runedelta ; ton identité Git globale reste inchangée.</p>
+        </details>
+        <p class="modal-hint">« Récupérer » fusionne les traductions distantes avec ton travail local sans commit ni publication. Une copie du catalogue existant est conservée avant tout remplacement, même si les backups courants sont désactivés.</p>
         <div class="modal-actions runedelta-actions">
-          <button id="btn-connect-runedelta" class="primary" type="button">Connecter et installer</button>
+          <button id="btn-connect-runedelta" class="primary" type="button">Ouvrir le catalogue Git</button>
+          <button id="btn-receive-runedelta" type="button">↓ Récupérer</button>
           <button id="btn-publish-runedelta" class="hidden" type="button">↑ Publier</button>
           <button id="btn-open-runedelta" type="button">🗁 Dépôt local</button>
           <button id="btn-disconnect-runedelta" type="button">Déconnecter</button>
@@ -211,7 +237,8 @@
       <div class="code-workspace">
         <aside class="code-related-pane">
           <h3>Textes de cette scène</h3>
-          <p>Choisis une ligne pour voir les conditions et les branches qui la déclenchent.</p>
+          <p>Un clic affiche le contexte GML. Un double-clic ouvre la traduction.</p>
+          <button id="btn-code-translation" type="button" disabled>✎ Traduire le texte sélectionné</button>
           <div id="code-related-list"></div>
         </aside>
         <section class="code-editor-pane">
@@ -300,12 +327,32 @@
         </article>
       </div>
 
+      <section id="sprite-placement-panel" aria-label="Aperçu et positionnement de la texture">
+        <h2>Aperçu et positionnement</h2>
+        <div class="sprite-placement-toolbar">
+          <label>Zoom <select id="sprite-zoom"><option value="0.03125">3,125 %</option><option value="0.0625">6,25 %</option><option value="0.125">12,5 %</option><option value="0.25">25 %</option><option value="0.5">50 %</option><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></label>
+          <button id="sprite-fit" type="button">Centrer l’aperçu</button>
+          <label><input id="sprite-overlay" type="checkbox" checked /> Superposer l’original</label>
+          <label><input id="sprite-grid" type="checkbox" /> Grille de pixels</label>
+          <label>Fond <select id="sprite-background"><option value="checker">Damier</option><option value="black">Noir</option><option value="white">Blanc</option></select></label>
+        </div>
+        <canvas id="sprite-placement-canvas" width="1000" height="400" tabindex="0" aria-label="Déplacer la texture à la souris ou avec les flèches du clavier"></canvas>
+        <div class="sprite-placement-toolbar">
+          <label>Décalage X <input id="sprite-offset-x" type="number" step="1" min="-8192" max="8192" value="0" disabled /> px</label>
+          <label>Décalage Y <input id="sprite-offset-y" type="number" step="1" min="-8192" max="8192" value="0" disabled /> px</label>
+          <button id="sprite-offset-reset" type="button" disabled>Position d’origine</button>
+          <button id="sprite-save-placement" type="button" disabled>Enregistrer la position</button>
+          <span id="sprite-placement-status" role="status"></span>
+        </div>
+        <p>Glisse la texture ou utilise les flèches : 1 px, Maj : 10 px. Molette ou clic du milieu : déplacer la vue. La croix marque l’origine du sprite ; le cadre bleu indique ses dimensions originales. Aperçu du sprite, sans le décor ni les effets de la scène.</p>
+      </section>
+
       <section id="sprite-import-panel">
         <div class="sprite-import-copy">
           <span class="sprite-import-icon" aria-hidden="true">＋</span>
           <div>
             <h2 id="sprite-import-title">Importer la traduction de cette frame</h2>
-            <p id="sprite-import-hint">PNG aux mêmes dimensions que le sprite original.</p>
+            <p id="sprite-import-hint">PNG de dimensions libres, sans réduction ni découpe.</p>
           </div>
         </div>
         <div id="sprite-dropzone" role="button" tabindex="0">

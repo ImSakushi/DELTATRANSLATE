@@ -104,6 +104,13 @@ jobs:
           body: |
             Nouvelle version de DELTATRANSLATE.
 
+            ## Nouveautés
+
+            - **Runedelta** : ouverture directe du catalogue Git, sélection de branche, synchronisation plus sûre et publication GitHub guidée.
+            - **Sprites traduits** : import avec déplacement pixel par pixel, contrôle des limites, aperçu superposé et conservation des positions lors des recompilations.
+            - **Contexte des dialogues** : détection enrichie des scènes, des choix, des boutiques, des procès et des personnages pour retrouver plus facilement chaque ligne.
+            - **Fiabilité** : nouveaux contrôles de sécurité, sauvegardes et validations supplémentaires avant l’installation ou la publication.
+
             - Windows : choisissez **Setup** pour l’installation automatique, ou **Portable** pour lancer sans installer (x64)
             - macOS : DMG et archive ZIP universels (Intel et Apple Silicon)
             - Linux : AppImage et paquet DEB x64

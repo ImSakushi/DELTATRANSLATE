@@ -320,3 +320,33 @@ test("l’import coordonné se termine même si le parent garde son entrée ouve
   assert.equal(timedOut, false, "L’import a annoncé sa réussite mais son processus reste ouvert.");
   assert.equal(code, 0, errors);
 });
+
+test('IPC Runedelta : sauvegarde le vrai JSON Git, copie facultative et protection contre un ancien onglet', async t => {
+  const harness = mainHarness(t);
+  const { execFileSync } = require('node:child_process');
+  const directory = path.join(harness.root, 'clone');
+  const file = path.join(directory, 'strings', 'strings_chapitre_5.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ date: '0', key: 'Catalogue Git' }));
+  execFileSync('git', ['init', '-b', 'main'], { cwd: directory });
+  const config = { ...harness.config, langFrPath: file, dataWinPath: path.join(harness.root, 'chapter5_windows', 'data.win'),
+    storageMode: 'runedelta-json', runedelta: { directory, branch: 'main', storage: 'git' } };
+  fs.writeFileSync(path.join(harness.root, 'config.json'), JSON.stringify(config));
+  const game = path.join(harness.root, 'chapter5_windows', 'lang', 'lang_fr.json');
+  const save = expectedPath => harness.handlers.get('save-lang')({}, { date: '0', key: 'Sauvegarde Git' }, storage.revision(file), storage.projectId(config), expectedPath);
+  const rejected = await save('ancien-clone/strings/strings_chapitre_5.json');
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /branche a changé/);
+  assert.equal(JSON.parse(fs.readFileSync(file)).key, 'Catalogue Git');
+  const saved = await save(file);
+  assert.equal(saved.ok, true);
+  assert.equal(saved.backupCreated, true);
+  assert.equal(JSON.parse(fs.readFileSync(file)).key, 'Sauvegarde Git');
+  assert.equal(fs.existsSync(game), false);
+  config.runedelta.copyToGame = true;
+  fs.writeFileSync(path.join(harness.root, 'config.json'), JSON.stringify(config));
+  const copied = await save(file);
+  assert.equal(copied.ok, true);
+  assert.equal(copied.gameCopyPath, game);
+  assert.equal(JSON.parse(fs.readFileSync(game)).key, 'Sauvegarde Git');
+});

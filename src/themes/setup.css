@@ -25,6 +25,10 @@
 .setup-help { border-top: 1px solid var(--border-dim, var(--border)); padding: 12px 0; font-size: 12px; color: var(--fg-dim); }
 .setup-help summary { cursor: pointer; }
 .setup-help p { line-height: 1.6; }
+#runedelta-github-setup label { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+#runedelta-github-setup input { width: 100%; box-sizing: border-box; }
+#runedelta-login-log { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+#runedelta-status { white-space: pre-line; overflow-wrap: anywhere; }
 #import-modal .dropzone { min-height: 78px; border-color: var(--border-dim, var(--border)); }
 #import-modal .dropzone strong { font: 600 12px "Segoe UI", system-ui, sans-serif; }
 .setup-error { color: var(--red); border: 1px solid currentColor; padding: 12px; margin: 14px 0; white-space: pre-wrap; overflow-wrap: anywhere; }

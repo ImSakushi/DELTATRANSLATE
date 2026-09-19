@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -8,13 +8,21 @@ const { discoverChapters, findChapters, validateDataWin } = require("./game-disc
 const { createUpdaterController } = require("./updater.js");
 const {
   DEFAULT_RUNEDDELTA_REMOTE,
+  loadRunedeltaReference,
+  assertRunedeltaWorkingFile,
+  copyRunedeltaToGame,
   detectChapter,
+  projectBinding,
+  listRunedeltaBranches,
+  isRunedeltaProjectConnected,
   installRunedelta,
   languageAttributions,
   languageRelativePath,
   runedeltaStatus,
   synchronizeRunedelta,
 } = require("./runedelta-sync.js");
+
+const githubSetup = require("./runedelta-github.js").createGithubSetup();
 
 const ROOT = __dirname;
 const APP_ICON_PATH = path.join(ROOT, "src", "assets", "deltatranslate-icon.png");
@@ -94,17 +102,11 @@ function runedeltaSettings(config = getConfig()) {
 }
 
 function runedeltaBackup(file, content) {
-  return backupsEnabled() ? backupFile(file, content) : null;
+  return backupFile(file, content);
 }
 
 function runedeltaEnabledForCurrentChapter(config) {
-  if (config.runedelta?.modeEnabled !== true) return false;
-  if (config.targetLanguage && config.targetLanguage !== "fr") return false;
-  if (!config.runedelta?.enabled) return false;
-  const installed = config.runedelta.installedChapters;
-  if (!installed) return true;
-  const chapter = detectChapter(config);
-  return Boolean(chapter && installed[String(chapter)]);
+  return isRunedeltaProjectConnected(config);
 }
 
 function formatRunedeltaConflict(result) {
@@ -125,8 +127,8 @@ function formatRunedeltaConflict(result) {
   );
 }
 
-async function syncConfiguredRunedelta(config, language = null, conflictResolution = null) {
-  if (config.runedelta?.modeEnabled !== true || config.runedelta?.publishEnabled !== true) {
+async function syncConfiguredRunedelta(config, language = null, conflictResolution = null, receiveOnly = false) {
+  if (config.runedelta?.modeEnabled !== true || (!receiveOnly && config.runedelta?.publishEnabled !== true)) {
     throw new Error("La publication GitHub est désactivée dans les options Runedelta.");
   }
   const settings = runedeltaSettings(config);
@@ -135,7 +137,8 @@ async function syncConfiguredRunedelta(config, language = null, conflictResoluti
     ...settings,
     language,
     conflictResolution,
-    push: true,
+    push: !receiveOnly,
+    receiveOnly,
     serializeLanguage,
     backupFile: runedeltaBackup,
   });
@@ -274,6 +277,7 @@ function buildSpriteEntry(item, metadata, root, config = getConfig()) {
   return {
     ...item,
     variant,
+    variantGenerated: Boolean(variant && !originalVariant),
     targetName,
     overrideFrames,
     language: code,
@@ -304,22 +308,6 @@ function spriteEntry(baseName, config = getConfig()) {
   return buildSpriteEntry(item, metadata, spriteOverrideRoot(config), config);
 }
 
-function pngDimensions(file) {
-  const header = Buffer.alloc(24);
-  const descriptor = fs.openSync(file, "r");
-  try {
-    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) {
-      throw new Error("PNG incomplet.");
-    }
-  } finally {
-    fs.closeSync(descriptor);
-  }
-  if (!header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-    throw new Error("Le fichier sélectionné n'est pas un PNG valide.");
-  }
-  return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
-}
-
 function imageDataUrl(file) {
   return `data:image/png;base64,${fs.readFileSync(file).toString("base64")}`;
 }
@@ -327,8 +315,8 @@ function imageDataUrl(file) {
 const spriteExtractionPromises = new Map();
 async function ensureSpriteCached(entry, event) {
   const config = getConfig();
-  const cache = path.join(config.extractedDir, "SpriteEditorCache");
-  const names = [entry.name, entry.variant?.name].filter(Boolean);
+  const cache = path.join(config.extractedDir, "SpriteEditorSourceCache");
+  const names = [entry.name, entry.variantGenerated ? null : entry.variant?.name].filter(Boolean);
   const expected = names.flatMap((name) => {
     const count = name === entry.name ? entry.frames : entry.variant.frames;
     return Array.from({ length: count }, (_unused, frame) => path.join(cache, `${name}_${frame}.png`));
@@ -340,7 +328,7 @@ async function ensureSpriteCached(entry, event) {
     const promise = (async () => {
       const utmt = getUtmtStatus();
       if (!utmt.ready) throw new Error("UTMT CLI est requis pour extraire l'aperçu.");
-      const source = config.multilang ? config.dataWinPath : config.sourceDataWinPath ?? config.dataWinPath;
+      const source = config.sourceDataWinPath ?? config.dataWinPath;
       if (!source || !fs.existsSync(source)) throw new Error("Le data.win source est introuvable.");
       if (!event.sender.isDestroyed()) {
         event.sender.send("sprite-progress", `Extraction de ${entry.name}…`);
@@ -544,11 +532,18 @@ ipcMain.handle("set-runedelta-options", (_event, options = {}) => {
       ...config.runedelta,
       modeEnabled,
       publishEnabled: modeEnabled && options.publishEnabled === true,
+      copyToGame: options.copyToGame === true,
     },
   });
 });
 
-ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
+ipcMain.handle("list-runedelta-branches", async (_event, remoteUrl) => {
+  if (getConfig().runedelta?.modeEnabled !== true) return { ok: false, error: "Active le mode Runedelta." };
+  try { return await listRunedeltaBranches(remoteUrl); }
+  catch (error) { return { ok: false, error: error.message }; }
+});
+
+ipcMain.handle("connect-runedelta", async (_event, requestedRemote, requestedBranch = null) => {
   if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) return { ok: false, error: "Une écriture est déjà en cours." };
   runedeltaRunning = true;
   try {
@@ -558,23 +553,27 @@ ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
     const previous = runedeltaSettings(config);
     const remoteUrl = String(requestedRemote ?? "").trim() || DEFAULT_RUNEDDELTA_REMOTE;
     const result = await installRunedelta({
-      config,
+      config: { ...config, runedelta: { ...config.runedelta, storage: "git" } },
       directory: previous.directory,
+      branch: requestedBranch,
       remoteUrl,
       serializeLanguage,
       backupFile: runedeltaBackup,
     });
     const nextConfig = updateConfig({
       langFrPath: result.targetPath,
-      storageMode: "lang-json",
+      storageMode: "runedelta-json",
       runedelta: {
         ...config.runedelta,
         enabled: true,
+        branch: result.branch,
+        storage: "git",
         remoteUrl,
-        directory: previous.directory,
-        installedChapters: {
-          ...(config.runedelta?.installedChapters ?? {}),
-          [String(result.chapter)]: true,
+        directory: result.directory,
+        baseDirectory: result.baseDirectory,
+        projects: {
+          ...(config.runedelta?.projects ?? {}),
+          [storage.projectId(config)]: projectBinding({ ...config, runedelta: { ...config.runedelta, storage: "git", directory: result.directory } }, remoteUrl, result.branch),
         },
       },
     });
@@ -584,20 +583,21 @@ ipcMain.handle("connect-runedelta", async (_event, requestedRemote) => {
   } finally { runedeltaRunning = false; }
 });
 
-ipcMain.handle("sync-runedelta", async (_event, language = null, conflictResolution = null, expectedRevision, expectedProject) => {
+async function handleRunedeltaSync(_event, language = null, conflictResolution = null, expectedRevision, expectedProject, expectedPath, receiveOnly = false) {
   if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) return { ok: false, error: "Une écriture est déjà en cours." };
   runedeltaRunning = true;
   try {
     const config = getConfig();
     if (expectedProject !== storage.projectId(config)) throw new Error("Le chapitre actif a changé.");
+    if (config.storageMode === "runedelta-json" && expectedPath !== config.langFrPath) throw new Error("Le catalogue ou la branche a changé. Recharge l’éditeur.");
     storage.assertRevision(config.langFrPath, expectedRevision);
     if (!runedeltaEnabledForCurrentChapter(config)) {
       return { ok: false, error: "Runedelta n’est pas installé pour ce chapitre." };
     }
-    const result = await syncConfiguredRunedelta(config, language, conflictResolution);
+    const result = await syncConfiguredRunedelta(config, language, conflictResolution, receiveOnly);
     if (result.conflict) return { ...result, error: formatRunedeltaConflict(result) };
     if (result.ok && result.targetPath !== config.langFrPath) {
-      updateConfig({ langFrPath: result.targetPath, storageMode: "lang-json" });
+      updateConfig({ langFrPath: result.targetPath, storageMode: "runedelta-json" });
     }
     return result.ok
       ? {
@@ -605,14 +605,49 @@ ipcMain.handle("sync-runedelta", async (_event, language = null, conflictResolut
           savedAt: new Date().toISOString(),
           mode: "runedelta",
           revision: storage.revision(result.targetPath),
+          reference: await loadRunedeltaReference(config),
         }
       : result;
   } catch (error) {
     return { ok: false, error: error.message };
   } finally { runedeltaRunning = false; }
+}
+ipcMain.handle("sync-runedelta", (...args) => handleRunedeltaSync(...args));
+ipcMain.handle("receive-runedelta", (event, language, resolution, revision, project, file) => handleRunedeltaSync(event, language, resolution, revision, project, file, true));
+
+ipcMain.handle("check-runedelta-access", async (_event, remoteUrl) => {
+  if (getConfig().runedelta?.modeEnabled !== true) return { ok: false, error: "Active le mode Runedelta." };
+  try { return await githubSetup.check(remoteUrl); }
+  catch (error) { return { ok: false, error: error.message }; }
+});
+ipcMain.handle("login-runedelta-github", async event => {
+  if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) return { ok: false, error: "Une opération est déjà en cours." };
+  if (getConfig().runedelta?.modeEnabled !== true) return { ok: false, error: "Active le mode Runedelta." };
+  runedeltaRunning = true;
+  try {
+    const result = await githubSetup.login(text => {
+      if (!event.sender.isDestroyed()) event.sender.send("runedelta-login-progress", text);
+    });
+    const config = getConfig();
+    return { ...result, config: updateConfig({ runedelta: { ...config.runedelta, identity: result.identity } }) };
+  } catch (error) { return { ok: false, error: error.message }; }
+  finally { runedeltaRunning = false; }
+});
+ipcMain.handle("set-runedelta-identity", (_event, identity) => {
+  if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) throw new Error("Une opération est déjà en cours.");
+  const config = getConfig();
+  if (config.runedelta?.modeEnabled !== true) throw new Error("Active le mode Runedelta.");
+  const name = String(identity?.name ?? "").trim(), email = String(identity?.email ?? "").trim();
+  if (!name || !email.includes("@") || /[\r\n\0]/.test(name + email)) throw new Error("Renseigne un nom et un e-mail Git valides.");
+  return updateConfig({ runedelta: { ...config.runedelta, identity: { name, email } } });
+});
+ipcMain.handle("open-runedelta-help", (_event, topic) => {
+  const urls = { git: "https://git-scm.com/downloads", gh: "https://cli.github.com/", device: "https://github.com/login/device" };
+  if (Object.hasOwn(urls, topic)) return shell.openExternal(urls[topic]);
 });
 
 ipcMain.handle("disconnect-runedelta", () => {
+  if (runedeltaRunning || saveRunning || codeApplyRunning || importRunning) throw new Error("Une opération est déjà en cours.");
   const config = getConfig();
   return updateConfig({
     runedelta: config.runedelta
@@ -710,7 +745,7 @@ ipcMain.handle("load-data", async () => {
     utmt: getUtmtStatus(),
     lang: JSON.parse(fs.readFileSync(config.langFrPath, "utf8")),
     japanese: loadJson(resolveJapaneseLanguagePath(config), {}),
-    reference: loadJson(referencePath, {}),
+    reference: await loadRunedeltaReference(config, loadJson(referencePath, {})),
     migration: loadJson(path.join(config.extractedDir, `migration-${config.targetLanguage ?? "fr"}.json`), {}),
     extractedDir: config.extractedDir,
     fonts: {},
@@ -751,20 +786,21 @@ ipcMain.handle("get-sprite-frame", async (event, baseName, role = "original", fr
     const entry = spriteEntry(baseName, config);
     const index = Math.max(0, Number(frame) || 0);
     const translated = role === "translated";
-    const targetName = translated ? entry.targetName : entry.name;
+    const targetName = translated && !entry.variantGenerated ? entry.targetName : entry.name;
     const frameCount = translated ? (entry.variant?.frames ?? entry.frames) : entry.frames;
     if (index >= frameCount) throw new Error(`La frame ${index} n'existe pas pour ${targetName}.`);
 
     if (translated) {
       const override = path.join(spriteOverrideRoot(config), entry.targetName, `${index}.png`);
       if (fs.existsSync(override)) {
-        return { ok: true, dataUrl: imageDataUrl(override), source: "override" };
+        const { readPlacement } = await import("./extraction/sprite-overrides.mjs");
+        return { ok: true, dataUrl: imageDataUrl(override), source: "override", placement: readPlacement(path.dirname(override), index) };
       }
     }
 
     const extracted = path.join(config.extractedDir, "sprites", `${targetName}_${index}.png`);
-    const cache = path.join(config.extractedDir, "SpriteEditorCache", `${targetName}_${index}.png`);
-    let image = fs.existsSync(extracted) ? extracted : fs.existsSync(cache) ? cache : null;
+    const cache = path.join(config.extractedDir, "SpriteEditorSourceCache", `${targetName}_${index}.png`);
+    let image = !translated && fs.existsSync(extracted) ? extracted : fs.existsSync(cache) ? cache : null;
     if (!image) {
       const cacheDirectory = await ensureSpriteCached(entry, event);
       image = path.join(cacheDirectory, `${targetName}_${index}.png`);
@@ -783,7 +819,7 @@ ipcMain.handle("export-sprite-frame", async (event, baseName, frame = 0) => {
     const index = Math.max(0, Number(frame) || 0);
     if (index >= entry.frames) throw new Error(`La frame ${index} n'existe pas pour ${entry.name}.`);
     const extracted = path.join(config.extractedDir, "sprites", `${entry.name}_${index}.png`);
-    const cache = path.join(config.extractedDir, "SpriteEditorCache", `${entry.name}_${index}.png`);
+    const cache = path.join(config.extractedDir, "SpriteEditorSourceCache", `${entry.name}_${index}.png`);
     let image = fs.existsSync(extracted) ? extracted : fs.existsSync(cache) ? cache : null;
     if (!image) {
       const cacheDirectory = await ensureSpriteCached(entry, event);
@@ -803,27 +839,27 @@ ipcMain.handle("export-sprite-frame", async (event, baseName, frame = 0) => {
   }
 });
 
-ipcMain.handle("import-sprite-frame", (_event, baseName, frame, sourceFile) => {
+ipcMain.handle("import-sprite-frame", async (_event, baseName, frame, sourceFile) => {
   let temporary = null;
   try {
     const config = getConfig();
     const entry = spriteEntry(baseName, config);
-    const index = Math.max(0, Number(frame) || 0);
+    const index = Number(frame);
+    if (!Number.isInteger(index) || index < 0) throw new Error("Numéro de frame invalide.");
     const frameCount = entry.variant?.frames ?? entry.frames;
     if (index >= frameCount) throw new Error(`La frame ${index} n'existe pas pour ce sprite.`);
     const source = path.resolve(String(sourceFile ?? ""));
     if (!fs.existsSync(source) || path.extname(source).toLowerCase() !== ".png") {
       throw new Error("Choisis une image PNG existante.");
     }
-    const size = pngDimensions(source);
-    const expected = entry.variant ?? entry;
-    if (size.width !== expected.width || size.height !== expected.height) {
-      throw new Error(
-        `Dimensions incorrectes : ${size.width}×${size.height}. ` +
-          `La frame doit mesurer exactement ${expected.width}×${expected.height} px.`
-      );
-    }
+    if (codeApplyRunning || saveRunning || importRunning) throw new Error("Attends la fin de l’opération en cours.");
+    const { readPngSize, readPlacement, validateSpriteOverrides } = await import("./extraction/sprite-overrides.mjs");
+    if (codeApplyRunning || saveRunning || importRunning) throw new Error("Attends la fin de l’opération en cours.");
+    const size = readPngSize(source);
     const directory = path.join(spriteOverrideRoot(config), entry.targetName);
+    const placement = readPlacement(directory, index);
+    validateSpriteOverrides(directory, entry.variant ?? entry, { frame: index, ...size, ...placement });
+    if (nativeImage.createFromPath(source).isEmpty()) throw new Error("Le PNG est incomplet ou illisible.");
     fs.mkdirSync(directory, { recursive: true });
     const destination = path.join(directory, `${index}.png`);
     if (backupsEnabled() && fs.existsSync(destination)) {
@@ -832,7 +868,7 @@ ipcMain.handle("import-sprite-frame", (_event, baseName, frame, sourceFile) => {
     temporary = `${destination}.tmp-${process.pid}`;
     fs.copyFileSync(source, temporary);
     replaceWorkspaceFileSafely(temporary, destination);
-    return { ok: true, entry: spriteEntry(baseName, config), dataUrl: imageDataUrl(destination) };
+    return { ok: true, entry: spriteEntry(baseName, config), dataUrl: imageDataUrl(destination), placement };
   } catch (error) {
     return { ok: false, error: error.message };
   } finally {
@@ -840,16 +876,44 @@ ipcMain.handle("import-sprite-frame", (_event, baseName, frame, sourceFile) => {
   }
 });
 
+ipcMain.handle("save-sprite-placement", async (_event, baseName, frame, placement) => {
+  try {
+    if (codeApplyRunning || saveRunning || importRunning) throw new Error("Attends la fin de l’opération en cours.");
+    const config = getConfig();
+    const entry = spriteEntry(baseName, config);
+    if (!Number.isInteger(frame) || !entry.overrideFrames.includes(frame)) throw new Error("Importe d’abord un PNG pour cette frame.");
+    const { readPngSize, validateSpriteOverrides } = await import("./extraction/sprite-overrides.mjs");
+    const { validatePlacement } = await import("./src/sprite-geometry.mjs");
+    if (codeApplyRunning || saveRunning || importRunning) throw new Error("Attends la fin de l’opération en cours.");
+    const position = validatePlacement(placement);
+    const directory = path.join(spriteOverrideRoot(config), entry.targetName);
+    validateSpriteOverrides(directory, entry.variant ?? entry, {
+      frame, ...readPngSize(path.join(directory, `${frame}.png`)), ...position,
+    });
+    const file = path.join(directory, `${frame}.offset`);
+    if (backupsEnabled() && fs.existsSync(file)) backupContent(file, fs.readFileSync(file));
+    storage.atomicWrite(file, `${position.x};${position.y}\n`);
+    return { ok: true, placement: position };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
 ipcMain.handle("reset-sprite-frame", (_event, baseName, frame) => {
   try {
     const config = getConfig();
     const entry = spriteEntry(baseName, config);
-    const index = Math.max(0, Number(frame) || 0);
+    const index = Number(frame);
+    if (index < 0 || !Number.isInteger(index)) throw new Error("Numéro de frame invalide.");
+    if (codeApplyRunning || saveRunning || importRunning) throw new Error("Attends la fin de l’opération en cours.");
     const override = path.join(spriteOverrideRoot(config), entry.targetName, `${index}.png`);
+    const offset = path.join(path.dirname(override), `${index}.offset`);
+    if (backupsEnabled() && fs.existsSync(offset)) backupContent(offset, fs.readFileSync(offset));
     if (backupsEnabled() && fs.existsSync(override)) {
       backupContent(override, fs.readFileSync(override));
     }
     fs.rmSync(override, { force: true });
+    fs.rmSync(offset, { force: true });
     const directory = path.dirname(override);
     if (fs.existsSync(directory) && fs.readdirSync(directory).length === 0) {
       fs.rmdirSync(directory);
@@ -867,7 +931,7 @@ ipcMain.handle("open-sprite-overrides", () => {
 });
 
 let saveRunning = false;
-ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedProject) => {
+ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedProject, expectedPath) => {
   if (saveRunning || codeApplyRunning || importRunning || runedeltaRunning) return { ok: false, error: "Une écriture est déjà en cours." };
   saveRunning = true;
   let config = null;
@@ -876,10 +940,12 @@ ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedPro
   try {
     config = getConfig();
     if (expectedProject !== storage.projectId(config)) throw new Error("Le chapitre actif a changé. Recharge l’éditeur.");
+    if (config.storageMode === "runedelta-json" && expectedPath !== config.langFrPath) throw new Error("Le catalogue ou la branche a changé. Recharge l’éditeur.");
     const serialized = serializeLanguage(langObj);
     storage.assertRevision(config.langFrPath, expectedRevision);
     if (config.storageMode !== "datawin") {
-      const backup = backupsEnabled()
+      await assertRunedeltaWorkingFile(config);
+      const backup = backupsEnabled() || config.storageMode === "runedelta-json"
         ? backupFile(config.langFrPath, serialized)
         : null;
       storage.atomicWrite(config.langFrPath, serialized, { json: true, expected: expectedRevision });
@@ -889,6 +955,7 @@ ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedPro
         mode: "lang-json",
         backupCreated: Boolean(backup),
         revision: storage.revision(config.langFrPath),
+        ...(config.storageMode === "runedelta-json" ? copyRunedeltaToGame(config, langObj, serializeLanguage, runedeltaBackup) : {}),
       };
     }
 
@@ -957,7 +1024,7 @@ ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedPro
       revision: storage.revision(config.langFrPath),
     };
   } catch (error) {
-    if (config?.langFrPath && expectedProject === storage.projectId(config)) {
+    if (config?.langFrPath && expectedProject === storage.projectId(config) && (config.storageMode !== "runedelta-json" || expectedPath === config.langFrPath)) {
       try {
         if (backupsEnabled()) storage.backup(runtimeDirectory("backups"), config.langFrPath, serializeLanguage(langObj), { kind: "draft" });
       } catch {}
@@ -970,13 +1037,14 @@ ipcMain.handle("save-lang", async (event, langObj, expectedRevision, expectedPro
   }
 });
 
-ipcMain.handle("backup-lang", (_event, langObj, expectedProject) => {
+ipcMain.handle("backup-lang", (_event, langObj, expectedProject, expectedPath) => {
   try {
     if (!backupsEnabled()) {
       return { ok: true, backupCreated: false, disabled: true };
     }
     const config = getConfig();
     if (expectedProject !== storage.projectId(config)) throw new Error("Le chapitre actif a changé.");
+    if (config.storageMode === "runedelta-json" && expectedPath !== config.langFrPath) throw new Error("Le catalogue ou la branche a changé. Recharge l’éditeur.");
     const serialized = serializeLanguage(langObj);
     if (!config.langFrPath || !fs.existsSync(config.langFrPath)) {
       throw new Error("Le fichier de langue est introuvable.");
@@ -1155,7 +1223,7 @@ async function applyWorkspaceOverrides(event, progressChannel, progressLabel) {
       const manifest = path.join(config.extractedDir, "multilang-install.json");
       const previous = loadJson(manifest, {});
       storage.atomicWrite(manifest, JSON.stringify({ ...previous, outputHash: hashFile(config.dataWinPath) }, null, 2), { json: true });
-      const cache = path.resolve(config.extractedDir, "SpriteEditorCache");
+      const cache = path.resolve(config.extractedDir, "SpriteEditorSourceCache");
       if (path.dirname(cache) !== path.resolve(config.extractedDir)) throw new Error("Cache de sprites invalide.");
       fs.rmSync(cache, { recursive: true, force: true });
     }

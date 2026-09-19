@@ -343,6 +343,25 @@ body {
   text-align: center;
 }
 
+#sprite-placement-panel {
+  max-width: 1180px;
+  margin: 14px auto 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+
+#sprite-placement-panel h2 { margin: 0 0 12px; font-size: 15px; }
+#sprite-placement-panel p { color: var(--fg-dim); font-size: 11px; line-height: 1.5; }
+.sprite-placement-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0; }
+.sprite-placement-toolbar label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.sprite-placement-toolbar input[type="number"] { width: 85px; }
+#sprite-placement-status { color: var(--fg-dim); font-size: 11px; }
+#sprite-placement-canvas { display: block; width: 100%; height: 360px; min-width: 0; border: 1px solid var(--border); touch-action: none; cursor: move; }
+#sprite-placement-canvas:focus-visible { outline: 2px solid var(--accent); }
+#btn-code-translation { margin-bottom: 8px; white-space: normal; }
+
 #sprite-import-panel {
   max-width: 1180px;
   margin: 14px auto 0;

@@ -1,6 +1,8 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { createHash } = require("node:crypto");
+const { atomicWrite, revision, assertRevision, identity, projectId, backup } = require("./storage.js");
 
 const DEFAULT_RUNEDDELTA_REMOTE = "https://github.com/Traducteurs-Aurifiques/Runedelta.git";
 const GIT_TIMEOUT_MS = 120_000;
@@ -13,7 +15,9 @@ function runCommand(command, args, options = {}) {
       windowsHide: true,
       env: {
         ...process.env,
+        ...(process.platform === "darwin" ? { PATH: `${process.env.PATH ?? ""}:/opt/homebrew/bin:/usr/local/bin` } : {}),
         GIT_TERMINAL_PROMPT: "0",
+        ...options.env,
       },
     });
     const stdout = [];
@@ -23,8 +27,9 @@ function runCommand(command, args, options = {}) {
       child.kill();
     }, options.timeoutMs ?? GIT_TIMEOUT_MS);
 
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.stdin.end();
+    child.stdout.on("data", (chunk) => { stdout.push(chunk); options.onOutput?.(chunk.toString("utf8")); });
+    child.stderr.on("data", (chunk) => { stderr.push(chunk); options.onOutput?.(chunk.toString("utf8")); });
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
@@ -82,6 +87,45 @@ function languageRelativePath(chapter) {
 function gameLanguagePath(config) {
   if (!config.dataWinPath) throw new Error("Importe d’abord le data.win du chapitre.");
   return path.join(path.dirname(config.dataWinPath), "lang", "lang_fr.json");
+}
+
+function usesGitCatalogue(config) {
+  return config.runedelta?.storage !== "game";
+}
+
+function workingLanguagePath(config, directory = config.runedelta?.directory) {
+  return usesGitCatalogue(config)
+    ? path.join(directory, languageRelativePath(detectChapter(config)))
+    : gameLanguagePath(config);
+}
+
+async function assertRunedeltaWorkingFile(config) {
+  if (config.storageMode !== "runedelta-json") return;
+  const directory = config.runedelta?.directory;
+  if (!directory || identity(config.langFrPath) !== identity(workingLanguagePath(config, directory))) {
+    throw new Error("Le catalogue Git ne correspond plus au chapitre actif. Reconnecte Runedelta.");
+  }
+  if (await currentBranch(directory) !== config.runedelta.branch) {
+    throw new Error("La branche Git a changé hors de l’application. Reconnecte la branche choisie avant de sauvegarder.");
+  }
+}
+
+function copyRunedeltaToGame(config, language, serializeLanguage, backupFile) {
+  if (!usesGitCatalogue(config) || config.runedelta?.copyToGame !== true) return {};
+  const target = gameLanguagePath(config);
+  try {
+    const expected = revision(target);
+    const serialized = serializeLanguage(language);
+    if (fs.existsSync(target) && fs.readFileSync(target, "utf8") === serialized) return { gameCopyPath: target };
+    if (fs.existsSync(target)) {
+      const saved = backupFile?.(target, serialized);
+      if (!saved) backup(path.join(config.runedelta.directory, ".git", "deltatranslate-backups"), target, fs.readFileSync(target));
+    }
+    atomicWrite(target, serialized, { json: true, expected });
+    return { gameCopyPath: target };
+  } catch (error) {
+    return { gameCopyError: `Le catalogue Git est sauvegardé, mais sa copie dans le jeu a échoué : ${error.message}` };
+  }
 }
 
 function validateLanguage(value, label = "fichier de langue") {
@@ -259,6 +303,25 @@ function loadTranslationReference(config) {
   }
 }
 
+async function loadRunedeltaReference(config, extractedReference = loadTranslationReference(config)) {
+  if (config.storageMode !== "runedelta-json" || !config.runedelta?.directory) return extractedReference;
+  const chapter = detectChapter(config);
+  const source = `strings_og/chapter${chapter}.json`;
+  const result = await git(["show", `refs/remotes/origin/main:${source}`], config.runedelta.directory, { allowFailure: true });
+  if (result.code !== 0) {
+    // Le dépôt fournit actuellement la VO du chapitre 5 uniquement.
+    if (chapter !== 5) return extractedReference;
+    throw new Error(`La référence anglaise main/${source} est indisponible. Récupère la branche main du dépôt Runedelta avant de recharger l’éditeur.`);
+  }
+  const original = parseLanguage(result.stdout, `VO Runedelta main/${source}`);
+  const reference = { ...extractedReference };
+  for (const [key, en] of Object.entries(original)) {
+    if (key === "date") continue;
+    reference[key] = { ...extractedReference[key], en, originalSource: `main/${source}` };
+  }
+  return reference;
+}
+
 function languageKeyFromJsonLine(line) {
   const match = String(line).match(/^\s*("(?:\\.|[^"\\])*")\s*:/);
   if (!match) return null;
@@ -382,18 +445,74 @@ function validateRemoteUrl(remoteUrl) {
   return value;
 }
 
-async function ensureGitIdentity(directory) {
+async function ensureGitIdentity(directory, configured = null) {
+  if (configured) {
+    const name = String(configured.name ?? "").trim();
+    const email = String(configured.email ?? "").trim();
+    if (!name || !email || /[\r\n\0]/.test(name + email) || !email.includes("@")) {
+      throw new Error("Renseigne ton nom et ton e-mail Git dans la configuration Runedelta.");
+    }
+    await git(["config", "--local", "user.name", name], directory);
+    await git(["config", "--local", "user.email", email], directory);
+  }
   const name = await git(["config", "--get", "user.name"], directory, { allowFailure: true });
   const email = await git(["config", "--get", "user.email"], directory, { allowFailure: true });
-  if (!name.stdout.trim()) {
-    await git(["config", "user.name", "Traducteur Runedelta"], directory);
-  }
-  if (!email.stdout.trim()) {
-    await git(["config", "user.email", "deltatranslate@users.noreply.github.com"], directory);
+  if (!name.stdout.trim() || !email.stdout.trim() || name.stdout.trim() === "Traducteur Runedelta" || email.stdout.trim() === "deltatranslate@users.noreply.github.com") {
+    throw new Error("Configure ton identité Git dans Runedelta avant de publier. La récupération seule reste disponible.");
   }
 }
 
-async function ensureRepository(directory, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE) {
+function projectBinding(config, remoteUrl, branch = config.runedelta?.branch ?? null) {
+  return { chapter: detectChapter(config), remoteUrl, branch, target: identity(gameLanguagePath(config)), storage: usesGitCatalogue(config) ? "git" : "game",
+    ...(usesGitCatalogue(config) ? { directory: config.runedelta?.directory ? identity(config.runedelta.directory) : null } : {}) };
+}
+
+function isRunedeltaProjectConnected(config) {
+  if (config.runedelta?.modeEnabled !== true || !config.runedelta?.enabled || (config.targetLanguage ?? "fr") !== "fr" || !config.dataWinPath) return false;
+  if (usesGitCatalogue(config) && (!config.runedelta.directory || config.storageMode !== "runedelta-json" ||
+    !config.langFrPath || identity(config.langFrPath) !== identity(workingLanguagePath(config)))) return false;
+  const binding = config.runedelta.projects?.[projectId(config)];
+  const expected = projectBinding(config, config.runedelta.remoteUrl ?? DEFAULT_RUNEDDELTA_REMOTE);
+  return Boolean(binding && Object.keys(expected).every(key => binding[key] === expected[key]));
+}
+
+function syncStatePath(config, directory, remoteUrl) {
+  const key = createHash("sha256").update(JSON.stringify([projectId(config), projectBinding(config, remoteUrl)])).digest("hex");
+  return path.join(directory, ".git", "deltatranslate", `${key}.json`);
+}
+
+function readSyncState(config, directory, remoteUrl, allowParked = false) {
+  const file = syncStatePath(config, directory, remoteUrl);
+  if (!fs.existsSync(file)) throw new Error("Cette installation doit être reconnectée à Runedelta pour établir sa référence de synchronisation. Son fichier actuel sera sauvegardé avant remplacement.");
+  const state = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (state.version !== 1 || state.pending || (state.parked && !allowParked)) throw new Error("Une synchronisation a été interrompue. Reconnecte cette installation ; son catalogue sera sauvegardé avant remplacement.");
+  validateLanguage(state.language, "référence de synchronisation");
+  return state;
+}
+
+function writeGameAndState({ config, directory, remoteUrl, language, repositoryLanguage, serializeLanguage, backupFile, expected }) {
+  const target = workingLanguagePath(config, directory);
+  const serialized = serializeLanguage(language);
+  assertRevision(target, expected);
+  let saved = null;
+  if (fs.existsSync(target) && fs.readFileSync(target, "utf8") !== serialized) {
+    saved = backupFile?.(target, serialized);
+    // Même sans callback (ou backups courants désactivés), aucun catalogue remplacé n'est perdu.
+    if (!saved) saved = backup(path.join(directory, ".git", "deltatranslate-backups"), target, fs.readFileSync(target));
+  }
+  const file = syncStatePath(config, directory, remoteUrl);
+  const state = { version: 1, language: repositoryLanguage };
+  const previous = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+  const recovery = previous?.pending ? previous.recovery : previous && fs.existsSync(target)
+    ? { content: fs.readFileSync(target, "utf8"), language: previous.language } : null;
+  // Le marqueur interdit toute fusion avec une base ambiguë après une interruption entre les écritures.
+  atomicWrite(file, JSON.stringify({ ...state, pending: true, recovery }), { json: true });
+  atomicWrite(target, serialized, { json: true, expected });
+  atomicWrite(file, JSON.stringify(state), { json: true });
+  return saved;
+}
+
+async function ensureRepository(directory, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE, branch = null) {
   remoteUrl = validateRemoteUrl(remoteUrl);
   const version = await gitAvailable();
   if (!version) {
@@ -405,7 +524,7 @@ async function ensureRepository(directory, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE
       throw new Error(`Le dossier Runedelta existe déjà mais n’est pas un dépôt Git : ${directory}`);
     }
     fs.mkdirSync(path.dirname(directory), { recursive: true });
-    await git(["clone", "--origin", "origin", "--", remoteUrl, directory], path.dirname(directory), {
+    await git(["clone", "--origin", "origin", ...(branch ? ["--branch", branch] : []), "--", remoteUrl, directory], path.dirname(directory), {
       timeoutMs: 300_000,
     });
   }
@@ -416,7 +535,6 @@ async function ensureRepository(directory, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE
       `Le dépôt local pointe déjà vers ${actualRemote}. Déconnecte-le ou utilise cette même URL.`
     );
   }
-  await ensureGitIdentity(directory);
   return { directory, remoteUrl, version };
 }
 
@@ -426,8 +544,27 @@ async function currentBranch(directory) {
   return branch;
 }
 
+function branchConfig(config, branch) {
+  return { ...config, runedelta: { ...config.runedelta, branch } };
+}
+
+async function validateBranch(branch) {
+  if (typeof branch !== "string" || branch.startsWith("-") || branch === "HEAD" || branch.startsWith("refs/") || /[\r\n\0]/.test(branch)) throw new Error("Nom de branche invalide.");
+  const result = await git(["check-ref-format", `refs/heads/${branch}`], undefined, { allowFailure: true });
+  if (result.code !== 0) throw new Error("Nom de branche invalide.");
+}
+
+async function listRunedeltaBranches(remoteUrl = DEFAULT_RUNEDDELTA_REMOTE) {
+  const remote = validateRemoteUrl(remoteUrl);
+  const output = (await git(["ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*"], undefined, { timeoutMs: 30_000 })).stdout;
+  const branches = [...output.matchAll(/^[0-9a-f]+\trefs\/heads\/(.+)$/gm)].map(match => match[1]).sort((a, b) => a.localeCompare(b));
+  const defaultBranch = output.match(/^ref: refs\/heads\/(.+)\tHEAD$/m)?.[1] ?? null;
+  return { ok: true, branches, defaultBranch };
+}
+
 async function fetchRemote(directory, branch) {
-  await git(["fetch", "origin", branch], directory, { timeoutMs: 45_000 });
+  await validateBranch(branch);
+  await git(["fetch", "origin", `refs/heads/${branch}:refs/remotes/origin/${branch}`], directory, { timeoutMs: 45_000 });
   const remoteRef = `origin/${branch}`;
   await git(["rev-parse", "--verify", remoteRef], directory);
   return remoteRef;
@@ -459,7 +596,7 @@ async function languageAttributions(directory, relativePath, ref = "HEAD") {
 }
 
 async function dirtyFiles(directory) {
-  const output = (await git(["status", "--porcelain"], directory)).stdout.trim();
+  const output = (await git(["status", "--porcelain"], directory)).stdout.trimEnd();
   return output ? output.split(/\r?\n/).map((line) => line.slice(3)) : [];
 }
 
@@ -470,70 +607,127 @@ async function aheadBehind(directory, remoteRef) {
 }
 
 async function installRunedelta(options) {
-  const {
-    config,
-    directory,
-    remoteUrl = DEFAULT_RUNEDDELTA_REMOTE,
-    serializeLanguage,
-    backupFile,
-  } = options;
+  if (usesGitCatalogue(options.config)) return installGitCatalogue(options);
+  const { config, directory, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE, serializeLanguage, backupFile, branch: requestedBranch = null } = options;
   const targetPath = gameLanguagePath(config);
   const targetRevision = revision(targetPath);
   const chapter = detectChapter(config);
   const relativePath = languageRelativePath(chapter);
+  if (requestedBranch) await validateBranch(requestedBranch);
   await ensureRepository(directory, remoteUrl);
   const dirty = await dirtyFiles(directory);
-  if (dirty.length) {
-    throw new Error(`Le dépôt Runedelta contient des modifications non commitées :\n${dirty.join("\n")}`);
-  }
-
-  const branch = await currentBranch(directory);
+  if (dirty.length) throw new Error(`Le dépôt Runedelta contient des modifications non commitées :\n${dirty.join("\n")}`);
+  const previousBranch = await currentBranch(directory);
+  const branch = requestedBranch || config.runedelta?.branch || previousBranch;
+  const scoped = branchConfig(config, branch);
   const remoteRef = await fetchRemote(directory, branch);
-  const ff = await git(["merge", "--ff-only", remoteRef], directory, { allowFailure: true });
-  if (ff.code !== 0) {
-    throw new Error(
-      "Le dépôt Runedelta local et GitHub ont divergé. Termine d’abord la fusion avec Git, puis réessaie de publier."
-    );
+  await showLanguage(directory, remoteRef, relativePath);
+  const changing = branch !== previousBranch;
+  let previousState = null;
+  const previousConfig = branchConfig(config, previousBranch);
+  const previousFile = syncStatePath(previousConfig, directory, remoteUrl);
+  if (changing && fs.existsSync(previousFile) && (!config.runedelta?.branch || config.runedelta.branch === previousBranch)) {
+    previousState = readSyncState(previousConfig, directory, remoteUrl);
+    assertRevision(targetPath, targetRevision);
+    const parkedLanguage = readLanguage(targetPath);
+    atomicWrite(previousFile, JSON.stringify({ ...previousState, parked: true, parkedLanguage }), { json: true });
   }
-
-  const sourcePath = path.join(directory, ...relativePath.split("/"));
-  const language = readLanguage(sourcePath, `Runedelta chapitre ${chapter}`);
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  const serialized = serializeLanguage(language);
-  const backup = backupFile(targetPath, serialized);
-  atomicWrite(targetPath, serialized, { json: true, expected: targetRevision });
-  let attributions = {};
-  let attributionError = null;
   try {
-    attributions = await languageAttributions(directory, relativePath);
+    if (changing) {
+      const exists = await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], directory, { allowFailure: true });
+      if (exists.code === 0) await git(["switch", "--", branch], directory);
+      else await git(["switch", "--track", "-c", branch, remoteRef], directory);
+    }
+    let parked = null;
+    const stateFile = syncStatePath(scoped, directory, remoteUrl);
+    if (fs.existsSync(stateFile)) {
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      if (state.parked && !state.pending) parked = readSyncState(scoped, directory, remoteUrl, true);
+    }
+    const ff = await git(["merge", "--ff-only", remoteRef], directory, { allowFailure: true });
+    if (ff.code !== 0 && !parked) throw new Error("Cette branche et GitHub ont divergé. Reviens à sa session de traduction pour résoudre la fusion avant de la réinstaller.");
+    const sourcePath = path.join(directory, ...relativePath.split("/"));
+    const repositoryLanguage = parked?.language ?? readLanguage(sourcePath, `Runedelta chapitre ${chapter}`);
+    const language = parked ? validateLanguage(parked.parkedLanguage, "travail de la branche") : repositoryLanguage;
+    const saved = writeGameAndState({ config: scoped, directory, remoteUrl, language, repositoryLanguage, serializeLanguage, backupFile, expected: targetRevision });
+    let attributions = {}, attributionError = null;
+    try { attributions = await languageAttributions(directory, relativePath); }
+    catch (error) { attributionError = error.message; }
+    return { ok: true, chapter, branch, sourcePath, targetPath, language, attributions, attributionError, restored: Boolean(parked), backupCreated: Boolean(saved) };
   } catch (error) {
-    attributionError = error.message;
+    if (changing) await git(["switch", "--", previousBranch], directory, { allowFailure: true });
+    if (previousState && revision(targetPath) === targetRevision) atomicWrite(previousFile, JSON.stringify(previousState), { json: true });
+    throw error;
   }
-
-  return {
-    ok: true,
-    chapter,
-    branch,
-    sourcePath,
-    targetPath,
-    language,
-    attributions,
-    attributionError,
-    backupCreated: Boolean(backup),
-  };
 }
 
-async function resolveMergeConflict(directory, relativePath, mergedContent) {
-  const unmergedResult = await git(
-    ["diff", "--name-only", "--diff-filter=U"],
-    directory,
-    { allowFailure: true }
-  );
-  const unmerged = unmergedResult.stdout.trim().split(/\r?\n/).filter(Boolean);
+async function installGitCatalogue(options) {
+  const { config, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE, serializeLanguage, backupFile } = options;
+  const branch = options.branch || config.runedelta?.branch || (await listRunedeltaBranches(remoteUrl)).defaultBranch;
+  await validateBranch(branch);
+  const chapter = detectChapter(config);
+  const relativePath = languageRelativePath(chapter);
+  const baseDirectory = config.runedelta?.baseDirectory ?? options.directory;
+  // Un clone par installation, chapitre et branche conserve les brouillons sans stash ni changement de branche destructif.
+  const key = createHash("sha256").update(JSON.stringify([projectId(config), chapter, remoteUrl, branch])).digest("hex");
+  const directory = path.join(`${baseDirectory}-catalogues`, key);
+  const existed = repositoryExists(directory);
+  await ensureRepository(directory, remoteUrl, branch);
+  const actualBranch = await currentBranch(directory);
+  if (actualBranch !== branch) {
+    if (existed) throw new Error("La branche de cet espace de travail a été modifiée hors de l’application. Rétablis-la dans Git avant de reconnecter.");
+    const remoteRef = await fetchRemote(directory, branch);
+    await showLanguage(directory, remoteRef, relativePath);
+    await git(["switch", "--track", "-c", branch, remoteRef], directory);
+  }
+  const scoped = { ...config, runedelta: { ...config.runedelta, storage: "git", directory, baseDirectory, branch } };
+  const targetPath = workingLanguagePath(scoped, directory);
+  const stateFile = syncStatePath(scoped, directory, remoteUrl);
+  if (fs.existsSync(stateFile)) {
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    if (state.pending && state.recovery) {
+      const content = state.recovery.content;
+      parseLanguage(content, "brouillon interrompu");
+      validateLanguage(state.recovery.language, "référence du brouillon interrompu");
+      if (fs.existsSync(path.join(directory, ".git", "MERGE_HEAD"))) await git(["merge", "--abort"], directory);
+      const staged = (await git(["diff", "--cached", "--name-only"], directory)).stdout.trim().split(/\r?\n/).filter(Boolean);
+      if (staged.some(file => file !== relativePath)) throw new Error("Une publication a été interrompue et l’index Git contient d’autres fichiers. Conserve-les avant de reprendre le brouillon.");
+      const expected = revision(targetPath);
+      if (fs.existsSync(targetPath)) backupFile?.(targetPath, content) || backup(path.join(directory, ".git", "deltatranslate-backups"), targetPath, fs.readFileSync(targetPath));
+      atomicWrite(targetPath, content, { json: true, expected });
+      await git(["restore", "--staged", "--", relativePath], directory);
+      atomicWrite(stateFile, JSON.stringify({ version: 1, language: state.recovery.language }), { json: true });
+    }
+    readSyncState(scoped, directory, remoteUrl);
+  }
+  else {
+    if ((await dirtyFiles(directory)).length) throw new Error("Ce clone contient du travail sans référence de synchronisation. Conserve-le avant de reconnecter.");
+    await git(["merge", "--ff-only", await fetchRemote(directory, branch)], directory);
+    const language = await showLanguage(directory, "HEAD", relativePath);
+    atomicWrite(stateFile, JSON.stringify({ version: 1, language }), { json: true });
+  }
+  const language = readLanguage(targetPath);
+  let attributions = {}, attributionError = null;
+  try { attributions = await languageAttributions(directory, relativePath); }
+  catch (error) { attributionError = error.message; }
+  return { ok: true, chapter, branch, directory, baseDirectory, sourcePath: targetPath, targetPath, language,
+    attributions, attributionError, restored: existed, backupCreated: false,
+    ...copyRunedeltaToGame(scoped, language, serializeLanguage, backupFile) };
+}
+
+async function resolveMergeConflict(directory, relativePath, mergedContent, mergeResult = null) {
+  const unmergedResult = await git(["ls-files", "--unmerged", "--full-name", "-z"], directory, { allowFailure: true });
+  const unmerged = [...new Set(unmergedResult.stdout.split("\0").filter(Boolean)
+    .map((line) => line.slice(line.indexOf("\t") + 1)).filter(Boolean))];
+  if (!unmerged.length) {
+    const fallback = await git(["diff", "--name-only", "--diff-filter=U"], directory, { allowFailure: true });
+    unmerged.push(...fallback.stdout.trim().split(/\r?\n/).filter(Boolean));
+  }
   if (unmerged.length !== 1 || unmerged[0].replace(/\\/g, "/") !== relativePath) {
     await git(["merge", "--abort"], directory, { allowFailure: true });
+    const detail = (mergeResult?.stderr || mergeResult?.stdout || "").trim();
     throw new Error(
-      `Git a détecté des conflits hors du fichier de traduction :\n${unmerged.join("\n") || "conflit inconnu"}`
+      `Git a détecté des conflits hors du fichier de traduction :\n${unmerged.join("\n") || "conflit inconnu"}${detail ? `\n${detail}` : ""}`
     );
   }
 
@@ -552,24 +746,34 @@ async function synchronizeRunedelta(options) {
     backupFile,
     language: suppliedLanguage = null,
     push = false,
+    receiveOnly = false,
     conflictResolution = null,
   } = options;
-  const targetPath = gameLanguagePath(config);
+  const targetPath = workingLanguagePath(config, directory);
   const targetRevision = revision(targetPath);
   const chapter = detectChapter(config);
   const relativePath = languageRelativePath(chapter);
   await ensureRepository(directory, remoteUrl);
   const dirty = await dirtyFiles(directory);
-  if (dirty.length) {
+  if (dirty.some(file => !usesGitCatalogue(config) || file !== relativePath)) {
     throw new Error(`Le dépôt Runedelta contient des modifications non commitées :\n${dirty.join("\n")}`);
   }
 
   const branch = await currentBranch(directory);
+  if (config.runedelta?.branch && branch !== config.runedelta.branch) throw new Error("La branche Git a changé hors de l’application. Reconnecte la branche choisie avant de synchroniser.");
+  const scoped = branchConfig(config, branch);
+  const state = readSyncState(scoped, directory, remoteUrl);
+  if (usesGitCatalogue(config)) {
+    const staged = await git(["diff", "--cached", "--quiet"], directory, { allowFailure: true });
+    if (staged.code !== 0) throw new Error("Le dépôt contient des changements préparés dans Git. Termine ou annule leur préparation avant de synchroniser.");
+  }
   let remoteRef;
   let networkError = null;
   try {
     remoteRef = await fetchRemote(directory, branch);
+    if (config.storageMode === "runedelta-json" && chapter === 5 && branch !== "main") await fetchRemote(directory, "main");
   } catch (error) {
+    if (receiveOnly) throw new Error(`Récupération impossible : ${error.message}`);
     networkError = error.message;
     remoteRef = `origin/${branch}`;
     const cachedRemote = await git(["rev-parse", "--verify", remoteRef], directory, {
@@ -577,6 +781,7 @@ async function synchronizeRunedelta(options) {
     });
     if (cachedRemote.code !== 0) remoteRef = "HEAD";
   }
+  const translationReference = await loadRunedeltaReference(config);
   const mergeBase = (await git(["merge-base", "HEAD", remoteRef], directory)).stdout.trim();
   const baseLanguage = await showLanguage(directory, mergeBase, relativePath);
   const headLanguage = await showLanguage(directory, "HEAD", relativePath);
@@ -587,40 +792,34 @@ async function synchronizeRunedelta(options) {
       ? readLanguage(targetPath, "lang_fr.json du jeu")
       : headLanguage;
 
-  const localMerge = mergeLanguages(
-    baseLanguage,
-    headLanguage,
-    gameLanguage,
-    conflictResolution && (Object.hasOwn(conflictResolution, "local") || Object.hasOwn(conflictResolution, "remote")) ? conflictResolution.local : conflictResolution
-  );
-  if (localMerge.conflicts.length) {
-    return {
-      ok: false,
-      conflict: true,
-      conflicts: localMerge.conflicts,
-      conflictDetails: localMerge.conflictDetails,
-      phase: "local",
-    };
+  const resolutionFor = phase => conflictResolution && typeof conflictResolution === "object" &&
+    ["repository", "workspace"].some(key => Object.hasOwn(conflictResolution, key))
+    ? conflictResolution[phase] : conflictResolution;
+  const repositoryMerge = mergeLanguages(baseLanguage, headLanguage, remoteLanguage, resolutionFor("repository"));
+  if (repositoryMerge.conflicts.length) {
+    return { ok: false, conflict: true, ...repositoryMerge, phase: "repository" };
   }
-  const finalMerge = mergeLanguages(
-    baseLanguage,
-    localMerge.language,
-    remoteLanguage,
-    conflictResolution && (Object.hasOwn(conflictResolution, "local") || Object.hasOwn(conflictResolution, "remote")) ? conflictResolution.remote : conflictResolution
-  );
+  const finalMerge = mergeLanguages(state.language, gameLanguage, repositoryMerge.language, resolutionFor("workspace"));
   if (finalMerge.conflicts.length) {
-    return {
-      ok: false,
-      conflict: true,
-      conflicts: finalMerge.conflicts,
-      conflictDetails: finalMerge.conflictDetails,
-      phase: "remote",
-    };
+    return { ok: false, conflict: true, ...finalMerge, phase: "workspace" };
   }
 
   const language = validateLanguage(finalMerge.language, "fusion Runedelta");
   const serialized = serializeLanguage(language);
   assertRevision(targetPath, targetRevision);
+  if (receiveOnly) {
+    const backup = writeGameAndState({ config: scoped, directory, remoteUrl, language, repositoryLanguage: repositoryMerge.language, serializeLanguage, backupFile, expected: targetRevision });
+    let attributions = {};
+    try { attributions = await languageAttributions(directory, relativePath, remoteRef); } catch {}
+    return { ok: true, chapter, branch, targetPath, language, attributions, committed: false, pushed: false,
+      received: true, backupCreated: Boolean(backup), remoteChanges: countDifferences(gameLanguage, language),
+      ...copyRunedeltaToGame(scoped, language, serializeLanguage, backupFile) };
+  }
+  await ensureGitIdentity(directory, config.runedelta?.identity);
+  if (usesGitCatalogue(config)) {
+    return publishGitCatalogue({ ...options, config: scoped, remoteUrl, targetPath, targetRevision, relativePath,
+      chapter, branch, state, headLanguage, remoteLanguage, gameLanguage, language, serialized, remoteRef, networkError, translationReference });
+  }
   const mergeResult = await git(["merge", "--no-edit", remoteRef], directory, {
     allowFailure: true,
   });
@@ -641,7 +840,7 @@ async function synchronizeRunedelta(options) {
       chapter,
       repositoryLanguage,
       language,
-      loadTranslationReference(config)
+      translationReference
     );
     const commit = await git(
       ["commit", "-m", message.subject, "-m", message.body, "--", relativePath],
@@ -659,8 +858,7 @@ async function synchronizeRunedelta(options) {
   }
 
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  const backup = backupFile(targetPath, serialized);
-  atomicWrite(targetPath, serialized, { json: true, expected: targetRevision });
+  const backup = writeGameAndState({ config: scoped, directory, remoteUrl, language, repositoryLanguage: language, serializeLanguage, backupFile, expected: targetRevision });
 
   let pushError = networkError;
   if (push && !networkError) {
@@ -702,13 +900,61 @@ async function synchronizeRunedelta(options) {
   };
 }
 
+async function publishGitCatalogue(options) {
+  const { config, directory, remoteUrl, targetPath, targetRevision, relativePath, chapter, branch, state,
+    headLanguage, remoteLanguage, gameLanguage, language, serialized, remoteRef, networkError,
+    serializeLanguage, backupFile, translationReference, push = false } = options;
+  assertRevision(targetPath, targetRevision);
+  const original = fs.readFileSync(targetPath);
+  const saved = backupFile?.(targetPath, serializeLanguage(headLanguage)) ||
+    backup(path.join(directory, ".git", "deltatranslate-backups"), targetPath, original);
+  const stateFile = syncStatePath(config, directory, remoteUrl);
+  let committed = false;
+  // La copie obligatoire et le marqueur restent disponibles même si le processus s'arrête pendant Git.
+  atomicWrite(stateFile, JSON.stringify({ ...state, pending: true, recovery: { content: original.toString("utf8"), language: state.language } }), { json: true });
+  try {
+    // Le catalogue est le seul fichier suivi autorisé à être brouillonné ; reset le réécrit avec les filtres Git, notamment CRLF sous Windows.
+    await git(["reset", "--hard", "HEAD"], directory);
+    const merge = await git(["merge", "--no-edit", remoteRef], directory, { allowFailure: true });
+    if (merge.code !== 0) await resolveMergeConflict(directory, relativePath, serialized, merge);
+    const before = readLanguage(targetPath);
+    atomicWrite(targetPath, serialized, { json: true });
+    await git(["add", "--", relativePath], directory);
+    const staged = await git(["diff", "--cached", "--quiet", "--", relativePath], directory, { allowFailure: true });
+    if (staged.code === 1) {
+      const message = buildTranslationCommitMessage(chapter, before, language, translationReference);
+      await git(["commit", "-m", message.subject, "-m", message.body, "--", relativePath], directory);
+      committed = true;
+    } else if (staged.code !== 0) throw new Error("Impossible de vérifier les changements préparés pour la publication.");
+    writeGameAndState({ config, directory, remoteUrl, language, repositoryLanguage: language,
+      serializeLanguage, backupFile, expected: revision(targetPath) });
+  } catch (error) {
+    await git(["merge", "--abort"], directory, { allowFailure: true });
+    atomicWrite(targetPath, original, { json: true });
+    await git(["restore", "--staged", "--", relativePath], directory, { allowFailure: true });
+    atomicWrite(stateFile, JSON.stringify(state), { json: true });
+    throw error;
+  }
+  let pushError = networkError;
+  if (push && !networkError) {
+    const result = await git(["push", "origin", branch], directory, { allowFailure: true, timeoutMs: 60_000 });
+    if (result.code !== 0) pushError = (result.stderr || result.stdout || "Publication refusée.").trim();
+  }
+  let attributions = {}, attributionError = null;
+  try { attributions = await languageAttributions(directory, relativePath); }
+  catch (error) { attributionError = error.message; }
+  return { ok: true, chapter, branch, sourcePath: targetPath, targetPath, language, attributions, attributionError,
+    committed, pushed: push && !pushError, pushError, backupCreated: Boolean(saved),
+    remoteChanges: countDifferences(gameLanguage, language), localChanges: countDifferences(remoteLanguage, language),
+    ...await aheadBehind(directory, remoteRef), ...copyRunedeltaToGame(config, language, serializeLanguage, backupFile) };
+}
+
 async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA_REMOTE) {
   if (config.runedelta?.modeEnabled !== true) return { enabled: false, configured: false };
   const version = await gitAvailable();
   const chapter = detectChapter(config);
   const configured = Boolean(config.runedelta?.enabled);
-  const installed = config.runedelta?.installedChapters;
-  const enabled = configured && (config.targetLanguage ?? "fr") === "fr" && (!installed || Boolean(chapter && installed[String(chapter)]));
+  const enabled = isRunedeltaProjectConnected(config);
   const status = {
     enabled,
     configured,
@@ -722,8 +968,15 @@ async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA
   if (!status.connected) return status;
 
   try {
+    let state = null;
     status.branch = await currentBranch(directory);
-    status.dirtyFiles = await dirtyFiles(directory);
+    if (config.runedelta?.branch && status.branch !== config.runedelta.branch) { status.enabled = false; throw new Error("La branche du clone a changé. Reconnecte la branche choisie."); }
+    if (enabled) {
+      try { state = readSyncState(branchConfig(config, status.branch), directory, remoteUrl); }
+      catch (error) { status.enabled = false; throw error; }
+    }
+    status.branch = await currentBranch(directory);
+    status.dirtyFiles = (await dirtyFiles(directory)).filter(file => !usesGitCatalogue(config) || file !== languageRelativePath(chapter));
     const remoteRef = `origin/${status.branch}`;
     const verified = await git(["rev-parse", "--verify", remoteRef], directory, {
       allowFailure: true,
@@ -732,7 +985,8 @@ async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA
     status.sourcePath = chapter
       ? path.join(directory, ...languageRelativePath(chapter).split("/"))
       : null;
-    const targetPath = config.dataWinPath ? gameLanguagePath(config) : null;
+    const targetPath = config.dataWinPath ? workingLanguagePath(config, directory) : null;
+    status.targetPath = targetPath;
     if (
       enabled &&
       status.sourcePath &&
@@ -741,9 +995,16 @@ async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA
       fs.existsSync(targetPath)
     ) {
       status.unpublishedChanges = countDifferences(
-        readLanguage(status.sourcePath, `Runedelta chapitre ${chapter}`),
+        state.language,
         readLanguage(targetPath, "lang_fr.json du jeu")
       );
+      if (verified.code === 0) {
+        const relative = languageRelativePath(chapter);
+        const base = (await git(["merge-base", "HEAD", remoteRef], directory)).stdout.trim();
+        const known = mergeLanguages(await showLanguage(directory, base, relative),
+          await showLanguage(directory, "HEAD", relative), await showLanguage(directory, remoteRef, relative));
+        status.incomingChanges = known.conflicts.length || countDifferences(state.language, known.language);
+      }
     }
   } catch (error) {
     status.error = error.message;
@@ -753,6 +1014,14 @@ async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA
 
 module.exports = {
   DEFAULT_RUNEDDELTA_REMOTE,
+  runCommand,
+  loadRunedeltaReference,
+  assertRunedeltaWorkingFile,
+  copyRunedeltaToGame,
+  workingLanguagePath,
+  listRunedeltaBranches,
+  projectBinding,
+  isRunedeltaProjectConnected,
   buildTranslationCommitMessage,
   countDifferences,
   detectChapter,
@@ -769,4 +1038,3 @@ module.exports = {
   synchronizeRunedelta,
   validateLanguage,
 };
-const { atomicWrite, revision, assertRevision } = require("./storage.js");

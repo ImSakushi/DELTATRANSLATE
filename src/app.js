@@ -240,12 +240,13 @@ function renderUpdateStatus(status) {
 
 async function installDownloadedUpdate() {
   if (updateInstallRunning) return;
+  if (!(await spriteEditor.savePlacement())) return;
   updateInstallRunning = true;
   document.body.inert = true;
   let installed = false;
   try {
     const result = await prepareUpdateInstall({
-      isBusy: () => importing || installingUtmt || pickingChapter || runedeltaBusy || codeApplyRunning || spriteEditor.applyRunning,
+      isBusy: () => importing || installingUtmt || pickingChapter || runedeltaBusy || codeApplyRunning || spriteEditor.applyRunning || spriteEditor.operationRunning,
       isDirty: () => dirty || codeState.dirty,
       savePreferences: async () => {
         await prefsSavePromise;
@@ -720,6 +721,10 @@ function renderKeyMeta(e) {
   if (e.noref) {
     $("key-meta").textContent =
       "Aucune référence dans ce chapitre. Cette traduction reste conservée et modifiable.";
+    return;
+  }
+  if (!e.file && reference[e.key]?.originalSource) {
+    $("key-meta").textContent = `VO : ${reference[e.key].originalSource} · Contexte GML non disponible dans cette extraction.`;
     return;
   }
   const identity = speakerIdentity(e);
@@ -1681,6 +1686,11 @@ function renderCodeSource(targetLine = codeState.targetLine) {
     const source = document.createElement("span");
     source.className = "code-line-text";
     source.textContent = line || " ";
+    const key = [...line.matchAll(/"([^"\\]*)"/g)].map((match) => match[1]).find((value) => entriesByKey.has(value));
+    if (key) {
+      row.title = "Double-clique pour ouvrir ce texte dans l’éditeur de traduction.";
+      row.addEventListener("dblclick", () => openCodeTranslation(key));
+    }
     row.append(gutter, source);
     fragment.appendChild(row);
   });
@@ -1718,6 +1728,7 @@ function renderRelatedCodeEntries() {
   const related = entries
     .filter((entry) => codeFamily(entry.file) === family)
     .sort((a, b) => entryFileOrder(a, b));
+  $("btn-code-translation").disabled = !related.some((entry) => entry.key === selectedKey);
   if (!related.length) {
     const empty = document.createElement("p");
     empty.textContent = "Aucun texte localisé référencé dans ce fichier.";
@@ -1737,16 +1748,35 @@ function renderRelatedCodeEntries() {
     const text = document.createElement("span");
     text.textContent = stripTags(entry.fr || entry.en || entry.key).slice(0, 80) || "∅";
     button.append(meta, text);
-    button.dataset.tooltip = `${entry.en ?? ""}\n→ ${entry.fr}`;
+    button.dataset.tooltip = `${entry.en ?? ""}\n→ ${entry.fr}\nDouble-clique pour traduire ce texte.`;
+    button.dataset.key = entry.key;
+    button.ondblclick = () => openCodeTranslation(entry.key);
     button.onclick = async () => {
       if (entry.file !== codeState.file && !(await loadCodeFile(entry.file, entry.line))) return;
       selectKey(entry.key);
-      renderRelatedCodeEntries();
+      list.querySelectorAll(".code-related-item").forEach((item) => item.classList.toggle("current", item.dataset.key === entry.key));
+      $("btn-code-translation").disabled = false;
       jumpToCodeLine(entry.line);
     };
     fragment.appendChild(button);
   }
   list.replaceChildren(fragment);
+}
+
+function openCodeTranslation(key = selectedKey) {
+  if (!entriesByKey.has(key) || !closeCodeModal()) return;
+  spriteEditor.showView("translations");
+  selectKey(key);
+  if (!filtered.some((entry) => entry.key === key)) {
+    $("search").value = "";
+    document.querySelector(".filter.active")?.classList.remove("active");
+    document.querySelector('.filter[data-filter="all"]').classList.add("active");
+    prefs.speakerFilter = "all";
+    $("sel-speaker-filter").value = "all";
+    applyFilter();
+  }
+  scrollToSelected(true);
+  $("fr-input").focus();
 }
 
 function entryFileOrder(a, b) {
@@ -1916,7 +1946,7 @@ function findInCode(direction) {
 }
 
 async function applyCodeToGame() {
-  if (!codeState.file || codeApplyRunning) return;
+  if (!codeState.file || codeApplyRunning || !(await spriteEditor.savePlacement())) return;
   if (codeState.dirty && !(await saveCodeOverride())) return;
   if (!confirm("Recompiler le data.win actif avec tous les overrides GML enregistrés ?\n\nLe jeu doit être fermé pendant l’opération.")) return;
 
@@ -1952,6 +1982,7 @@ function bindCodeModal() {
   codeModalBound = true;
   $("btn-code").onclick = openCodeModal;
   $("btn-close-code").onclick = closeCodeModal;
+  $("btn-code-translation").onclick = () => openCodeTranslation();
   $("btn-code-edit").onclick = toggleCodeEditing;
   $("btn-code-save").onclick = saveCodeOverride;
   $("btn-code-reset").onclick = resetCodeOverride;
@@ -2092,6 +2123,7 @@ function save({ allowPublish = false } = {}) {
           (r.backupCreated ? " (backup créé)" : "");
       }
       if (appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled) await refreshRunedeltaStatus();
+      if (r.gameCopyError) alert(r.gameCopyError);
       updateProgress();
       renderList();
       refreshHighlight();
@@ -2151,12 +2183,13 @@ setTimeout(() => {
 
 async function handleCloseRequest() {
   if (closePromptOpen) return;
-  if (importing || installingUtmt || codeApplyRunning || runedeltaBusy) {
+  if (importing || installingUtmt || codeApplyRunning || runedeltaBusy || spriteEditor.applyRunning || spriteEditor.operationRunning) {
     showSetupError("La préparation est en cours. Attends sa fin avant de fermer DELTATRANSLATE.");
     return;
   }
   closePromptOpen = true;
   try {
+    if (!(await spriteEditor.savePlacement())) return;
     await prefsSavePromise;
     if (prefsSaveFailed && !(await savePreferences())) return;
     if (savePromise) await savePromise;
@@ -2420,7 +2453,9 @@ function bindEvents() {
   });
 
   window.api.onSaveRequested(() => {
-    if (!$("code-modal").classList.contains("hidden") && codeState.dirty) {
+    if (!$("sprites-view").classList.contains("hidden")) {
+      void spriteEditor.savePlacement();
+    } else if (!$("code-modal").classList.contains("hidden") && codeState.dirty) {
       void saveCodeOverride();
     } else {
       void save();
@@ -2462,12 +2497,19 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   const enabled = modeEnabled && Boolean(status.enabled ?? appConfig.runedelta?.enabled);
   const remote = String(status.remoteUrl ?? appConfig.runedelta?.remoteUrl ?? "").trim();
   const githubLinked = enabled && /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)[^/\s]+\/[^/\s]+\/?$/i.test(remote);
-  const warning = sync?.error || sync?.pushError || status.error || status.dirtyFiles?.length;
+  const warning = sync?.error || sync?.pushError || sync?.gameCopyError || status.error || status.dirtyFiles?.length;
+  $("btn-receive-runedelta").disabled = !enabled || runedeltaBusy;
+  $("btn-receive-runedelta").classList.toggle("hidden", !modeEnabled);
+  for (const id of ["btn-runedelta-login", "btn-runedelta-check", "btn-runedelta-save-identity", "runedelta-author-name", "runedelta-author-email"]) {
+    $(id).disabled = !modeEnabled || runedeltaBusy;
+  }
   topButton.classList.toggle("hidden", !modeEnabled);
   $("chk-runedelta-mode").checked = modeEnabled;
   $("chk-runedelta-mode").disabled = runedeltaBusy;
   $("chk-runedelta-publish").checked = publishEnabled;
   $("chk-runedelta-publish").disabled = !modeEnabled || runedeltaBusy;
+  $("chk-runedelta-game-copy").checked = appConfig.runedelta?.copyToGame === true;
+  $("chk-runedelta-game-copy").disabled = !modeEnabled || runedeltaBusy;
   topButton.classList.toggle("sync-ready", enabled && !warning);
   topButton.classList.toggle("sync-warning", Boolean(warning));
   for (const button of [publishButton, modalPublishButton]) {
@@ -2486,31 +2528,31 @@ function renderRunedeltaStatus(status = {}, sync = null) {
     label.textContent = "Git est introuvable. Installe Git pour connecter Runedelta.";
   } else if (warning) {
     label.className = "setup-status missing";
-    label.textContent = `⚠ ${sync?.error || sync?.pushError || status.error || `Modifications Git non commitées : ${status.dirtyFiles.join(", ")}`}`;
+    label.textContent = `⚠ ${sync?.error || sync?.pushError || sync?.gameCopyError || status.error || `Modifications Git non commitées : ${status.dirtyFiles.join(", ")}`}`;
   } else if (enabled) {
     const pending = Number(status.ahead ?? sync?.ahead ?? 0);
     const unpublished = Number(status.unpublishedChanges ?? 0);
-    const behind = Number(status.behind ?? sync?.behind ?? 0);
-    let publicationState = " — publié";
+    const behind = Number(status.incomingChanges ?? 0);
+    let publicationState = " — aucune modification locale à publier (état distant à vérifier)";
     if (unpublished > 0) {
       publicationState = ` — ${unpublished} traduction${unpublished > 1 ? "s" : ""} à publier`;
     } else if (pending > 0) {
       publicationState = ` — ${pending} commit${pending > 1 ? "s" : ""} à publier`;
     } else if (behind > 0) {
-      publicationState = ` — ${behind} commit${behind > 1 ? "s" : ""} distant${behind > 1 ? "s" : ""} à récupérer`;
+      publicationState = ` — ${behind} traduction${behind > 1 ? "s" : ""} distante${behind > 1 ? "s" : ""} connue${behind > 1 ? "s" : ""} à récupérer`;
     }
     if (!publishEnabled) publicationState = " — sauvegardes locales, publication GitHub désactivée";
     if (!runedeltaBusy) {
       const needsPublication = unpublished > 0 || pending > 0 || behind > 0;
-      publishButton.textContent = needsPublication ? "↑ Publier" : "✓ Publié";
+      publishButton.textContent = "↑ Publier";
       publishButton.dataset.tooltip = needsPublication
         ? "Publier les traductions sauvegardées sur GitHub"
-        : "Tout est publié — cliquer pour vérifier les changements distants";
+        : "Vérifier et publier les traductions ; Récupérer permet de vérifier sans publier";
     }
     label.className = "setup-status ready";
     label.textContent =
       `✓ Runedelta connecté — chapitre ${status.chapter ?? sync?.chapter ?? "?"}, branche ${status.branch ?? sync?.branch ?? "?"}` +
-      publicationState;
+      publicationState + (status.targetPath ? `\nFichier édité : ${status.targetPath}` : "");
   } else if (status.configured && status.connected) {
     label.className = "setup-status";
     label.textContent = `Dépôt connecté — le chapitre ${status.chapter ?? "courant"} doit encore être installé.`;
@@ -2519,14 +2561,19 @@ function renderRunedeltaStatus(status = {}, sync = null) {
     label.textContent = "Dépôt Runedelta présent localement, mais déconnecté de ce chapitre.";
   } else {
     label.className = "setup-status";
-    label.textContent = `Git détecté (${status.version}). Runedelta n’est pas encore connecté.`;
+    label.textContent = `Git détecté${status.version ? ` (${status.version})` : ""}. Runedelta n’est pas encore connecté.`;
   }
 
   const remoteInput = $("runedelta-remote");
-  remoteInput.value = status.remoteUrl ?? appConfig.runedelta?.remoteUrl ?? remoteInput.value;
+  if (enabled || !remoteInput.value) remoteInput.value = status.remoteUrl ?? appConfig.runedelta?.remoteUrl ?? remoteInput.value;
   remoteInput.disabled = enabled || runedeltaBusy;
   const connectButton = $("btn-connect-runedelta");
-  connectButton.classList.toggle("hidden", enabled);
+  const selectedBranch = $("runedelta-branch").value;
+  const changingBranch = enabled && selectedBranch && selectedBranch !== appConfig.runedelta?.branch;
+  connectButton.classList.toggle("hidden", enabled && !changingBranch);
+  connectButton.textContent = changingBranch ? "Changer de branche" : "Ouvrir le catalogue Git";
+  $("runedelta-branch").disabled = !modeEnabled || runedeltaBusy;
+  $("btn-runedelta-branches").disabled = !modeEnabled || runedeltaBusy;
   connectButton.disabled = !modeEnabled || !status.available || !appConfig.dataWinPath || runedeltaBusy || (appConfig.targetLanguage ?? "fr") !== "fr";
   $("btn-open-runedelta").disabled = !modeEnabled || !status.connected || runedeltaBusy;
   $("btn-disconnect-runedelta").disabled = !modeEnabled || !(status.configured || enabled) || runedeltaBusy;
@@ -2550,6 +2597,31 @@ async function refreshRunedeltaStatus(sync = null, startupSync = null) {
   }
 }
 
+async function loadRunedeltaBranches() {
+  if (runedeltaBusy) return;
+  const remote = $("runedelta-remote").value;
+  const selected = $("runedelta-branch").value || appConfig.runedelta?.branch;
+  runedeltaBusy = true;
+  renderRunedeltaStatus({ available: true });
+  const status = $("runedelta-branch-status");
+  status.textContent = "Chargement des branches…";
+  try {
+    const result = await window.api.listRunedeltaBranches(remote);
+    if (!result.ok) throw new Error(result.error);
+    const select = $("runedelta-branch");
+    select.replaceChildren();
+    for (const branch of result.branches) {
+      const option = document.createElement("option");
+      option.value = branch;
+      option.textContent = branch === result.defaultBranch ? `${branch} (par défaut)` : branch;
+      select.appendChild(option);
+    }
+    select.value = result.branches.includes(selected) ? selected : result.defaultBranch || result.branches[0] || "";
+    status.textContent = result.branches.length ? "Choisis la branche puis clique sur Connecter et installer ou Changer de branche. Publier enverra uniquement vers cette branche." : "Aucune branche disponible.";
+  } catch (error) { status.textContent = error.message; }
+  finally { runedeltaBusy = false; await refreshRunedeltaStatus(); }
+}
+
 async function connectRunedelta() {
   if (appConfig.runedelta?.modeEnabled !== true) return;
   if (runedeltaBusy || savePromise || importing || codeApplyRunning) return;
@@ -2559,10 +2631,12 @@ async function connectRunedelta() {
     alert("Importe d’abord le data.win du chapitre à traduire.");
     return;
   }
+  const requestedRemote = $("runedelta-remote").value;
+  const requestedBranch = $("runedelta-branch").value || null;
   if (
     !confirm(
-      "Le catalogue Runedelta du chapitre va être installé sous lang/lang_fr.json. " +
-        "Le fichier existant sera sauvegardé avant remplacement. Continuer ?"
+      `Ouvrir le fichier strings/strings_chapitre_N.json de ${requestedBranch ? `la branche « ${requestedBranch} »` : "la branche par défaut"} ? Les brouillons conservés sur cette branche seront réouverts. ` +
+        (appConfig.runedelta?.copyToGame ? "Une copie sera aussi écrite dans le jeu, avec sauvegarde du fichier existant." : "Les fichiers du jeu seront conservés.")
     )
   ) {
     return;
@@ -2572,73 +2646,105 @@ async function connectRunedelta() {
   renderRunedeltaStatus({ available: true, enabled: false });
   const button = $("btn-connect-runedelta");
   button.disabled = true;
-  button.textContent = "⏳ Clone et installation…";
+  button.textContent = "⏳ Ouverture du catalogue Git…";
   $("fr-input").readOnly = true;
-  const result = await window.api.connectRunedelta($("runedelta-remote").value).catch(error => ({ ok: false, error: error.message }));
+  const result = await window.api.connectRunedelta(requestedRemote, requestedBranch).catch(error => ({ ok: false, error: error.message }));
   $("fr-input").readOnly = false;
   runedeltaBusy = false;
   button.disabled = false;
-  button.textContent = "Connecter et installer";
+  button.textContent = "Ouvrir le catalogue Git";
   if (!result.ok) {
     renderRunedeltaStatus({ available: true, enabled: false }, result);
     alert(`Connexion à Runedelta impossible.\n\n${result.error}`);
     return;
   }
   appConfig = result.config;
+  if (result.gameCopyError) alert(result.gameCopyError);
   location.reload();
 }
 
-async function publishRunedeltaNow() {
-  if (runedeltaBusy || appConfig.runedelta?.modeEnabled !== true || appConfig.runedelta?.publishEnabled !== true) return;
+async function publishRunedeltaNow(receiveOnly = false) {
+  if (runedeltaBusy || savePromise || importing || codeApplyRunning || appConfig.runedelta?.modeEnabled !== true || (!receiveOnly && appConfig.runedelta?.publishEnabled !== true)) return;
   runedeltaBusy = true;
   renderRunedeltaStatus({ available: true, enabled: true });
-  if (dirty && !(await save({ allowPublish: true }))) {
-    runedeltaBusy = false;
-    await refreshRunedeltaStatus();
-    return;
-  }
-  let result;
-  const snapshot = { ...lang };
-  const resolutions = {};
+  let result = null;
   try {
-    result = await window.api.syncRunedelta(snapshot, null, languageRevision);
+    if (dirty && !(await save({ allowPublish: true }))) return;
+    const snapshot = { ...lang };
+    const resolutions = {};
+    const synchronize = receiveOnly ? window.api.receiveRunedelta : window.api.syncRunedelta;
+    result = await synchronize(snapshot, null, languageRevision);
     while (!result.ok && result.conflict) {
       const resolution = await resolveConflicts(result);
-      if (!resolution) { await refreshRunedeltaStatus(result); return; }
+      if (!resolution) return;
       resolutions[result.phase] = resolution;
-      result = await window.api.syncRunedelta(snapshot, resolutions, languageRevision);
+      result = await synchronize(snapshot, resolutions, languageRevision);
     }
+    if (!result.ok) {
+      alert(`${receiveOnly ? "Récupération" : "Publication"} Runedelta impossible.\n\n${result.error}`);
+      return;
+    }
+    lang = mergeSavedEdits(lang, snapshot, result.language);
+    languageRevision = result.revision;
+    if (result.reference) reference = result.reference;
+    runedeltaAttributions = result.attributions ?? runedeltaAttributions;
+    const active = selectedKey;
+    buildIndex(); buildSequences();
+    savedTranslations = new Map(entries.map(entry => [entry.key, result.language[entry.key] ?? reference[entry.key]?.en]));
+    unsavedKeys.clear();
+    for (const entry of entries) if (entry.fr !== savedTranslations.get(entry.key)) unsavedKeys.add(entry.key);
+    setDirty(unsavedKeys.size > 0);
+    applyFilter();
+    if (active) selectKey(active);
+    if (result.pushError) {
+      alert("Les fichiers sont sauvegardés et commités localement, mais la publication a échoué. Le prochain clic sur Publier reprendra ce commit.\n\n" + result.pushError);
+    } else if (!dirty) {
+      const state = $("save-state");
+      state.className = "saved";
+      state.textContent = `${receiveOnly ? "✔ Récupéré et sauvegardé localement" : "✔ Sauvegardé et publié"} à ${new Date().toLocaleTimeString()}`;
+    }
+    if (result.gameCopyError) alert(result.gameCopyError);
   } catch (error) {
     result = { ok: false, error: error.message ?? String(error) };
+    alert(`Synchronisation Runedelta impossible.\n\n${result.error}`);
   } finally {
     runedeltaBusy = false;
-  }
-  if (!result.ok) {
     await refreshRunedeltaStatus(result);
-    alert(`Publication Runedelta impossible.\n\n${result.error}`);
-    return;
   }
-  await refreshRunedeltaStatus(result);
-  if (result.pushError) {
-    alert(
-      "Les fichiers sont sauvegardés et commités localement, mais GitHub a refusé la publication. " +
-        `Le prochain clic sur Publier reprendra ce commit.\n\n${result.pushError}`
-    );
-  } else {
-    const state = $("save-state");
-    state.className = "saved";
-    state.textContent = `✔ Sauvegardé et publié à ${new Date().toLocaleTimeString()}`;
+}
+
+async function configureRunedeltaGithub(login = false) {
+  if (runedeltaBusy) return;
+  const remote = $("runedelta-remote").value;
+  runedeltaBusy = true;
+  renderRunedeltaStatus({ available: true });
+  const status = $("runedelta-access-status");
+  const log = $("runedelta-login-log");
+  log.textContent = "";
+  status.textContent = login ? "Termine la connexion dans ton navigateur avec le code affiché ci-dessous (trois minutes maximum)." : "Vérification de l’accès Git…";
+  const unsubscribe = login ? window.api.onRunedeltaLoginProgress(text => { log.textContent += text; }) : null;
+  try {
+    if (login) {
+      const connected = await window.api.loginRunedeltaGithub();
+      if (!connected.ok) throw new Error(connected.error);
+      appConfig = connected.config;
+      $("runedelta-author-name").value = connected.identity.name;
+      $("runedelta-author-email").value = connected.identity.email;
+    }
+    const result = await window.api.checkRunedeltaAccess(remote);
+    if (!result.ok) throw new Error(result.error);
+    status.textContent = [
+      result.gitAvailable ? result.message : "Git est introuvable. Installe-le puis relance l’application.",
+      result.login ? `Compte GitHub CLI : ${result.login}.` : "Aucun compte GitHub CLI connecté ; les identifiants Git existants restent utilisables.",
+      result.githubPermission === true ? "Ce compte GitHub dispose du droit d’écriture (les règles de branche restent applicables)." : result.githubPermission === false ? "Ce compte GitHub ne dispose pas du droit d’écriture." : "Droit d’écriture non vérifié.",
+      "Le compte utilisé par Git peut différer de celui de GitHub CLI si tu utilises une configuration Git ou SSH personnalisée.",
+    ].join(" ");
+  } catch (error) { status.textContent = error.message; }
+  finally {
+    unsubscribe?.();
+    runedeltaBusy = false;
+    await refreshRunedeltaStatus();
   }
-  lang = mergeSavedEdits(lang, snapshot, result.language);
-  languageRevision = result.revision;
-  const active = selectedKey;
-  buildIndex(); buildSequences();
-  savedTranslations = new Map(entries.map(entry => [entry.key, result.language[entry.key] ?? reference[entry.key]?.en]));
-  unsavedKeys.clear();
-  for (const entry of entries) if (entry.fr !== savedTranslations.get(entry.key)) unsavedKeys.add(entry.key);
-  setDirty(unsavedKeys.size > 0);
-  applyFilter();
-  if (active) selectKey(active);
 }
 
 function appendImportLog(line) {
@@ -2779,7 +2885,18 @@ function openImportModal(required = false, runedelta = false) {
   $("btn-close-import").classList.toggle("hidden", required);
   $("import-modal").classList.remove("hidden");
   $("import-title").focus();
-  if (runedelta) refreshRunedeltaStatus();
+  if (runedelta) {
+    $("runedelta-remote").value = appConfig.runedelta?.remoteUrl ?? "https://github.com/Traducteurs-Aurifiques/Runedelta.git";
+    const branchSelect = $("runedelta-branch");
+    const currentBranch = appConfig.runedelta?.branch;
+    if (currentBranch && ![...branchSelect.options].some(option => option.value === currentBranch)) {
+      const option = document.createElement("option"); option.value = currentBranch; option.textContent = currentBranch; branchSelect.appendChild(option);
+    }
+    branchSelect.value = currentBranch ?? "";
+    $("runedelta-author-name").value = appConfig.runedelta?.identity?.name ?? "";
+    $("runedelta-author-email").value = appConfig.runedelta?.identity?.email ?? "";
+    refreshRunedeltaStatus();
+  }
   else {
     refreshUtmtStatus().catch((error) => showSetupError(error.message));
     discoverSetupChapters();
@@ -2794,6 +2911,7 @@ function bindImportModal() {
     const options = {
       modeEnabled: $("chk-runedelta-mode").checked,
       publishEnabled: $("chk-runedelta-publish").checked,
+      copyToGame: $("chk-runedelta-game-copy").checked,
     };
     runedeltaBusy = true;
     renderRunedeltaStatus();
@@ -2817,19 +2935,35 @@ function bindImportModal() {
   };
   $("chk-runedelta-mode").onchange = saveRunedeltaOptions;
   $("chk-runedelta-publish").onchange = saveRunedeltaOptions;
+  $("chk-runedelta-game-copy").onchange = saveRunedeltaOptions;
   $("btn-import").onclick = () => openImportModal(false);
   $("btn-runedelta").onclick = () => {
     openImportModal(false, true);
   };
   $("btn-connect-runedelta").onclick = connectRunedelta;
-  $("btn-publish").onclick = publishRunedeltaNow;
-  $("btn-publish-runedelta").onclick = publishRunedeltaNow;
+  $("btn-runedelta-branches").onclick = loadRunedeltaBranches;
+  $("runedelta-branch").onchange = () => refreshRunedeltaStatus();
+  $("btn-publish").onclick = () => publishRunedeltaNow();
+  $("btn-publish-runedelta").onclick = () => publishRunedeltaNow();
+  $("btn-receive-runedelta").onclick = () => publishRunedeltaNow(true);
+  $("btn-runedelta-login").onclick = () => configureRunedeltaGithub(true);
+  $("btn-runedelta-check").onclick = () => configureRunedeltaGithub();
+  $("btn-runedelta-install-git").onclick = () => window.api.openRunedeltaHelp("git");
+  $("btn-runedelta-install-gh").onclick = () => window.api.openRunedeltaHelp("gh");
+  $("btn-runedelta-device").onclick = () => window.api.openRunedeltaHelp("device");
+  $("btn-runedelta-save-identity").onclick = async () => {
+    if (runedeltaBusy) return;
+    try {
+      appConfig = await window.api.setRunedeltaIdentity({ name: $("runedelta-author-name").value, email: $("runedelta-author-email").value });
+      $("runedelta-access-status").textContent = "Auteur enregistré pour les prochaines publications Runedelta.";
+    } catch (error) { $("runedelta-access-status").textContent = error.message; }
+  };
   $("btn-open-runedelta").onclick = () => window.api.openRunedelta();
   $("btn-disconnect-runedelta").onclick = async () => {
     if (runedeltaBusy) return;
     if (
       !confirm(
-        "Déconnecter Runedelta ? Le dépôt local et lang_fr.json seront conservés, mais les traductions ne pourront plus être publiées depuis l’application."
+        "Déconnecter Runedelta ? Les catalogues et brouillons locaux seront conservés, mais les traductions ne pourront plus être publiées depuis l’application."
       )
     ) {
       return;
@@ -2963,6 +3097,7 @@ function bindImportModal() {
 }
 
 async function startImport() {
+  if (!(await spriteEditor.savePlacement())) return;
   if (importing || installingUtmt || pickingChapter || !selectedChapter || setupDone) return;
   if (savePromise || codeApplyRunning || runedeltaBusy || updateInstallRunning) {
     showSetupError("Attends la fin de l’opération en cours avant de changer de chapitre.");

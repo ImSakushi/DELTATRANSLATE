@@ -1,5 +1,6 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 let projectId = null;
+let workingFile = null;
 
 contextBridge.exposeInMainWorld("api", {
   getConfig: () => ipcRenderer.invoke("get-config"),
@@ -12,25 +13,39 @@ contextBridge.exposeInMainWorld("api", {
   getRunedeltaStatus: () => ipcRenderer.invoke("get-runedelta-status"),
   setRunedeltaOptions: (options) => ipcRenderer.invoke("set-runedelta-options", options),
   getRunedeltaAttributions: () => ipcRenderer.invoke("get-runedelta-attributions"),
-  connectRunedelta: (remoteUrl) => ipcRenderer.invoke("connect-runedelta", remoteUrl),
+  connectRunedelta: (remoteUrl, branch) => ipcRenderer.invoke("connect-runedelta", remoteUrl, branch),
+  listRunedeltaBranches: remoteUrl => ipcRenderer.invoke("list-runedelta-branches", remoteUrl),
   syncRunedelta: (language, conflictResolution, revision) =>
-    ipcRenderer.invoke("sync-runedelta", language, conflictResolution, revision, projectId),
+    ipcRenderer.invoke("sync-runedelta", language, conflictResolution, revision, projectId, workingFile),
+  receiveRunedelta: (language, conflictResolution, revision) =>
+    ipcRenderer.invoke("receive-runedelta", language, conflictResolution, revision, projectId, workingFile),
+  checkRunedeltaAccess: remoteUrl => ipcRenderer.invoke("check-runedelta-access", remoteUrl),
+  loginRunedeltaGithub: () => ipcRenderer.invoke("login-runedelta-github"),
+  setRunedeltaIdentity: identity => ipcRenderer.invoke("set-runedelta-identity", identity),
+  openRunedeltaHelp: topic => ipcRenderer.invoke("open-runedelta-help", topic),
+  onRunedeltaLoginProgress: callback => {
+    const listener = (_event, text) => callback(text);
+    ipcRenderer.on("runedelta-login-progress", listener);
+    return () => ipcRenderer.removeListener("runedelta-login-progress", listener);
+  },
   disconnectRunedelta: () => ipcRenderer.invoke("disconnect-runedelta"),
   openRunedelta: () => ipcRenderer.invoke("open-runedelta"),
   setTitleBarTheme: (theme) => ipcRenderer.invoke("set-title-bar-theme", theme),
   loadData: async () => {
     const result = await ipcRenderer.invoke("load-data");
     projectId = result.projectId;
+    workingFile = result.config?.langFrPath;
     return result;
   },
-  saveLang: (langObj, revision) => ipcRenderer.invoke("save-lang", langObj, revision, projectId),
-  backupLang: (langObj) => ipcRenderer.invoke("backup-lang", langObj, projectId),
+  saveLang: (langObj, revision) => ipcRenderer.invoke("save-lang", langObj, revision, projectId, workingFile),
+  backupLang: (langObj) => ipcRenderer.invoke("backup-lang", langObj, projectId, workingFile),
   listBackups: () => ipcRenderer.invoke("list-backups"),
   readBackup: (id) => ipcRenderer.invoke("read-backup", id),
   getSpriteFrame: (name, role, frame) => ipcRenderer.invoke("get-sprite-frame", name, role, frame),
   exportSpriteFrame: (name, frame) => ipcRenderer.invoke("export-sprite-frame", name, frame),
   importSpriteFrame: (name, frame, file) =>
     ipcRenderer.invoke("import-sprite-frame", name, frame, webUtils.getPathForFile(file)),
+  saveSpritePlacement: (name, frame, placement) => ipcRenderer.invoke("save-sprite-placement", name, frame, placement),
   resetSpriteFrame: (name, frame) => ipcRenderer.invoke("reset-sprite-frame", name, frame),
   openSpriteOverrides: () => ipcRenderer.invoke("open-sprite-overrides"),
   applySpriteOverrides: () => ipcRenderer.invoke("apply-sprite-overrides"),

@@ -6,7 +6,7 @@
   <p><strong>L’éditeur de traduction DELTARUNE avec aperçu fidèle au moteur du jeu.</strong></p>
 
   <p>
-    <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-20d9e8?style=flat-square">
+    <img alt="Version 1.2.0" src="https://img.shields.io/badge/version-1.2.0-20d9e8?style=flat-square">
     <img alt="Electron 43" src="https://img.shields.io/badge/Electron-43-47848f?style=flat-square&logo=electron&logoColor=white">
     <img alt="Windows, macOS et Linux" src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-111827?style=flat-square">
     <img alt="Aucune donnée du jeu incluse" src="https://img.shields.io/badge/données%20du%20jeu-non%20incluses-3fb950?style=flat-square">
@@ -80,7 +80,7 @@ Les versions distribuées vérifient les releases stables du dépôt **ImSakushi
 
 Sur Windows Portable, la mise à jour utilise le Setup : elle installe l’application pour votre compte et crée un raccourci à utiliser ensuite. Les données locales restent conservées ; l’ancien exécutable portable reste sur le disque. Sur macOS, l’installation intégrée nécessite une application signée : les builds actuels non signés doivent être remplacés depuis le DMG de la release. Les lancements depuis le code source avec `npm start` ne déclenchent pas de mise à jour.
 
-Republier une release sous le même numéro ne constitue pas une version supérieure : une installation 1.1.1 existante doit télécharger la 1.1.1 reconstruite depuis GitHub pour recevoir les correctifs.
+Republier une release sous le même numéro ne constitue pas une version supérieure : une installation existante doit télécharger la reconstruction portant le même numéro depuis GitHub pour recevoir les correctifs.
 
 ## Premier démarrage
 
@@ -100,9 +100,9 @@ réessayer sans recommencer un téléchargement d’UTMT déjà terminé ; le jo
 
 Runedelta et la publication GitHub sont désactivés par défaut, y compris pour une ancienne configuration.
 Pour rejoindre Runedelta après l’import, active **Chapitre → Fonctions facultatives → Activer le mode Runedelta**,
-ouvre **⇅ Runedelta**, conserve l’URL proposée et clique sur
-**Connecter et installer**. Le catalogue du chapitre est alors installé dans le jeu sous le nom
-`lang/lang_fr.json`.
+ouvre **⇅ Runedelta**, charge les branches, choisis celle de l’équipe et clique sur
+**Ouvrir le catalogue Git**. L’éditeur utilise directement `strings/strings_chapitre_N.json` dans
+le clone local. La copie dans `lang/lang_fr.json` est facultative et désactivée par défaut.
 
 L’import génère localement :
 
@@ -167,31 +167,59 @@ une composition de texte ou une mise en page adaptés à toutes les écritures.
 DELTATRANSLATE sait utiliser directement le dépôt
 [Traducteurs-Aurifiques/Runedelta](https://github.com/Traducteurs-Aurifiques/Runedelta) comme source de
 traduction pour les chapitres 1 à 5. Les fichiers `strings/strings_chapitre_N.json` du dépôt possèdent le
-même schéma que les catalogues du jeu ; l’application installe donc une copie active nommée
-`lang_fr.json` sans convertir ni réordonner les clés.
+même schéma que les catalogues du jeu. L’éditeur ouvre directement le fichier Git du chapitre,
+sans convertir ni réordonner les clés. `Ctrl+S` modifie ce fichier local ; **Publier** envoie ses changements
+sur la branche sélectionnée. Le jeu reste inchangé tant que la copie facultative est désactivée.
+
+Pour le chapitre 5, la VO provient de `main/strings_og/chapter5.json`, quelle que soit la branche
+de traduction sélectionnée. Elle complète les références manquantes et remplace leur texte anglais,
+en conservant les métadonnées GML disponibles (portraits, scènes, modes de rendu). Une valeur identique
+à cette VO reste « à traduire », sauf validation explicite « OK tel quel ». La récupération actualise
+aussi la référence de `main`, sans changer la branche de travail. Les autres chapitres conservent leur
+référence extraite lorsque le dépôt ne fournit pas de fichier `strings_og/chapterN.json`.
 
 1. Importe le `data.win` du chapitre dans DELTATRANSLATE.
-2. Active **Chapitre → Fonctions facultatives → Activer le mode Runedelta**, puis ouvre **⇅ Runedelta** et clique sur **Connecter et installer**.
-3. Traduis normalement et sauvegarde avec `Ctrl+S`.
-4. Si tu souhaites contribuer sur GitHub, coche **Autoriser la publication sur GitHub** dans l’écran Runedelta, puis clique sur **Publier**.
+2. Active **Chapitre → Fonctions facultatives → Activer le mode Runedelta**, puis ouvre **⇅ Runedelta**.
+3. Ouvre **Configurer l’accès GitHub et l’auteur des traductions**. Le dépôt est privé : accepte l’invitation de l’équipe et installe Git. Si nécessaire, installe [GitHub CLI](https://cli.github.com/), relance l’application puis clique sur **Se connecter à GitHub**. Suis la connexion dans le navigateur avec le code affiché. Cette action configure Git pour GitHub sur ce poste via [gh auth setup-git](https://cli.github.com/manual/gh_auth_setup-git). Les identifiants existants restent utilisables sans GitHub CLI.
+4. Clique sur **Vérifier l’accès**, **Charger les branches du dépôt**, choisis une branche existante puis **Ouvrir le catalogue Git**. La vérification distingue l’accès Git en lecture des droits du compte GitHub CLI ; des identifiants Git/SSH personnalisés peuvent utiliser un autre compte. Les règles de branche peuvent encore refuser un push malgré le droit d’écriture.
+5. Traduis normalement et sauvegarde avec `Ctrl+S`. Utilise **Récupérer** pour intégrer les traductions de l’équipe sans publier ton travail.
+6. Pour contribuer, vérifie ton auteur Git, coche **Autoriser la publication sur GitHub**, puis clique sur **Publier**.
 
-Les deux options sont désactivées par défaut. Sans le mode Runedelta, ses boutons sont masqués et aucune
+Le mode Runedelta, la publication GitHub et la copie dans le jeu sont désactivés par défaut. Sans le mode Runedelta, ses boutons sont masqués et aucune
 vérification Git n’est lancée. Tu peux traduire et sauvegarder sans Git ni compte GitHub. Désactiver le mode
 conserve les fichiers, le dépôt et sa configuration, et désactive aussi la publication. Réactiver le mode
 ne réinstalle pas le catalogue ; la publication doit être autorisée à nouveau.
 
-Cette installation est confirmée une fois par chapitre : changer de `data.win` ne mélange donc jamais
-automatiquement le catalogue d’un autre projet avec Runedelta.
+La connexion est propre à chaque installation, langue, chapitre, dépôt et branche. Chacun possède un
+clone de travail distinct, afin de conserver les brouillons et commits non publiés lorsque tu changes
+de chapitre ou de branche. Pour changer de branche, charge la liste, sélectionne la branche voulue puis
+clique sur **Changer de branche**. Revenir à une branche retrouve son brouillon. Un changement de branche
+fait hors de l’application bloque la sauvegarde jusqu’à reconnexion.
 
-À la connexion, le `lang_fr.json` éventuellement présent est sauvegardé avant d’être remplacé par le
-catalogue Runedelta. Ensuite, les sauvegardes restent locales. Seul un clic sur **Publier**, après activation
-de la publication GitHub :
+Les anciennes connexions doivent être reconnectées une fois avec **Ouvrir le catalogue Git**. L’ancien
+fichier du jeu reste conservé ; il n’est pas importé automatiquement dans le catalogue de l’équipe.
+Le chemin du fichier effectivement édité est affiché dans l’écran Runedelta.
+
+**Copier aussi les traductions dans le jeu (lang/lang_fr.json)** est facultatif et désactivé par défaut.
+Une fois activé, la connexion, la sauvegarde et la synchronisation mettent aussi à jour cette copie.
+Son contenu précédent est sauvegardé avant remplacement, **même si les backups courants sont désactivés**.
+Les sauvegardes et fusions du catalogue Git bénéficient aussi de cette protection. Les copies sont accessibles
+dans l’historique ; les appels directs au module sans gestionnaire d’historique utilisent
+`.git/deltatranslate-backups` dans le clone. Si la copie dans le jeu échoue, le catalogue Git reste sauvegardé
+et l’application affiche l’erreur.
+
+**Récupérer** télécharge les changements, résout les éventuels conflits et sauvegarde la fusion dans le
+fichier local. Cette action ne crée aucun commit et ne publie rien, même lorsqu’une publication précédente
+reste en attente. Sans réseau, elle signale l’échec et laisse le catalogue et sa référence intacts. Le statut
+au repos reflète les dernières informations récupérées, sans garantir que GitHub n’a pas changé depuis.
+
+Seul un clic sur **Publier**, après activation de la publication GitHub :
 
 - récupère les nouveaux commits GitHub ;
 - fusionne les changements clé par clé avec le travail local ;
-- écrit le résultat dans `lang/lang_fr.json` et dans le fichier du dépôt ;
+- écrit le résultat dans `strings/strings_chapitre_N.json`, et dans le jeu uniquement si la copie est activée ;
 - crée un commit descriptif des traductions ;
-- pousse le commit si l’utilisateur Git configuré possède les droits d’écriture.
+- pousse le commit sur la branche choisie si l’utilisateur Git configuré possède les droits d’écriture.
 
 Pour chaque valeur différente de l’anglais, la liste et l’éditeur affichent tous les contributeurs Git ayant
 modifié la ligne, dans l’ordre de leur première intervention et sans compter le commit initial d’import.
@@ -202,12 +230,20 @@ traductions différentes, aucune version n’est écrasée : DELTATRANSLATE affi
 de choisir `LOCAL` ou `GITHUB`. Sans réseau ou sans droit de push, la sauvegarde locale et le commit sont
 conservés ; le bouton Runedelta reste en avertissement et une synchronisation ultérieure reprend le commit.
 
-L’application ne stocke aucun token GitHub. Elle utilise Git et son gestionnaire d’identifiants déjà
-configuré sur la machine. Les membres sans droit d’écriture peuvent cloner et installer le projet en laissant
-la publication désactivée. Si une publication est tentée puis refusée, le commit reste local jusqu’à
-l’utilisation d’un compte autorisé ou d’un fork accessible en écriture.
-Si aucun nom ou e-mail Git n’existe, DELTATRANSLATE configure uniquement dans son clone une identité
-générique `Traducteur Runedelta`, sans modifier la configuration Git globale.
+L’application ne stocke aucun token GitHub. La connexion guidée passe par
+[gh auth login](https://cli.github.com/manual/gh_auth_login), et GitHub CLI gère les identifiants.
+Les membres disposant de l’accès en lecture peuvent installer et récupérer sans autoriser la publication.
+Un push refusé conserve le commit local ; il est possible de continuer à corriger les mêmes lignes puis
+de réessayer avec un compte autorisé. Pour passer à un autre dépôt ou à un fork, déconnecte Runedelta puis
+indique son URL : un espace de travail distinct est ouvert et l’ancien travail est conservé.
+
+Après connexion guidée, l’auteur proposé est le compte GitHub et son adresse privée `users.noreply.github.com`.
+Il peut aussi être renseigné dans **Nom de l’auteur / E-mail Git**. Cette identité s’applique uniquement au
+clone Runedelta. L’identité Git existante reste utilisable ; une identité absente ou l’ancienne identité
+générique bloque la publication avec une explication, sans bloquer la récupération.
+
+La synchronisation concerne les catalogues de texte. Les sprites, polices, modifications de code et validations
+locales de l’éditeur ne sont pas publiés par ces actions.
 
 ## Sauvegarde et sécurité
 
@@ -216,7 +252,7 @@ Le setup multilingue enregistre les textes dans le fichier propre à la langue. 
 | Situation détectée | Cible utilisée | Protection appliquée |
 | --- | --- | --- |
 | Langue préparée par le setup | `lang/lang_<code>.json` | Traductions existantes préservées, backup avant sauvegarde si activé |
-| Runedelta est connecté | Sauvegarde locale dans `lang/lang_fr.json` | Le dépôt est modifié uniquement sur clic sur Publier, si la publication est activée : fusion, commit puis push |
+| Runedelta est connecté | `strings/strings_chapitre_N.json` du clone Git ; copie dans le jeu facultative | Backup obligatoire ; Publier fusionne, commite puis pousse sur la branche choisie |
 | Installation du sélecteur ou de sprites traduits | `data.win` du chapitre et, si présent, du lanceur | Sources immuables, compilation vérifiée, sauvegarde durable dans `deltatranslate-backups` |
 | Ancien projet en mode recompilation | `data.win` actif | Source conservée et remplacement atomique ; réimporter pour passer au setup multilingue |
 
@@ -323,7 +359,7 @@ Le processus principal et le preload sont en CommonJS. Le renderer et les script
 
 ### Releases et mises à jour
 
-Le tag GitHub doit toujours correspondre à la version de `package.json` (`v1.1.1` pour la version `1.1.1`) ; le workflow refuse sinon de publier. Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
+Le tag GitHub doit toujours correspondre à la version de `package.json` (`v1.2.0` pour la version `1.2.0`) ; le workflow refuse sinon de publier. Il joint automatiquement l’installateur, les métadonnées `latest*.yml` et les blockmaps utilisées par l’updater.
 
 Les releases doivent être lisibles publiquement pour que les installations puissent les consulter sans secret. Ne jamais embarquer de token GitHub dans l’application. Sur macOS, les mises à jour automatiques nécessitent également une application signée.
 

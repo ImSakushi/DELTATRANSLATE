@@ -3,6 +3,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const { isRunedeltaProjectConnected, projectBinding } = require("./runedelta-sync.js");
+const { projectId } = require("./storage.js");
+function connectedConfig() {
+  const config = { dataWinPath: "/game/chapter5_windows/data.win", runedelta: { storage: "game", modeEnabled: true, enabled: true, remoteUrl: "remote" } };
+  config.runedelta.projects = { [projectId(config)]: projectBinding(config, "remote") };
+  return config;
+}
 
 function backend(initial) {
   const source = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
@@ -19,6 +26,7 @@ function backend(initial) {
     synchronizeRunedelta: async options => { calls.push(options); return { ok: false, error: "Résultat simulé" }; },
     storage: { projectId: () => "project", assertRevision: () => {} },
     detectChapter: () => 5,
+    isRunedeltaProjectConnected,
     serializeLanguage: JSON.stringify,
     runedeltaBackup: () => {},
     saveRunning: false, codeApplyRunning: false, importRunning: false,
@@ -45,7 +53,7 @@ test("sans activation explicite, même un ancien projet connecté ne lance pas G
 });
 
 test("la publication nécessite les deux options, y compris via IPC", async () => {
-  const app = backend({ runedelta: { modeEnabled: true, enabled: true } });
+  const app = backend(connectedConfig());
   const refused = await app.call("sync-runedelta", {}, null, null, "project");
   assert.match(refused.error, /publication GitHub est désactivée/);
   assert.deepEqual(app.calls, []);
@@ -113,4 +121,49 @@ test("l’interface masque les outils désactivés sans demander le statut Git",
       assert.equal(node(id).disabled, true);
     }
   }
+});
+
+
+test("la récupération est autorisée sans publication, mais reste liée au projet actif", async () => {
+  const app = backend(connectedConfig());
+  await app.call("receive-runedelta", {}, null, null, "project");
+  assert.equal(app.calls[1].push, false);
+  assert.equal(app.calls[1].receiveOnly, true);
+  const wrong = await app.call("receive-runedelta", {}, null, null, "autre");
+  assert.match(wrong.error, /chapitre actif a changé/);
+  const legacy = backend({ dataWinPath: "/game/chapter5_windows/data.win", runedelta: { modeEnabled: true, enabled: true, publishEnabled: true, installedChapters: { 5: true } } });
+  assert.match((await legacy.call("receive-runedelta", {}, null, null, "project")).error, /pas installé/);
+});
+
+test("annuler un conflit réactive les actions, y compris en récupération seule", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "src/app.js"), "utf8");
+  for (const receiveOnly of [true, false]) {
+    const states = [];
+    let calls = 0;
+    const context = vm.createContext({
+      appConfig: { runedelta: { modeEnabled: true, publishEnabled: !receiveOnly } },
+      runedeltaBusy: false, savePromise: null, importing: false, codeApplyRunning: false,
+      dirty: false, lang: {}, languageRevision: "rev",
+      window: { api: {
+        syncRunedelta: async () => { assert.equal(receiveOnly, false); calls++; return { ok: false, conflict: true }; },
+        receiveRunedelta: async () => { assert.equal(receiveOnly, true); calls++; return { ok: false, conflict: true }; },
+      } },
+      renderRunedeltaStatus: () => {}, resolveConflicts: async () => null,
+      refreshRunedeltaStatus: async () => states.push(context.runedeltaBusy),
+    });
+    vm.runInContext(source.slice(source.indexOf("async function publishRunedeltaNow"), source.indexOf("async function configureRunedeltaGithub")), context);
+    await vm.runInContext(`publishRunedeltaNow(${receiveOnly})`, context);
+    assert.equal(calls, 1);
+    assert.equal(context.runedeltaBusy, false);
+    assert.deepEqual(states, [false]);
+  }
+});
+
+test("le backup Runedelta utilise l’historique même si les backups courants sont désactivés", () => {
+  const source = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+  const calls = [];
+  const context = vm.createContext({ backupsEnabled: () => false, backupFile: (...args) => { calls.push(args); return "copie"; } });
+  vm.runInContext(source.slice(source.indexOf("function runedeltaBackup"), source.indexOf("function runedeltaEnabledForCurrentChapter")), context);
+  assert.equal(vm.runInContext('runedeltaBackup("catalogue.json", "nouveau contenu")', context), "copie");
+  assert.deepEqual(calls, [["catalogue.json", "nouveau contenu"]]);
 });

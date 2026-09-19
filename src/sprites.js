@@ -1,3 +1,5 @@
+import { SpritePlacement } from "./sprite-placement.js";
+
 const SPRITE_ROW_HEIGHT = 62;
 
 export class SpriteEditor {
@@ -12,11 +14,14 @@ export class SpriteEditor {
     this.bound = false;
     this.applyRunning = false;
     this.translationHint = "";
+    this.operationRunning = false;
   }
 
   bind() {
     if (this.bound) return;
     this.bound = true;
+    this.placement = new SpritePlacement(this.$, () => this.updateCounts());
+    this.$("sprite-save-placement").onclick = () => void this.savePlacement();
     this.translationHint = this.$("hint").textContent;
 
     document.querySelectorAll(".workspace-tab").forEach((button) => {
@@ -66,6 +71,10 @@ export class SpriteEditor {
 
   init(catalog) {
     this.bind();
+    ++this.loadToken;
+    this.selectedName = null;
+    this.frame = 0;
+    this.placement.clear();
     this.catalog = Array.isArray(catalog) ? catalog : [];
     this.applyFilter();
     this.updateCounts();
@@ -82,6 +91,7 @@ export class SpriteEditor {
       button.setAttribute("aria-selected", String(active));
     });
     if (sprites) {
+      this.placement.fit();
       this.renderList();
       this.$("sprite-search").focus();
     }
@@ -96,7 +106,7 @@ export class SpriteEditor {
     this.$("sprite-tab-count").textContent = String(translated);
     this.$("sprite-tab-count").dataset.tooltip =
       `${translated} sprites traduits, dont ${imported} modifiés dans DELTATRANSLATE`;
-    this.$("sprite-apply").disabled = imported === 0 || this.applyRunning;
+    this.$("sprite-apply").disabled = imported === 0 || this.applyRunning || this.operationRunning;
   }
 
   applyFilter() {
@@ -158,7 +168,8 @@ export class SpriteEditor {
     return this.catalog.find((entry) => entry.name === this.selectedName) ?? null;
   }
 
-  select(name) {
+  async select(name) {
+    if (this.operationRunning || this.applyRunning || !(await this.savePlacement())) return;
     const entry = this.catalog.find((item) => item.name === name);
     if (!entry) return;
     this.selectedName = name;
@@ -196,15 +207,16 @@ export class SpriteEditor {
       ? "Remplacer à nouveau cette frame"
       : "Importer la traduction de cette frame";
     this.$("sprite-import-hint").textContent = entry.variant
-      ? `Le PNG ${entry.width}×${entry.height} px remplacera ${entry.targetName}, frame ${this.frame}.`
-      : `Prépare la langue depuis les paramètres pour créer une variante indépendante de ce sprite.`;
+      ? `PNG de dimensions libres pour ${entry.targetName}, frame ${this.frame + 1}. Aucun redimensionnement ni rognage. Ajuste ensuite sa position dans l’aperçu.`
+      : `PNG de dimensions libres pour ${entry.targetName}. Ajuste sa position dans l’aperçu ; prépare une langue dans les paramètres pour une variante indépendante.`;
   }
 
   frameCount(entry = this.selected()) {
     return Math.max(1, entry?.frames ?? 1, entry?.variant?.frames ?? 0);
   }
 
-  moveFrame(direction) {
+  async moveFrame(direction) {
+    if (this.operationRunning || this.applyRunning || !(await this.savePlacement())) return;
     const count = this.frameCount();
     this.frame = (this.frame + direction + count) % count;
     this.renderDetails();
@@ -215,6 +227,7 @@ export class SpriteEditor {
     const entry = this.selected();
     if (!entry) return;
     const token = ++this.loadToken;
+    this.placement.clear();
     this.setImageLoading("original", `Extraction de ${entry.name}…`);
     this.setImageLoading("translated", entry.variant ? `Chargement de ${entry.targetName}…` : "Comparaison avec la source…");
     const [original, translated] = await Promise.all([
@@ -224,6 +237,15 @@ export class SpriteEditor {
     if (token !== this.loadToken) return;
     this.showImageResult("original", original);
     this.showImageResult("translated", translated);
+    const images = {};
+    await Promise.all([["original", original], ["translated", translated]].map(async ([role, result]) => {
+      if (!result.ok) return;
+      const image = new Image();
+      image.src = result.dataUrl;
+      try { await image.decode(); images[role] = image; } catch { this.message("Impossible de décoder l’image PNG.", "error"); }
+    }));
+    if (token !== this.loadToken) return;
+    this.placement.load(entry, images, translated.placement, translated.source === "override");
   }
 
   setImageLoading(role, message) {
@@ -255,30 +277,68 @@ export class SpriteEditor {
       this.message("Le fichier doit être une image PNG.", "error");
       return;
     }
+    if (this.operationRunning || this.applyRunning || !(await this.savePlacement())) return;
+    const frame = this.frame;
+    this.setBusy(true);
     this.message("Import et vérification du PNG…");
-    const result = await window.api.importSpriteFrame(entry.name, this.frame, file);
-    if (!result.ok) {
-      this.message(result.error, "error");
-      return;
+    try {
+      const result = await window.api.importSpriteFrame(entry.name, frame, file);
+      if (!result.ok) throw new Error(result.error);
+      this.replaceEntry(result.entry);
+      this.renderDetails();
+      await this.loadImages();
+      this.message(`Frame ${frame + 1} importée. Ajuste sa position dans l’aperçu, puis applique les sprites au jeu.`, "success");
+    } catch (error) {
+      this.message(error.message, "error");
+    } finally {
+      this.setBusy(false);
     }
-    this.replaceEntry(result.entry);
-    this.renderDetails();
-    this.showImageResult("translated", { ok: true, dataUrl: result.dataUrl });
-    this.message(`Frame ${this.frame} importée. Elle sera réappliquée à chaque recompilation.`, "success");
+  }
+
+  setBusy(busy) {
+    this.operationRunning = busy;
+    this.placement.busy = busy || this.applyRunning;
+    this.placement.update();
+    this.updateCounts();
+    this.$("sprite-file-input").disabled = busy || this.applyRunning;
+  }
+
+  async savePlacement() {
+    if (this.operationRunning || this.applyRunning) return false;
+    if (!this.placement?.dirty) return true;
+    const name = this.selectedName, frame = this.frame;
+    const position = { ...this.placement.position };
+    this.setBusy(true);
+    try {
+      const result = await window.api.saveSpritePlacement(name, frame, position);
+      if (!result.ok) throw new Error(result.error);
+      this.placement.saved = { ...result.placement };
+      this.message("Position enregistrée. Elle sera conservée à chaque recompilation.", "success");
+      return true;
+    } catch (error) {
+      this.message(error.message, "error");
+      return false;
+    } finally {
+      this.setBusy(false);
+    }
   }
 
   async resetFrame() {
     const entry = this.selected();
-    if (!entry || !entry.overrideFrames.includes(this.frame)) return;
-    const result = await window.api.resetSpriteFrame(entry.name, this.frame);
-    if (!result.ok) {
-      this.message(result.error, "error");
-      return;
+    if (!entry || !entry.overrideFrames.includes(this.frame) || this.operationRunning || this.applyRunning) return;
+    this.setBusy(true);
+    try {
+      const result = await window.api.resetSpriteFrame(entry.name, this.frame);
+      if (!result.ok) throw new Error(result.error);
+      this.replaceEntry(result.entry);
+      this.renderDetails();
+      await this.loadImages();
+      this.message("Import local et position annulés pour cette frame.", "success");
+    } catch (error) {
+      this.message(error.message, "error");
+    } finally {
+      this.setBusy(false);
     }
-    this.replaceEntry(result.entry);
-    this.renderDetails();
-    this.message("Import local annulé pour cette frame.", "success");
-    await this.loadImages();
   }
 
   async exportFrame() {
@@ -301,20 +361,22 @@ export class SpriteEditor {
   }
 
   async applyToGame() {
-    if (this.applyRunning) return;
+    if (this.applyRunning || this.operationRunning || !(await this.savePlacement())) return;
     this.applyRunning = true;
-    this.updateCounts();
+    this.setBusy(true);
     this.$("sprite-progress").textContent = "";
     this.$("sprite-progress").classList.remove("hidden");
     this.message("Recompilation sûre du data.win en cours…");
-    const result = await window.api.applySpriteOverrides();
-    this.applyRunning = false;
-    this.updateCounts();
-    if (!result.ok) {
-      this.message(result.error, "error");
-      return;
+    try {
+      const result = await window.api.applySpriteOverrides();
+      if (!result.ok) throw new Error(result.error);
+      this.message("Sprites et positions appliqués au jeu avec succès.", "success");
+    } catch (error) {
+      this.message(error.message, "error");
+    } finally {
+      this.applyRunning = false;
+      this.setBusy(false);
     }
-    this.message("Sprites appliqués au jeu avec succès.", "success");
   }
 
   appendProgress(line) {
