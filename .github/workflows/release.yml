@@ -56,11 +56,14 @@ jobs:
       - name: Installer les dépendances
         run: npm ci
 
+      - name: Préparer Git et GitHub CLI intégrés
+        run: npm run prepare:tools
+
       - name: Vérifier la version du tag
         shell: bash
         run: |
           PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
-          test "v${PACKAGE_VERSION}" = "${GITHUB_REF_NAME}"
+          test "v${PACKAGE_VERSION}" = "${GITHUB_REF_NAME}" || test "v${PACKAGE_VERSION}-bundled-git" = "${GITHUB_REF_NAME}"
 
       - name: Vérifier les tests avant distribution
         run: npm test
@@ -91,6 +94,13 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Fournir les sources Git et les scripts de construction
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 https://github.com/git/git/archive/67ad42147a7acc2af6074753ebd03d904476118f.tar.gz -o release-assets/git-2.53.0-sources.tar.gz
+          curl --fail --location --retry 3 https://github.com/git-for-windows/git/archive/refs/tags/v2.53.0.windows.4.tar.gz -o release-assets/git-windows-2.53.0.4-sources.tar.gz
+          curl --fail --location --retry 3 https://github.com/desktop/dugite-native/archive/refs/tags/v2.53.0-4.tar.gz -o release-assets/dugite-native-build-sources.tar.gz
+
       - name: Générer les sommes SHA-256
         shell: bash
         run: |
@@ -100,9 +110,11 @@ jobs:
       - name: Créer la release
         uses: softprops/action-gh-release@v2
         with:
-          name: DELTATRANSLATE ${{ github.ref_name }}
+          name: DELTATRANSLATE ${{ github.ref_name }} — Git intégré
           body: |
-            Nouvelle version de DELTATRANSLATE.
+            Édition 1.2.0 avec Git et GitHub CLI intégrés sur Windows, macOS et Linux.
+            Dans le menu Runedelta, cliquez sur **Se connecter à GitHub**, puis validez le code dans votre navigateur.
+            Le numéro de version reste 1.2.0 : téléchargez et installez cette édition manuellement si vous avez déjà la 1.2.0.
 
             ## Nouveautés
 
@@ -129,3 +141,4 @@ jobs:
           files: release-assets/*
           fail_on_unmatched_files: true
           overwrite_files: true
+          prerelease: false

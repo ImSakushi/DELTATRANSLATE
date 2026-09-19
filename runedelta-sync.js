@@ -1,4 +1,5 @@
 const { spawn } = require("child_process");
+const { commandEnvironment } = require("./bundled-tools.js");
 const fs = require("fs");
 const path = require("path");
 const { createHash } = require("node:crypto");
@@ -10,15 +11,13 @@ const MISSING = Symbol("missing");
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
+    let tool;
+    try { tool = commandEnvironment(command, { GIT_TERMINAL_PROMPT: "0", ...options.env }); }
+    catch (error) { resolve({ code: -1, stdout: "", stderr: error.message, error }); return; }
+    const child = spawn(tool.command, args, {
       cwd: options.cwd,
       windowsHide: true,
-      env: {
-        ...process.env,
-        ...(process.platform === "darwin" ? { PATH: `${process.env.PATH ?? ""}:/opt/homebrew/bin:/usr/local/bin` } : {}),
-        GIT_TERMINAL_PROMPT: "0",
-        ...options.env,
-      },
+      env: tool.env,
     });
     const stdout = [];
     const stderr = [];

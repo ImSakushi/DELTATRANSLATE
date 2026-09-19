@@ -21,7 +21,7 @@ test("la connexion guidée vérifie le compte, configure Git et ne demande jamai
   const result = await api.login(text => messages.push(text));
   assert.equal(result.login, "alice");
   assert.deepEqual(result.identity, { name: "alice", email: "123+alice@users.noreply.github.com" });
-  assert.deepEqual(calls.map(call => call.slice(1, 3)), [["--version"], ["auth", "login"], ["api", "--hostname"], ["auth", "setup-git"]]);
+  assert.deepEqual(calls.map(call => call.slice(1, 3)), [["--version"], ["auth", "login"], ["api", "--hostname"]]);
   assert.equal(calls.flat().includes("token"), false);
   assert.equal(messages.length, 1);
 });
@@ -36,6 +36,18 @@ test("GitHub CLI manquant ou une connexion refusée n’enregistre aucune identi
     await assert.rejects(api.login(() => {}), failure === "--version" ? /Installe GitHub CLI/ : /annulée/);
     assert.equal(calls.some(args => args.includes("setup-git")), false);
   }
+});
+
+test("la connexion ouvre la page officielle une seule fois, même si son URL arrive en plusieurs morceaux", async () => {
+  let opened = 0;
+  const api = createGithubSetup(async (_command, args, options) => {
+    if (args.includes("login")) {
+      for (const text of ["Code : ABCD-EFGH\nhttps://github.com/", "login/device\n", "https://github.com/login/device\n"]) options.onOutput(text);
+    }
+    return success(args[0] === "api" ? '{"login":"alice","id":123}' : "ok");
+  });
+  await api.login(() => {}, () => opened++);
+  assert.equal(opened, 1);
 });
 
 test("la vérification distingue les droits Git réels et les droits du compte GitHub CLI", async () => {

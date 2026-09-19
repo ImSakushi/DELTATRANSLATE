@@ -7,3 +7,6 @@ config.json
 prefs.json
 AGENTS.md
 CLAUDE.md
+
+vendor/
+build-bundled.log

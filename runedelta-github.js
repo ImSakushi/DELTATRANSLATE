@@ -36,17 +36,25 @@ function createGithubSetup(run = runCommand) {
       message: access?.code === 0 ? "Accès Git en lecture vérifié." : "Accès Git refusé ou réseau indisponible. Accepte l’invitation au dépôt privé, puis connecte GitHub ou configure tes identifiants Git." };
   }
 
-  async function login(onOutput) {
+  async function login(onOutput, onDevice = () => {}) {
     const available = await run("gh", ["--version"], { timeoutMs: 10_000 });
     if (available.code !== 0) throw new Error("Installe GitHub CLI via le lien ci-dessous, puis relance DELTATRANSLATE. Tu peux aussi utiliser tes identifiants Git existants.");
+    let progress = "", deviceOpened = false;
     const result = await run("gh", ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--skip-ssh-key"], {
-      timeoutMs: 180_000, onOutput, env: { GH_PROMPT_DISABLED: "1" },
+      timeoutMs: 180_000, env: { GH_PROMPT_DISABLED: "1" },
+      onOutput(text) {
+        onOutput?.(text);
+        progress = (progress + text).slice(-4096);
+        // gh sans terminal affiche l'URL mais n'ouvre pas le navigateur.
+        if (!deviceOpened && progress.includes("https://github.com/login/device")) {
+          deviceOpened = true;
+          onDevice();
+        }
+      },
     });
     if (result.code !== 0) throw new Error("Connexion GitHub annulée, expirée ou refusée. Consulte les indications de connexion puis réessaie.");
     const user = await profile();
     if (!user) throw new Error("Impossible de vérifier le compte GitHub après connexion.");
-    const configured = await run("gh", ["auth", "setup-git", "--hostname", "github.com"], { timeoutMs: 20_000 });
-    if (configured.code !== 0) throw new Error("Compte connecté, mais configuration Git impossible. Exécute gh auth setup-git --hostname github.com dans un terminal.");
     return { ok: true, login: user.login, identity: { name: user.login, email: `${user.id}+${user.login}@users.noreply.github.com` } };
   }
   return { check, login };

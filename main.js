@@ -627,6 +627,10 @@ ipcMain.handle("login-runedelta-github", async event => {
   try {
     const result = await githubSetup.login(text => {
       if (!event.sender.isDestroyed()) event.sender.send("runedelta-login-progress", text);
+    }, () => {
+      shell.openExternal("https://github.com/login/device").catch(() => {
+        if (!event.sender.isDestroyed()) event.sender.send("runedelta-login-progress", "\nOuvre https://github.com/login/device dans ton navigateur pour continuer.\n");
+      });
     });
     const config = getConfig();
     return { ...result, config: updateConfig({ runedelta: { ...config.runedelta, identity: result.identity } }) };

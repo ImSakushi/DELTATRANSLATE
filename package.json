@@ -9,17 +9,19 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test extraction/sprite-overrides.test.mjs extraction/multilang.test.mjs safety.test.js game-setup.test.js updater.test.js runedelta-sync.test.js runedelta-options.test.js runedelta-github.test.js writer.test.js choice-layout.test.js extraction/bubble-actor-detection.test.mjs extraction/chapter-scope.test.mjs extraction/choice-detection.test.mjs extraction/code-overrides.test.mjs extraction/platform-dialogue-detection.test.mjs extraction/shop-dialogue-detection.test.mjs extraction/speaker-detection.test.mjs extraction/trial-case-detection.test.mjs",
-    "dist": "electron-builder --publish never",
-    "dist:win": "electron-builder --win --x64 --publish never",
-    "dist:mac": "electron-builder --mac --universal --publish never",
-    "dist:linux": "electron-builder --linux --x64 --publish never"
+    "test": "node --test extraction/sprite-overrides.test.mjs extraction/multilang.test.mjs safety.test.js game-setup.test.js updater.test.js runedelta-sync.test.js runedelta-options.test.js runedelta-github.test.js writer.test.js choice-layout.test.js extraction/bubble-actor-detection.test.mjs extraction/chapter-scope.test.mjs extraction/choice-detection.test.mjs extraction/code-overrides.test.mjs extraction/platform-dialogue-detection.test.mjs extraction/shop-dialogue-detection.test.mjs extraction/speaker-detection.test.mjs extraction/trial-case-detection.test.mjs bundled-tools.test.js",
+    "dist": "npm run prepare:tools && electron-builder --publish never",
+    "dist:win": "npm run prepare:tools && electron-builder --win --x64 --publish never",
+    "dist:mac": "npm run prepare:tools && electron-builder --mac --universal --publish never",
+    "dist:linux": "npm run prepare:tools && electron-builder --linux --x64 --publish never",
+    "prepare:tools": "node scripts/prepare-tools.cjs"
   },
   "devDependencies": {
     "electron": "^43.1.0",
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "dugite": "3.2.3",
     "electron-updater": "^6.8.9",
     "extract-zip": "^2.0.1"
   },
@@ -43,7 +45,9 @@
       "extraction/**/*",
       "!extraction/**/*.test.mjs",
       "src/**/*",
-      "package.json"
+      "package.json",
+      "bundled-tools.js",
+      "!node_modules/dugite/git/**/*"
     ],
     "publish": [
       {
@@ -122,6 +126,19 @@
         }
       ],
       "artifactName": "${productName}-${version}-Linux-${arch}.${ext}"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "vendor/tools",
+        "to": "tools",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "THIRD_PARTY_TOOLS.md",
+        "to": "THIRD_PARTY_TOOLS.md"
+      }
+    ]
   }
 }
