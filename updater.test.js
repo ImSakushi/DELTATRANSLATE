@@ -8,8 +8,42 @@ function waitForEvents() {
 }
 
 test("releaseNotesText nettoie les notes HTML et les listes de notes", () => {
-  assert.equal(releaseNotesText("<h2>Nouveau</h2><p>Correction</p>"), "Nouveau Correction");
+  assert.equal(releaseNotesText("<h2>Nouveau</h2><p>Correction</p>"), "Nouveau\nCorrection");
   assert.equal(releaseNotesText([{ note: "A" }, { note: "B" }]), "A\nB");
+});
+
+test("la fenêtre conserve les nouveautés sans la section de téléchargement HTML ou Markdown", () => {
+  const markdown = "**Nouveautés**\n\n- Correction des sprites.\n- [Édition](https://example.com) améliorée.\n\n## Télécharger\n\n| Plateforme | Standard |\n| --- | --- |\n| Windows | Télécharger |\n\nInstructions d’installation.";
+  const html = '<p><strong>Nouveautés</strong></p>\n<ul>\n<li>Correction des sprites.</li>\n<li><a href="https://example.com">Édition</a> améliorée.</li>\n</ul>\n<h2 id="télécharger">Télécharger</h2>\n<table><tr><td>Windows</td></tr></table>\n<p>Instructions d’installation.</p>';
+  for (const notes of [markdown, html]) {
+    assert.equal(releaseNotesText(notes), "Nouveautés\n• Correction des sprites.\n• Édition améliorée.");
+  }
+  assert.equal(releaseNotesText("<p>Une correction.</p><table><tr><td>Windows</td></tr></table>"), "Une correction.");
+  assert.equal(releaseNotesText("<p>L&#8217;édition &amp; les polices&nbsp;: &#xE9;.</p>"), "L’édition & les polices : é.");
+});
+
+test("les notes restent compactes même sans section de téléchargement", () => {
+  assert.equal(releaseNotesText(null), "");
+  assert.equal(releaseNotesText("A".repeat(1000)), "A".repeat(699) + "…");
+  const summary = releaseNotesText(Array.from({ length: 30 }, (_, i) => `- Correction ${i}`).join("\n\n"));
+  assert.equal(summary.split("\n").length, 8);
+  assert.ok(summary.endsWith("…"));
+});
+
+test("la notification utilise le résumé sans modifier les notes de la release", async t => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const notes = fs.readFileSync(path.join(__dirname, "release-notes.md"), "utf8");
+  const f = updaterFixture(t);
+  const info = { version: "1.2.1", releaseNotes: notes };
+  f.updater.emit("update-available", info);
+  await waitForEvents();
+  const detail = f.prompts[0].detail;
+  assert.match(detail, /sprites/);
+  assert.doesNotMatch(detail, /Windows Setup|macOS DMG|Plateforme|https:\/\/|##|\*\*/);
+  assert.ok(detail.length < 1000);
+  assert.equal(info.releaseNotes, notes);
+  assert.equal(f.calls.downloads, 0);
 });
 
 test("le contrôleur télécharge puis installe la release choisie", async () => {

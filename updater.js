@@ -6,13 +6,30 @@ function releaseNotesText(releaseNotes) {
   const notes = Array.isArray(releaseNotes)
     ? releaseNotes.map((entry) => entry?.note ?? "").join("\n")
     : String(releaseNotes ?? "");
-  return notes
-    .replace(/<[^>]+>/g, " ")
+  const entities = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+  const text = notes
     .replace(/\r/g, "")
+    .replace(/<table\b[\s\S]*$/i, "")
+    .replace(/<li\b[^>]*>/gi, "\n• ")
+    .replace(/<\/?(?:h[1-6]|p|div|ul|ol)\b[^>]*>|<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity, code) => {
+      if (!code.startsWith("#")) return entities[code.toLowerCase()];
+      const point = /^#x/i.test(code) ? parseInt(code.slice(2), 16) : Number(code.slice(1));
+      return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : entity;
+    })
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "• ")
     .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim()
-    .slice(0, 1200);
+    .split("\n")
+    .map(line => line.trim());
+  const end = text.findIndex(line => /^(?:Télécharger|Téléchargements?|Downloads?)\b/i.test(line) || /^\|.*\|$/.test(line));
+  const lines = (end < 0 ? text : text.slice(0, end)).filter(Boolean);
+  const summary = lines.slice(0, 8).join("\n");
+  if (summary.length > 700) return summary.slice(0, 699).trimEnd() + "…";
+  return summary + (lines.length > 8 ? "…" : "");
 }
 
 function createUpdaterController({
