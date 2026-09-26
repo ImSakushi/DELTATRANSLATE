@@ -6,7 +6,7 @@
   <p><strong>L’éditeur de traduction DELTARUNE avec aperçu fidèle au moteur du jeu.</strong></p>
 
   <p>
-    <img alt="Version 1.2.0" src="https://img.shields.io/badge/version-1.2.0-20d9e8?style=flat-square">
+    <img alt="Version 1.2.1" src="https://img.shields.io/badge/version-1.2.1-20d9e8?style=flat-square">
     <img alt="Electron 43" src="https://img.shields.io/badge/Electron-43-47848f?style=flat-square&logo=electron&logoColor=white">
     <img alt="Windows, macOS et Linux" src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-111827?style=flat-square">
     <img alt="Aucune donnée du jeu incluse" src="https://img.shields.io/badge/données%20du%20jeu-non%20incluses-3fb950?style=flat-square">
@@ -59,7 +59,7 @@ Téléchargez DELTATRANSLATE depuis la [page des versions](https://github.com/Im
 La version Windows **Portable** permet aussi de lancer l’application sans installation.
 Il vous faut seulement une copie installée de DELTARUNE et une connexion Internet si l’outil de lecture
 du jeu doit être téléchargé. **Ni Node.js ni Git ne sont nécessaires pour traduire avec la version distribuée.**
-L’édition **1.2.0 — Git intégré** inclut Git et GitHub CLI pour Runedelta sur Windows, macOS et Linux. Aucune installation supplémentaire de ces outils n’est nécessaire.
+L’édition **1.2.1 — Git intégré** inclut Git et GitHub CLI pour Runedelta sur Windows, macOS et Linux. Aucune installation supplémentaire de ces outils n’est nécessaire.
 
 ### Depuis le dépôt
 
@@ -360,7 +360,7 @@ Le processus principal et le preload sont en CommonJS. Le renderer et les script
 
 ### Releases et mises à jour
 
-Chaque tag (`v1.2.0` pour la version `1.2.0`) construit les éditions Standard et Avec-Git sur Windows, macOS et Linux dans une seule release. Le workflow peut aussi reconstruire une release existante. Les canaux `latest*.yml` et `bundled*.yml` conservent l’édition choisie lors des mises à jour.
+Chaque tag (`v1.2.1` pour la version `1.2.1`) construit les éditions Standard et Avec-Git sur Windows, macOS et Linux dans une seule release. Le workflow peut aussi reconstruire une release existante. Les canaux `latest*.yml` et `bundled*.yml` conservent l’édition choisie lors des mises à jour.
 
 Les releases doivent être lisibles publiquement pour que les installations puissent les consulter sans secret. Ne jamais embarquer de token GitHub dans l’application. Sur macOS, les mises à jour automatiques nécessitent également une application signée.
 

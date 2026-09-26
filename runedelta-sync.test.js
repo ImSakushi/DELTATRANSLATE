@@ -971,3 +971,36 @@ test('les sprites importés partent sur la branche seulement à la publication, 
   assert.equal(runGit(f.remote, 'rev-parse', 'Alex'), head);
   assert.equal(parseSpriteTree('100644 blob ' + 'a'.repeat(40) + '\tsprites/WARNING NE PAS TRADspr_x.png\0').size, 0);
 });
+
+test("les sprites RUNEDELTA rejoignent le filtre à texte, y compris les variantes japonaises traduites", () => {
+  const vm = require("node:vm");
+  const { annotateRunedeltaSprite } = require("./runedelta-sync.js");
+  const names = ["bg_building_diner", "spr_sign", "spr_sign_ja", "spr_other", "spr_other_ja"];
+  const metadata = new Map(names.map(name => [name, { name }]));
+  const text = require("./sprite-text.js").spriteTextSources(names, "");
+  const repository = { branch: "Alex", sprites: new Map([
+    ["bg_building_diner", new Map([[0, { blob: "a" }]])],
+    ["spr_sign_ja", new Map([[0, { blob: "b" }]])],
+  ]) };
+  const source = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+  const catalogSource = source.slice(source.indexOf("function spriteCatalog("), source.indexOf("function spriteEntry("));
+  const catalog = vm.runInNewContext(`(${catalogSource})`, {
+    readSpriteMetadata: () => metadata,
+    spriteOverrideRoot: () => "unused",
+    readSpriteTextSources: () => text,
+    dataWinAppliedAt: () => 0,
+    runedeltaSprites: () => repository,
+    buildSpriteEntry: item => ({ ...item, hasText: text.sources.has(item.name), translated: false, overrideFrames: [] }),
+    annotateRunedeltaSprite,
+  })({ languages: ["fr"] });
+  for (const name of ["bg_building_diner", "spr_sign_ja"]) {
+    const entry = catalog.find(entry => entry.name === name);
+    assert.equal(entry?.hasText, true, name);
+    assert.equal(entry.translated, true, name);
+    assert.deepEqual(entry.runedelta.frames, [0]);
+  }
+  assert.equal(catalog.some(entry => entry.name === "spr_other_ja"), false);
+  assert.equal(catalog.find(entry => entry.name === "spr_other").translated, false);
+  const standalone = { name: "bg_building_diner", hasText: false, translated: false, overrideFrames: [] };
+  assert.equal(annotateRunedeltaSprite(standalone, null, "unused"), standalone);
+});

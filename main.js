@@ -22,8 +22,8 @@ const {
   runedeltaStatus,
   runedeltaPublication,
   branchSpritesSync,
+  annotateRunedeltaSprite,
   readBranchSpriteSync,
-  gitBlobHash,
   synchronizeRunedelta,
 } = require("./runedelta-sync.js");
 
@@ -332,22 +332,11 @@ function buildSpriteEntry(item, metadata, root, config = getConfig(), text = rea
 // une frame importée est « publiée » quand son PNG est identique à celui de la branche.
 function runedeltaSprites(config) {
   if (!runedeltaEnabledForCurrentChapter(config) || (config.runedelta?.storage ?? "git") !== "git") return null;
-  try { return { branch: config.runedelta.branch, ...branchSpritesSync(runedeltaSettings(config).directory) }; }
+  try {
+    const repository = branchSpritesSync(runedeltaSettings(config).directory);
+    return repository ? { branch: config.runedelta.branch, ...repository } : null;
+  }
   catch (error) { console.warn(`Sprites Runedelta illisibles : ${error.message}`); return null; }
-}
-
-function annotateRunedeltaSprite(entry, repository, root) {
-  if (!repository) return entry;
-  const frames = repository.sprites.get(entry.name) ?? new Map();
-  const unpublishedFrames = entry.overrideFrames.filter(frame => {
-    const file = path.join(root, entry.targetName, `${frame}.png`);
-    try { return frames.get(frame)?.blob !== gitBlobHash(fs.readFileSync(file)); } catch { return true; }
-  });
-  return {
-    ...entry,
-    runedelta: { branch: repository.branch, frames: [...frames.keys()].sort((a, b) => a - b), unpublishedFrames },
-    translated: entry.translated || frames.size > 0,
-  };
 }
 
 function spriteCatalog(config = getConfig()) {
@@ -359,7 +348,8 @@ function spriteCatalog(config = getConfig()) {
   const result = [];
   for (const item of metadata.values()) {
     if ((config.languages ?? ["fr"]).some((code) => item.name.endsWith(`_${code}`) && metadata.has(item.name.slice(0, -code.length - 1)))) continue;
-    if (text.japanese.has(item.name)) continue;
+    // Certains sprites japonais sont eux-mêmes traduits dans le dépôt RUNEDELTA.
+    if (text.japanese.has(item.name) && !repository?.sprites.get(item.name)?.size) continue;
     result.push(annotateRunedeltaSprite(buildSpriteEntry(item, metadata, root, config, text, appliedAt), repository, root));
   }
   return result.sort((a, b) => a.name.localeCompare(b.name, "fr", { numeric: true }));

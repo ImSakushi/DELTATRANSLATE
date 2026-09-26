@@ -675,6 +675,21 @@ function branchSpritesSync(directory) {
   return { head, sprites: spriteTreeCache.value };
 }
 
+function annotateRunedeltaSprite(entry, repository, root) {
+  if (!repository) return entry;
+  const frames = repository.sprites.get(entry.name) ?? new Map();
+  const unpublishedFrames = entry.overrideFrames.filter(frame => {
+    const file = path.join(root, entry.targetName, `${frame}.png`);
+    try { return frames.get(frame)?.blob !== gitBlobHash(fs.readFileSync(file)); } catch { return true; }
+  });
+  return {
+    ...entry,
+    runedelta: { branch: repository.branch, frames: [...frames.keys()].sort((a, b) => a - b), unpublishedFrames },
+    hasText: entry.hasText || frames.size > 0,
+    translated: entry.translated || frames.size > 0,
+  };
+}
+
 function readBranchSpriteSync(directory, file) {
   const tool = commandEnvironment("git", { GIT_TERMINAL_PROMPT: "0" });
   const result = spawnSync(tool.command, ["show", `HEAD:${file}`], { cwd: directory, env: tool.env, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
@@ -1336,6 +1351,7 @@ module.exports = {
   runedeltaPublication,
   classifyPublication,
   branchSpritesSync,
+  annotateRunedeltaSprite,
   readBranchSpriteSync,
   gitBlobHash,
   parseSpriteTree,
