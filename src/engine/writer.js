@@ -44,6 +44,17 @@ export function substituteArgs(input, substitutions = [], samples = []) {
   return { text, unresolved, sampled };
 }
 
+// scr_texttype : métriques JP et textscale des polices comicsans/tinynoelle.
+function languageTyper(typer, language) {
+  const style = { ...(TYPERS[typer] || TYPERS[6]) };
+  if (language !== "ja") return style;
+  if (style.font !== "8bit") style.hspace = style.hspace * 13 / 8 + (style.font === "comicsans" ? 3 : 1);
+  if (style.font === "main" && style.vspace === 32) style.vspace = 36;
+  if ([4, 45, 46, 47, 48, 59, 69, 70, 71, 72, 74, 75, 76, 77, 96].includes(typer)) style.vspace += 2;
+  style.textscale = ["comicsans", "tinynoelle"].includes(style.font) ? 0.5 : 1;
+  return style;
+}
+
 // ---------------------------------------------------------------------------
 // Passe 1 : word-wrap (obj_writer event_user(5))
 // Retourne { text, linecount, stringmax, fc, fe }
@@ -51,6 +62,7 @@ export function substituteArgs(input, substitutions = [], samples = []) {
 export function formatText(input, opts) {
   const {
     charline: baseCharline = 33,
+    language = "en",
     dialoguer = false,
     battle = false,
     initialFc = 0,
@@ -111,7 +123,7 @@ export function formatText(input, opts) {
       linecount += 1;
       skip = 1;
       const nextchar = charAt(mystring, i + 1);
-      if (aster === 1 && autoaster && nextchar !== "*") {
+      if (aster === 1 && autoaster && nextchar !== "*" && language !== "ja") {
         charpos = 2;
         length += 2;
         mystring = mystring.slice(0, i) + "||" + mystring.slice(i);
@@ -174,9 +186,10 @@ export function layoutText(formattedText, opts) {
     initialFc = 0,
     initialFe = 0,
     hspaceScale = 1,
+    language = "en",
   } = opts;
 
-  let cur = Object.assign({}, TYPERS[typer] || TYPERS[6]);
+  let cur = languageTyper(typer, language);
   cur.hspace *= hspaceScale;
   let mycolor = cur.color;
   let xcolor = mycolor;
@@ -236,7 +249,7 @@ export function layoutText(formattedText, opts) {
       } else if (nextchar === "T") {
         const t = resolveTyper(nextchar2, { dark, fight });
         if (t != null && TYPERS[t]) {
-          cur = Object.assign({}, TYPERS[t]);
+          cur = languageTyper(t, language);
           mycolor = cur.color;
           if (colorchange === 0) xcolor = mycolor;
         } else {
@@ -313,11 +326,15 @@ export function layoutText(formattedText, opts) {
           color,
           font: cur.font,
           special: cur.special ?? 0,
+          textscale: cur.textscale ?? 1,
         });
       }
       wx += cur.hspace;
+      // obj_writer Draw_0 : ASCII et katakana demi-chasse occupent un demi-pas.
+      const code = mychar.codePointAt(0);
+      if (language === "ja" && (code < 256 || (code >= 65377 && code <= 65439))) wx -= cur.hspace / 2;
       // ajustements spécifiques fnt_mainbig (myfont == 7 dans le GML)
-      if (cur.font === "mainbig") {
+      if (cur.font === "mainbig" && language !== "ja") {
         if (mychar === "w") wx += 2;
         if (mychar === "m") wx += 3;
         if (mychar === "i") wx -= 2;

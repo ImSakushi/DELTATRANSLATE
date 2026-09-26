@@ -1,4 +1,4 @@
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { commandEnvironment } = require("./bundled-tools.js");
 const fs = require("fs");
 const path = require("path");
@@ -6,6 +6,7 @@ const { createHash } = require("node:crypto");
 const { atomicWrite, revision, assertRevision, identity, projectId, backup } = require("./storage.js");
 
 const DEFAULT_RUNEDDELTA_REMOTE = "https://github.com/Traducteurs-Aurifiques/Runedelta.git";
+const MAIN_BRANCH = "main";
 const GIT_TIMEOUT_MS = 120_000;
 const MISSING = Symbol("missing");
 
@@ -223,7 +224,9 @@ function compactDialogue(value, maxLength = 54) {
   return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
-function buildTranslationCommitMessage(chapter, before, after, reference = {}) {
+function buildTranslationCommitMessage(chapter, before, after, reference = {}, custom = null) {
+  const title = typeof custom?.title === "string" ? custom.title.replace(/[\r\n]+/g, " ").trim() : "";
+  const description = typeof custom?.description === "string" ? custom.description.trim() : "";
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
     (key) => key !== "date" && before[key] !== after[key]
   );
@@ -283,8 +286,8 @@ function buildTranslationCommitMessage(chapter, before, after, reference = {}) {
   }
 
   return {
-    subject: `trad(ch${chapter}): ${action}`,
-    body: [
+    subject: `trad(ch${chapter}): ${title || action}`,
+    body: description || [
       ...counts,
       ...(examples.length ? ["", "Dialogues concernés :", ...examples] : []),
     ].join("\n"),
@@ -553,12 +556,32 @@ async function validateBranch(branch) {
   if (result.code !== 0) throw new Error("Nom de branche invalide.");
 }
 
-async function listRunedeltaBranches(remoteUrl = DEFAULT_RUNEDDELTA_REMOTE) {
+async function listRunedeltaBranches(remoteUrl = DEFAULT_RUNEDDELTA_REMOTE, { details = false } = {}) {
   const remote = validateRemoteUrl(remoteUrl);
   const output = (await git(["ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*"], undefined, { timeoutMs: 30_000 })).stdout;
   const branches = [...output.matchAll(/^[0-9a-f]+\trefs\/heads\/(.+)$/gm)].map(match => match[1]).sort((a, b) => a.localeCompare(b));
   const defaultBranch = output.match(/^ref: refs\/heads\/(.+)\tHEAD$/m)?.[1] ?? null;
-  return { ok: true, branches, defaultBranch };
+  const result = { ok: true, branches, defaultBranch };
+  if (!details || !branches.length) return result;
+
+  // Le dépôt temporaire évite de toucher aux branches et aux brouillons du catalogue ouvert.
+  const directory = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "deltatranslate-branches-"));
+  try {
+    await git(["init", "--bare", directory]);
+    await git(["fetch", "--depth=1", "--filter=tree:0", "--no-tags", "--", remote, "+refs/heads/*:refs/heads/*"], directory, { timeoutMs: 45_000 });
+    const records = (await git(["for-each-ref", "--format=%(refname:strip=2)%00%(objectname)%00%(authorname)%00%(authoremail)%00%(committerdate:unix)%00%(subject)", "refs/heads/"], directory)).stdout;
+    result.branchDetails = records.trimEnd().split("\n").filter(Boolean).map(record => {
+      const [name, commit, author, email, timestamp, subject] = record.split("\0");
+      return { name, commit, author, authorName: githubName(author, email.replace(/^<|>$/g, "")), timestamp: Number(timestamp) * 1000, subject };
+    });
+    result.branches = result.branchDetails.map(branch => branch.name).sort((a, b) => a.localeCompare(b));
+    result.checkedAt = Date.now();
+  } catch (error) {
+    result.detailsError = `Les branches sont disponibles, mais leurs derniers commits n’ont pas pu être chargés : ${error.message}`;
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  return result;
 }
 
 async function fetchRemote(directory, branch) {
@@ -603,6 +626,250 @@ async function aheadBehind(directory, remoteRef) {
   const result = await git(["rev-list", "--left-right", "--count", `HEAD...${remoteRef}`], directory);
   const [ahead = 0, behind = 0] = result.stdout.trim().split(/\s+/).map(Number);
   return { ahead, behind };
+}
+
+// Sprites du dépôt : sprites/<nom>.png (une frame) ou sprites/<nom>/<nom>_<N>.png.
+const SPRITES_DIRECTORY = "sprites";
+
+function gitBlobHash(content) {
+  return createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
+}
+
+function spriteFrameFromPath(file) {
+  const single = file.match(/^sprites\/([A-Za-z0-9_]+)\.png$/);
+  if (single) return { name: single[1], frame: 0 };
+  const multi = file.match(/^sprites\/([A-Za-z0-9_]+)\/([A-Za-z0-9_]+)_(\d+)\.png$/);
+  return multi && multi[1] === multi[2] ? { name: multi[1], frame: Number(multi[3]) } : null;
+}
+
+function parseSpriteTree(output) {
+  const sprites = new Map();
+  for (const record of String(output).split("\0")) {
+    const match = record.match(/^\d+ blob ([0-9a-f]{40,64})\t(.+)$/);
+    const frame = match && spriteFrameFromPath(match[2]);
+    if (!frame) continue;
+    if (!sprites.has(frame.name)) sprites.set(frame.name, new Map());
+    const frames = sprites.get(frame.name);
+    // Une frame 0 existe parfois sous les deux formes : le dossier, plus explicite, l'emporte.
+    if (!frames.has(frame.frame) || match[2].includes(`/${frame.name}/`)) frames.set(frame.frame, { path: match[2], blob: match[1] });
+  }
+  return sprites;
+}
+
+// Lecture synchrone du commit local de la branche : jamais origin/main, jamais de réseau.
+const spriteTreeCache = { key: null, value: null };
+function branchSpritesSync(directory) {
+  if (!repositoryExists(directory)) return null;
+  const run = args => {
+    const tool = commandEnvironment("git", { GIT_TERMINAL_PROMPT: "0" });
+    const result = spawnSync(tool.command, args, { cwd: directory, env: tool.env, windowsHide: true, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    if (result.status !== 0) throw new Error((result.stderr || "Lecture Git impossible.").trim());
+    return result.stdout;
+  };
+  const head = run(["rev-parse", "HEAD"]).trim();
+  const key = `${directory}|${head}`;
+  if (spriteTreeCache.key !== key) {
+    spriteTreeCache.value = parseSpriteTree(run(["ls-tree", "-r", "-z", head, "--", SPRITES_DIRECTORY]));
+    spriteTreeCache.key = key;
+  }
+  return { head, sprites: spriteTreeCache.value };
+}
+
+function readBranchSpriteSync(directory, file) {
+  const tool = commandEnvironment("git", { GIT_TERMINAL_PROMPT: "0" });
+  const result = spawnSync(tool.command, ["show", `HEAD:${file}`], { cwd: directory, env: tool.env, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(`Impossible de lire ${file} dans la branche Runedelta.`);
+  return result.stdout;
+}
+
+function spriteRepositoryPath(name, frame, frameCount, existing) {
+  if (existing?.path) return existing.path;
+  return frameCount <= 1 ? `${SPRITES_DIRECTORY}/${name}.png` : `${SPRITES_DIRECTORY}/${name}/${name}_${frame}.png`;
+}
+
+// Copie les PNG importés dans sprites/ et renvoie les chemins modifiés, pour le commit et une éventuelle annulation.
+async function stageSprites(directory, sprites = []) {
+  if (!sprites.length) return [];
+  const tree = parseSpriteTree((await git(["ls-tree", "-r", "-z", "HEAD", "--", SPRITES_DIRECTORY], directory)).stdout);
+  const changed = [];
+  for (const sprite of sprites) {
+    const content = fs.readFileSync(sprite.file);
+    const existing = tree.get(sprite.name)?.get(sprite.frame);
+    if (existing?.blob === gitBlobHash(content)) continue;
+    const relative = spriteRepositoryPath(sprite.name, sprite.frame, sprite.frames, existing);
+    atomicWrite(path.join(directory, ...relative.split("/")), content);
+    changed.push({ path: relative, tracked: Boolean(existing) });
+  }
+  if (changed.length) await git(["add", "--", ...changed.map(item => item.path)], directory);
+  return changed;
+}
+
+async function unstageSprites(directory, changed) {
+  if (!changed.length) return;
+  const tracked = changed.filter(item => item.tracked).map(item => item.path);
+  const created = changed.filter(item => !item.tracked).map(item => item.path);
+  if (tracked.length) await git(["restore", "--staged", "--worktree", "--source=HEAD", "--", ...tracked], directory, { allowFailure: true });
+  if (created.length) await git(["rm", "--cached", "--quiet", "--ignore-unmatch", "--", ...created], directory, { allowFailure: true });
+  for (const file of created) fs.rmSync(path.join(directory, ...file.split("/")), { force: true });
+}
+
+function spriteCommitMessage(message, changed) {
+  if (!changed.length) return message;
+  const count = changed.length;
+  const sprites = `${count} frame${count > 1 ? "s" : ""} de sprite`;
+  const files = ["", "Sprites :", ...changed.map(item => `- ${item.path}`)].join("\n");
+  return message
+    ? { subject: message.subject, body: `${message.body}${message.body ? "\n" : ""}${files}` }
+    : { subject: `trad: publier ${sprites}`, body: files.trimStart() };
+}
+
+async function refExists(directory, ref) {
+  return (await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], directory, { allowFailure: true })).code === 0;
+}
+
+async function isAncestor(directory, ancestor, descendant) {
+  return (await git(["merge-base", "--is-ancestor", ancestor, descendant], directory, { allowFailure: true })).code === 0;
+}
+
+// origin/main n'est intégré que s'il contient le chapitre et n'est pas déjà dans l'historique de la branche.
+async function mainIntegrationRef(directory, branch, relativePath, alreadyMerged = []) {
+  const ref = `origin/${MAIN_BRANCH}`;
+  if (branch === MAIN_BRANCH || !(await refExists(directory, ref))) return null;
+  if ((await git(["cat-file", "-e", `${ref}:${relativePath}`], directory, { allowFailure: true })).code !== 0) return null;
+  for (const head of ["HEAD", ...alreadyMerged]) if (await isAncestor(directory, ref, head)) return null;
+  return ref;
+}
+
+function mergeMessage(ref, branch) {
+  return ref === `origin/${MAIN_BRANCH}` ? ["-m", `Merge branch '${MAIN_BRANCH}' into ${branch}`] : [];
+}
+
+async function newestMergeBase(directory, heads, target) {
+  let newest = null;
+  for (const head of heads) {
+    const result = await git(["merge-base", head, target], directory, { allowFailure: true });
+    const base = result.stdout.trim();
+    if (result.code !== 0 || !base) continue;
+    if (!newest || await isAncestor(directory, newest, base)) newest = base;
+  }
+  if (!newest) throw new Error(`La branche et ${target} n’ont aucun historique commun.`);
+  return newest;
+}
+
+function parsePullRequest(subject) {
+  const match = String(subject).match(/^Merge pull request #(\d+) from [^/\s]+\/(\S+)/);
+  return match ? { pr: Number(match[1]), from: match[2] } : null;
+}
+
+async function languageHistory(directory, relativePath, range, firstParent = false) {
+  const result = await git([
+    "log", ...(firstParent ? ["--first-parent", "--diff-merges=first-parent"] : []),
+    "--format=%x1e%H%x1f%an%x1f%ae%x1f%ct%x1f%s", "-p", "--unified=0", "--no-color", "--no-ext-diff",
+    range, "--", relativePath,
+  ], directory, { timeoutMs: 60_000 });
+  return parseGitLanguageHistory(result.stdout);
+}
+
+// Du plus récent au plus ancien : le premier commit qui écrit une clé est celui de sa valeur actuelle.
+function latestChanges(commits) {
+  const latest = new Map();
+  for (const commit of commits) {
+    for (const key of commit.addedKeys) if (!latest.has(key)) latest.set(key, commit);
+  }
+  return latest;
+}
+
+function publicationEvent(commit) {
+  if (!commit) return null;
+  return {
+    commit: commit.commit,
+    at: Number.isFinite(commit.authorTime) ? commit.authorTime * 1000 : null,
+    by: githubName(commit.author, commit.email),
+    summary: commit.summary,
+    ...parsePullRequest(commit.summary),
+  };
+}
+
+function classifyPublication({ local, main, mainBase, pushed, original = {} }) {
+  const keys = {};
+  const counts = { published: 0, pushed: 0, local: 0, incoming: 0 };
+  for (const key of new Set([...Object.keys(local), ...Object.keys(main)])) {
+    if (key === "date") continue;
+    const value = Object.hasOwn(local, key) ? local[key] : undefined;
+    const mainValue = Object.hasOwn(main, key) ? main[key] : undefined;
+    const baseValue = Object.hasOwn(mainBase, key) ? mainBase[key] : undefined;
+    const mainChanged = mainValue !== baseValue;
+    let state;
+    if (value === mainValue) {
+      if (!mainChanged && value === original[key]) continue;
+      state = "published";
+    } else if (value === baseValue && mainChanged) state = "incoming";
+    else if (Object.hasOwn(pushed, key) && pushed[key] === value) state = "pushed";
+    else state = "local";
+    keys[key] = { state, ...(state !== "published" && state !== "incoming" && mainChanged ? { mainChanged: true } : {}) };
+    counts[state]++;
+  }
+  return { keys, counts };
+}
+
+async function runedeltaPublication(config, directory, { fetch = false } = {}) {
+  const chapter = detectChapter(config);
+  const relativePath = languageRelativePath(chapter);
+  const branch = await currentBranch(directory);
+  const branchRef = `origin/${branch}`;
+  const mainRef = `origin/${MAIN_BRANCH}`;
+  let fetchError = null;
+  if (fetch) {
+    try {
+      await fetchRemote(directory, branch);
+      if (branch !== MAIN_BRANCH) await fetchRemote(directory, MAIN_BRANCH);
+    } catch (error) { fetchError = error.message; }
+  }
+  if (!(await refExists(directory, mainRef))) {
+    return { ok: false, branch, fetchError, error: "La branche main de Runedelta n’a pas encore été récupérée." };
+  }
+  const readRef = async ref => {
+    const result = await git(["show", `${ref}:${relativePath}`], directory, { allowFailure: true });
+    return result.code === 0 ? parseLanguage(result.stdout, `${relativePath} (${ref})`) : {};
+  };
+  const local = readLanguage(workingLanguagePath(config, directory), "catalogue de travail");
+  const main = await readRef(mainRef);
+  const hasBranchRef = await refExists(directory, branchRef);
+  const pushed = hasBranchRef ? await readRef(branchRef) : {};
+  const mainBase = await readRef(await newestMergeBase(directory, hasBranchRef ? ["HEAD", branchRef] : ["HEAD"], mainRef));
+  const originalResult = await git(["show", `${mainRef}:strings_og/chapter${chapter}.json`], directory, { allowFailure: true });
+  const original = Object.fromEntries(Object.entries(loadTranslationReference(config)).map(([key, entry]) => [key, entry?.en]));
+  if (originalResult.code === 0) Object.assign(original, parseLanguage(originalResult.stdout, "VO Runedelta"));
+  const { keys, counts } = classifyPublication({ local, main, mainBase, pushed, original });
+
+  const mainCommits = await languageHistory(directory, relativePath, mainRef, true);
+  const mainLatest = latestChanges(mainCommits);
+  const branchCommits = hasBranchRef && branch !== MAIN_BRANCH
+    ? await languageHistory(directory, relativePath, `${mainRef}..${branchRef}`) : [];
+  const branchLatest = latestChanges(branchCommits);
+  for (const [key, info] of Object.entries(keys)) {
+    const event = info.state === "published" ? mainLatest.get(key)
+      : info.state === "pushed" ? branchLatest.get(key)
+        : info.state === "incoming" ? mainLatest.get(key) : null;
+    if (event) info.event = publicationEvent(event);
+  }
+
+  const unpushed = hasBranchRef
+    ? Number((await git(["rev-list", "--count", `${branchRef}..HEAD`], directory)).stdout.trim()) : 0;
+  return {
+    ok: true,
+    chapter,
+    branch,
+    fetchError,
+    checkedAt: Date.now(),
+    counts,
+    keys,
+    unpushedCommits: unpushed,
+    mainHead: publicationEvent(mainCommits[0]),
+    // Journal des publications : chaque entrée du premier parent de main est une PR fusionnée ou un commit direct.
+    releases: mainCommits.slice(0, 40).map(commit => ({ ...publicationEvent(commit), lines: commit.addedKeys.length })),
+    waiting: branchCommits.slice(0, 40).map(commit => ({ ...publicationEvent(commit), lines: commit.addedKeys.length })),
+  };
 }
 
 async function installRunedelta(options) {
@@ -714,7 +981,7 @@ async function installGitCatalogue(options) {
     ...copyRunedeltaToGame(scoped, language, serializeLanguage, backupFile) };
 }
 
-async function resolveMergeConflict(directory, relativePath, mergedContent, mergeResult = null) {
+async function resolveMergeConflict(directory, relativePath, mergedContent, mergeResult = null, message = null) {
   const unmergedResult = await git(["ls-files", "--unmerged", "--full-name", "-z"], directory, { allowFailure: true });
   const unmerged = [...new Set(unmergedResult.stdout.split("\0").filter(Boolean)
     .map((line) => line.slice(line.indexOf("\t") + 1)).filter(Boolean))];
@@ -733,7 +1000,7 @@ async function resolveMergeConflict(directory, relativePath, mergedContent, merg
   const sourcePath = path.join(directory, ...relativePath.split("/"));
   atomicWrite(sourcePath, mergedContent, { json: true });
   await git(["add", "--", relativePath], directory);
-  await git(["commit", "--no-edit"], directory);
+  await git(message ? ["commit", "-m", message.subject, "-m", message.body] : ["commit", "--no-edit"], directory);
 }
 
 async function synchronizeRunedelta(options) {
@@ -747,6 +1014,7 @@ async function synchronizeRunedelta(options) {
     push = false,
     receiveOnly = false,
     conflictResolution = null,
+    commitMessage = null,
   } = options;
   const targetPath = workingLanguagePath(config, directory);
   const targetRevision = revision(targetPath);
@@ -770,7 +1038,7 @@ async function synchronizeRunedelta(options) {
   let networkError = null;
   try {
     remoteRef = await fetchRemote(directory, branch);
-    if (config.storageMode === "runedelta-json" && chapter === 5 && branch !== "main") await fetchRemote(directory, "main");
+    if (branch !== MAIN_BRANCH) await fetchRemote(directory, MAIN_BRANCH).catch(() => {});
   } catch (error) {
     if (receiveOnly) throw new Error(`Récupération impossible : ${error.message}`);
     networkError = error.message;
@@ -792,11 +1060,20 @@ async function synchronizeRunedelta(options) {
       : headLanguage;
 
   const resolutionFor = phase => conflictResolution && typeof conflictResolution === "object" &&
-    ["repository", "workspace"].some(key => Object.hasOwn(conflictResolution, key))
+    ["repository", "main", "workspace"].some(key => Object.hasOwn(conflictResolution, key))
     ? conflictResolution[phase] : conflictResolution;
   const repositoryMerge = mergeLanguages(baseLanguage, headLanguage, remoteLanguage, resolutionFor("repository"));
   if (repositoryMerge.conflicts.length) {
     return { ok: false, conflict: true, ...repositoryMerge, phase: "repository" };
+  }
+  // Les PR fusionnées dans main sont intégrées à la branche, comme « Merge branch 'main' » sur GitHub.
+  const mainRef = await mainIntegrationRef(directory, branch, relativePath, [remoteRef]);
+  if (mainRef) {
+    const mainBase = await newestMergeBase(directory, ["HEAD", remoteRef], mainRef);
+    const mainMerge = mergeLanguages(await showLanguage(directory, mainBase, relativePath), repositoryMerge.language,
+      await showLanguage(directory, mainRef, relativePath), resolutionFor("main"));
+    if (mainMerge.conflicts.length) return { ok: false, conflict: true, ...mainMerge, phase: "main" };
+    repositoryMerge.language = mainMerge.language;
   }
   const finalMerge = mergeLanguages(state.language, gameLanguage, repositoryMerge.language, resolutionFor("workspace"));
   if (finalMerge.conflicts.length) {
@@ -817,13 +1094,16 @@ async function synchronizeRunedelta(options) {
   await ensureGitIdentity(directory, config.runedelta?.identity);
   if (usesGitCatalogue(config)) {
     return publishGitCatalogue({ ...options, config: scoped, remoteUrl, targetPath, targetRevision, relativePath,
-      chapter, branch, state, headLanguage, remoteLanguage, gameLanguage, language, serialized, remoteRef, networkError, translationReference });
+      chapter, branch, state, headLanguage, remoteLanguage, gameLanguage, language, serialized, remoteRef, mainRef, networkError, translationReference });
   }
-  const mergeResult = await git(["merge", "--no-edit", remoteRef], directory, {
-    allowFailure: true,
-  });
-  if (mergeResult.code !== 0) {
-    await resolveMergeConflict(directory, relativePath, serialized);
+  for (const ref of [remoteRef, mainRef].filter(Boolean)) {
+    const mergeResult = await git(["merge", "--no-edit", ...mergeMessage(ref, branch), ref], directory, {
+      allowFailure: true,
+    });
+    if (mergeResult.code !== 0) {
+      await resolveMergeConflict(directory, relativePath, serialized, mergeResult,
+        commitMessage ? buildTranslationCommitMessage(chapter, headLanguage, language, translationReference, commitMessage) : null);
+    }
   }
 
   const sourcePath = path.join(directory, ...relativePath.split("/"));
@@ -839,7 +1119,8 @@ async function synchronizeRunedelta(options) {
       chapter,
       repositoryLanguage,
       language,
-      translationReference
+      translationReference,
+      commitMessage
     );
     const commit = await git(
       ["commit", "-m", message.subject, "-m", message.body, "--", relativePath],
@@ -902,27 +1183,36 @@ async function synchronizeRunedelta(options) {
 async function publishGitCatalogue(options) {
   const { config, directory, remoteUrl, targetPath, targetRevision, relativePath, chapter, branch, state,
     headLanguage, remoteLanguage, gameLanguage, language, serialized, remoteRef, networkError,
-    serializeLanguage, backupFile, translationReference, push = false } = options;
+    serializeLanguage, backupFile, translationReference, push = false, commitMessage = null, mainRef = null, sprites = [] } = options;
   assertRevision(targetPath, targetRevision);
   const original = fs.readFileSync(targetPath);
   const saved = backupFile?.(targetPath, serializeLanguage(headLanguage)) ||
     backup(path.join(directory, ".git", "deltatranslate-backups"), targetPath, original);
   const stateFile = syncStatePath(config, directory, remoteUrl);
   let committed = false;
+  let spriteChanges = [];
   // La copie obligatoire et le marqueur restent disponibles même si le processus s'arrête pendant Git.
   atomicWrite(stateFile, JSON.stringify({ ...state, pending: true, recovery: { content: original.toString("utf8"), language: state.language } }), { json: true });
   try {
     // Le catalogue est le seul fichier suivi autorisé à être brouillonné ; reset le réécrit avec les filtres Git, notamment CRLF sous Windows.
     await git(["reset", "--hard", "HEAD"], directory);
-    const merge = await git(["merge", "--no-edit", remoteRef], directory, { allowFailure: true });
-    if (merge.code !== 0) await resolveMergeConflict(directory, relativePath, serialized, merge);
+    for (const ref of [remoteRef, mainRef].filter(Boolean)) {
+      const merge = await git(["merge", "--no-edit", ...mergeMessage(ref, branch), ref], directory, { allowFailure: true });
+      if (merge.code !== 0) await resolveMergeConflict(directory, relativePath, serialized, merge,
+        commitMessage ? buildTranslationCommitMessage(chapter, headLanguage, language, translationReference, commitMessage) : null);
+    }
     const before = readLanguage(targetPath);
     atomicWrite(targetPath, serialized, { json: true });
     await git(["add", "--", relativePath], directory);
+    spriteChanges = await stageSprites(directory, sprites);
+    const paths = [relativePath, ...spriteChanges.map(item => item.path)];
     const staged = await git(["diff", "--cached", "--quiet", "--", relativePath], directory, { allowFailure: true });
-    if (staged.code === 1) {
-      const message = buildTranslationCommitMessage(chapter, before, language, translationReference);
-      await git(["commit", "-m", message.subject, "-m", message.body, "--", relativePath], directory);
+    if (staged.code === 1 || spriteChanges.length) {
+      const text = staged.code === 1 ? buildTranslationCommitMessage(chapter, before, language, translationReference, commitMessage) : null;
+      const custom = !text && (commitMessage?.title || commitMessage?.description)
+        ? { subject: `trad(ch${chapter}): ${commitMessage.title || "publier des sprites"}`, body: commitMessage.description || "" } : text;
+      const message = spriteCommitMessage(custom, spriteChanges);
+      await git(["commit", "-m", message.subject, ...(message.body ? ["-m", message.body] : []), "--", ...paths], directory);
       committed = true;
     } else if (staged.code !== 0) throw new Error("Impossible de vérifier les changements préparés pour la publication.");
     writeGameAndState({ config, directory, remoteUrl, language, repositoryLanguage: language,
@@ -931,6 +1221,7 @@ async function publishGitCatalogue(options) {
     await git(["merge", "--abort"], directory, { allowFailure: true });
     atomicWrite(targetPath, original, { json: true });
     await git(["restore", "--staged", "--", relativePath], directory, { allowFailure: true });
+    await unstageSprites(directory, spriteChanges);
     atomicWrite(stateFile, JSON.stringify(state), { json: true });
     throw error;
   }
@@ -943,7 +1234,7 @@ async function publishGitCatalogue(options) {
   try { attributions = await languageAttributions(directory, relativePath); }
   catch (error) { attributionError = error.message; }
   return { ok: true, chapter, branch, sourcePath: targetPath, targetPath, language, attributions, attributionError,
-    committed, pushed: push && !pushError, pushError, backupCreated: Boolean(saved),
+    committed, spritesPublished: spriteChanges.length, pushed: push && !pushError, pushError, backupCreated: Boolean(saved),
     remoteChanges: countDifferences(gameLanguage, language), localChanges: countDifferences(remoteLanguage, language),
     ...await aheadBehind(directory, remoteRef), ...copyRunedeltaToGame(config, language, serializeLanguage, backupFile) };
 }
@@ -1002,7 +1293,15 @@ async function runedeltaStatus(config, directory, remoteUrl = DEFAULT_RUNEDDELTA
         const base = (await git(["merge-base", "HEAD", remoteRef], directory)).stdout.trim();
         const known = mergeLanguages(await showLanguage(directory, base, relative),
           await showLanguage(directory, "HEAD", relative), await showLanguage(directory, remoteRef, relative));
-        status.incomingChanges = known.conflicts.length || countDifferences(state.language, known.language);
+        let conflicts = known.conflicts.length;
+        const mainRef = conflicts ? null : await mainIntegrationRef(directory, status.branch, relative, [remoteRef]);
+        if (mainRef) {
+          const mainBase = await newestMergeBase(directory, ["HEAD", remoteRef], mainRef);
+          const withMain = mergeLanguages(await showLanguage(directory, mainBase, relative), known.language, await showLanguage(directory, mainRef, relative));
+          conflicts = withMain.conflicts.length;
+          known.language = withMain.language;
+        }
+        status.incomingChanges = conflicts || countDifferences(state.language, known.language);
       }
     }
   } catch (error) {
@@ -1034,6 +1333,13 @@ module.exports = {
   parseGitBlamePorcelain,
   parseGitLanguageHistory,
   runedeltaStatus,
+  runedeltaPublication,
+  classifyPublication,
+  branchSpritesSync,
+  readBranchSpriteSync,
+  gitBlobHash,
+  parseSpriteTree,
+  parsePullRequest,
   synchronizeRunedelta,
   validateLanguage,
 };

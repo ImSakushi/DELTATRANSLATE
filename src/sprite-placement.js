@@ -119,7 +119,8 @@ export class SpritePlacement {
     this.$("sprite-save-placement").disabled = !this.dirty || this.busy;
     const image = this.images.translated;
     this.$("sprite-placement-status").textContent = image
-      ? `${image.width} × ${image.height} px · ${this.dirty ? "Position non enregistrée" : this.editable ? "Position enregistrée" : "Importe un PNG pour le déplacer"}` : "Chargement de l’aperçu…";
+      ? `${image.width} × ${image.height} px · ${this.dirty ? "Position non enregistrée" : this.editable ? "Position enregistrée" : "Importe un PNG pour le déplacer"}`
+      : this.entry ? "Aperçu indisponible" : "Chargement de l’aperçu…";
   }
 
   point(event) {

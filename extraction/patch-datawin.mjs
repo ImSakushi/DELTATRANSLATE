@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runToolSync } from "./process-runner.mjs";
 import { spriteImportCsx } from "./sprite-overrides.mjs";
 import { prepareCodeEntries } from "./code-overrides.mjs";
 
@@ -135,7 +135,7 @@ ScriptMessage($"SPRITES_PATCHED {importedSprites}");
     "utf8"
   );
 
-  const result = spawnSync(cli, ["load", source, "-s", scriptPath, "-o", output], {
+  const result = runToolSync(cli, ["load", source, "-s", scriptPath, "-o", output], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });

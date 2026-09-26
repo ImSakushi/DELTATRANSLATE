@@ -3,6 +3,31 @@ import test from "node:test";
 
 import { findFace, findSpeaker } from "./import-lib.mjs";
 
+test("deux cases indépendants ne partagent pas leur portrait ni leur speaker", () => {
+  const lines = ['switch (scene) {', 'case 1:', 'global.fc = 19;', 'msg[0] = "Avant";', 'break;', 'case 2:', 'msg[0] = "Après";', '}'];
+  assert.deepEqual(findFace(lines, 3), { fc: 19, fe: 0 });
+  assert.equal(findSpeaker(lines, 3), "burgerpants");
+  assert.equal(findFace(lines, 6), null);
+  assert.equal(findSpeaker(lines, 6), null);
+});
+
+test("les accolades et faux case des textes ne coupent pas la persistance", () => {
+  const lines = ['switch (scene) {', 'case 1:', 'c_speaker("susie");', 'if (flag) {', 'msg[0] = "case 9: }";', '}', 'msg[1] = "Fin";', '}'];
+  assert.equal(findSpeaker(lines, 6), "susie");
+  assert.equal(findFace(lines, 6).fc, 1);
+});
+
+test("une branche imbriquée ne récupère pas le visage de la branche précédente", () => {
+  const lines = ['switch (scene) {', 'case 1:', 'switch (choice) {', 'case 3:', 'global.fc = 19;', 'break;', 'case 4:', 'msg[0] = "Texte";', '}', '}'];
+  assert.equal(findFace(lines, 7), null);
+});
+
+test("le contexte posé avant le switch reste commun à ses branches", () => {
+  const lines = ['c_speaker("susie");', 'switch (scene) {', 'case 1:', 'global.fc = 19;', 'break;', 'case 2:', 'msg[0] = "Texte";', '}'];
+  assert.equal(findFace(lines, 6).fc, 1);
+  assert.equal(findSpeaker(lines, 6), "susie");
+});
+
 test("détecte un speaker sans portrait", () => {
   const lines = ['c_speaker("tenna");', 'msgsetloc("Hello", "id");'];
   assert.equal(findSpeaker(lines, 1), "tenna");

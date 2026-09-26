@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runToolSync } from "./process-runner.mjs";
 import { buildReference } from "./import-lib.mjs";
 import {
   attachRoomContexts,
@@ -27,7 +27,7 @@ let ref = buildReference(codeDir, console.log);
 const requests = collectRoomContextRequests(ref, codeDir);
 const csx = path.join(os.tmpdir(), `deltatranslate_rooms_${Date.now()}.csx`);
 fs.writeFileSync(csx, makeRoomContextCsx(outDir, requests), "utf8");
-const result = spawnSync(cli, ["load", dataWin, "-s", csx], {
+const result = runToolSync(cli, ["load", dataWin, "-s", csx], {
   encoding: "utf8",
   maxBuffer: 64 * 1024 * 1024,
   stdio: ["ignore", "pipe", "pipe"],

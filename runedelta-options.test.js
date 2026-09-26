@@ -63,6 +63,19 @@ test("la publication nécessite les deux options, y compris via IPC", async () =
   assert.equal(app.calls[1].push, true);
 });
 
+test("activer Runedelta autorise la publication par défaut sans appeler Git", () => {
+  const app = backend({});
+  app.call("set-runedelta-options", { modeEnabled: true });
+  assert.equal(app.config().runedelta.publishEnabled, true);
+  assert.deepEqual(app.calls, []);
+});
+
+test("le choix explicite de désactiver la publication est conservé", () => {
+  const app = backend({ runedelta: { publishEnabled: false } });
+  app.call("set-runedelta-options", { modeEnabled: true });
+  assert.equal(app.config().runedelta.publishEnabled, false);
+});
+
 test("désactiver le mode conserve le projet et retire l’autorisation de publier", () => {
   const initial = {
     langFrPath: "chapitre/lang/lang_fr.json",
@@ -98,6 +111,7 @@ test("l’interface masque les outils désactivés sans demander le statut Git",
     $: node,
     appConfig: { dataWinPath: "data.win", runedelta: { enabled: true } },
     runedeltaBusy: false,
+    runedeltaPublication: null,
     window: { api: { getRunedeltaStatus: () => { throw new Error("Git ne doit pas être interrogé"); } } },
   });
   vm.runInContext(source.slice(source.indexOf("function renderRunedeltaStatus"), source.indexOf("async function connectRunedelta")), context);
@@ -149,6 +163,7 @@ test("annuler un conflit réactive les actions, y compris en récupération seul
         receiveRunedelta: async () => { assert.equal(receiveOnly, true); calls++; return { ok: false, conflict: true }; },
       } },
       renderRunedeltaStatus: () => {}, resolveConflicts: async () => null,
+      requestPublicationMessage: async () => ({}),
       refreshRunedeltaStatus: async () => states.push(context.runedeltaBusy),
     });
     vm.runInContext(source.slice(source.indexOf("async function publishRunedeltaNow"), source.indexOf("async function configureRunedeltaGithub")), context);
@@ -166,4 +181,52 @@ test("le backup Runedelta utilise l’historique même si les backups courants s
   vm.runInContext(source.slice(source.indexOf("function runedeltaBackup"), source.indexOf("function runedeltaEnabledForCurrentChapter")), context);
   assert.equal(vm.runInContext('runedeltaBackup("catalogue.json", "nouveau contenu")', context), "copie");
   assert.deepEqual(calls, [["catalogue.json", "nouveau contenu"]]);
+});
+
+test("le message facultatif traverse l’IPC de publication", async () => {
+  const config = connectedConfig();
+  config.runedelta.publishEnabled = true;
+  const app = backend(config);
+  const message = { title: "Répliques corrigées", description: "Accents et ponctuation." };
+  await app.call("sync-runedelta", {}, null, null, "project", undefined, message);
+  assert.deepEqual(app.calls[1].commitMessage, message);
+  assert.equal(app.calls[1].receiveOnly, false);
+});
+
+test("annuler le nommage ne sauvegarde et ne publie rien", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "src/app.js"), "utf8");
+  const context = vm.createContext({
+    appConfig: { runedelta: { modeEnabled: true, publishEnabled: true } },
+    runedeltaBusy: false, savePromise: null, importing: false, codeApplyRunning: false,
+    dirty: true,
+    requestPublicationMessage: async () => null,
+    renderRunedeltaStatus: () => {}, refreshRunedeltaStatus: async () => {},
+  });
+  vm.runInContext(source.slice(source.indexOf("async function publishRunedeltaNow"), source.indexOf("async function configureRunedeltaGithub")), context);
+  await vm.runInContext("publishRunedeltaNow()", context);
+  assert.equal(context.runedeltaBusy, false);
+});
+
+test("le nommage est demandé une seule fois et conservé lors des conflits", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "src/app.js"), "utf8");
+  const message = { title: "Correction", description: "Deux lignes\nEt leurs accents." };
+  let prompts = 0, calls = 0;
+  const context = vm.createContext({
+    appConfig: { runedelta: { modeEnabled: true, publishEnabled: true } },
+    runedeltaBusy: false, savePromise: null, importing: false, codeApplyRunning: false,
+    dirty: false, lang: {}, languageRevision: "rev",
+    requestPublicationMessage: async () => { prompts++; return message; },
+    window: { api: { syncRunedelta: async (_snapshot, _resolutions, _revision, custom) => {
+      assert.equal(custom, message);
+      calls++;
+      return { ok: false, conflict: true, phase: "workspace" };
+    } } },
+    resolveConflicts: async () => calls === 1 ? { key: "local" } : null,
+    renderRunedeltaStatus: () => {}, refreshRunedeltaStatus: async () => {},
+  });
+  vm.runInContext(source.slice(source.indexOf("async function publishRunedeltaNow"), source.indexOf("async function configureRunedeltaGithub")), context);
+  await vm.runInContext("publishRunedeltaNow()", context);
+  assert.equal(prompts, 1);
+  assert.equal(calls, 2);
+  assert.equal(context.runedeltaBusy, false);
 });

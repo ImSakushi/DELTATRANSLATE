@@ -1,0 +1,27 @@
+@font-face {
+  font-family: "Determination Mono";
+  src: url("../assets/fonts/DeterminationMono.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+.modal, dialog {
+  --font-ui: "Determination Mono", monospace;
+  --font-title: var(--font-ui);
+  --mono: var(--font-ui);
+  --dialog-button-padding: 5px 12px 13px;
+}
+
+.modal, .modal *, dialog, dialog * { font-family: var(--font-ui); }
+
+/* Determination Mono place ses glyphes plus bas dans la ligne : le padding compense ce décalage. */
+.modal button, .review-dialog button, dialog button {
+  padding: var(--dialog-button-padding);
+  line-height: 1.2;
+}
+
+.modal button > .button-icon, dialog button > .button-icon {
+  vertical-align: -3px;
+  margin-right: 6px;
+}

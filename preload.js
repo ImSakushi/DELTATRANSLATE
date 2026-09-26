@@ -13,10 +13,13 @@ contextBridge.exposeInMainWorld("api", {
   getRunedeltaStatus: () => ipcRenderer.invoke("get-runedelta-status"),
   setRunedeltaOptions: (options) => ipcRenderer.invoke("set-runedelta-options", options),
   getRunedeltaAttributions: () => ipcRenderer.invoke("get-runedelta-attributions"),
+  getRunedeltaPublication: fetch => ipcRenderer.invoke("get-runedelta-publication", fetch === true),
+  openRunedeltaPullRequest: number => ipcRenderer.invoke("open-runedelta-pull-request", number),
+  adoptRunedeltaSprite: name => ipcRenderer.invoke("adopt-runedelta-sprite", name),
   connectRunedelta: (remoteUrl, branch) => ipcRenderer.invoke("connect-runedelta", remoteUrl, branch),
   listRunedeltaBranches: remoteUrl => ipcRenderer.invoke("list-runedelta-branches", remoteUrl),
-  syncRunedelta: (language, conflictResolution, revision) =>
-    ipcRenderer.invoke("sync-runedelta", language, conflictResolution, revision, projectId, workingFile),
+  syncRunedelta: (language, conflictResolution, revision, commitMessage) =>
+    ipcRenderer.invoke("sync-runedelta", language, conflictResolution, revision, projectId, workingFile, commitMessage),
   receiveRunedelta: (language, conflictResolution, revision) =>
     ipcRenderer.invoke("receive-runedelta", language, conflictResolution, revision, projectId, workingFile),
   checkRunedeltaAccess: remoteUrl => ipcRenderer.invoke("check-runedelta-access", remoteUrl),
@@ -30,19 +33,24 @@ contextBridge.exposeInMainWorld("api", {
   },
   disconnectRunedelta: () => ipcRenderer.invoke("disconnect-runedelta"),
   openRunedelta: () => ipcRenderer.invoke("open-runedelta"),
-  setTitleBarTheme: (theme) => ipcRenderer.invoke("set-title-bar-theme", theme),
   loadData: async () => {
     const result = await ipcRenderer.invoke("load-data");
     projectId = result.projectId;
     workingFile = result.config?.langFrPath;
     return result;
   },
+  refreshPreviewFonts: () => ipcRenderer.invoke("refresh-preview-fonts", projectId),
+  copyDialogueImage: dataUrl => ipcRenderer.invoke("copy-dialogue-image", dataUrl),
   saveLang: (langObj, revision) => ipcRenderer.invoke("save-lang", langObj, revision, projectId, workingFile),
   backupLang: (langObj) => ipcRenderer.invoke("backup-lang", langObj, projectId, workingFile),
   listBackups: () => ipcRenderer.invoke("list-backups"),
   readBackup: (id) => ipcRenderer.invoke("read-backup", id),
   getSpriteFrame: (name, role, frame) => ipcRenderer.invoke("get-sprite-frame", name, role, frame),
   exportSpriteFrame: (name, frame) => ipcRenderer.invoke("export-sprite-frame", name, frame),
+  exportSpriteFrames: (name) => ipcRenderer.invoke("export-sprite-frames", name),
+  getSpriteCatalog: () => ipcRenderer.invoke("get-sprite-catalog"),
+  prefetchSpritePreviews: (names) => ipcRenderer.invoke("prefetch-sprite-previews", names),
+  getSpriteThumbnails: (names) => ipcRenderer.invoke("get-sprite-thumbnails", names),
   importSpriteFrame: (name, frame, file) =>
     ipcRenderer.invoke("import-sprite-frame", name, frame, webUtils.getPathForFile(file)),
   saveSpritePlacement: (name, frame, placement) => ipcRenderer.invoke("save-sprite-placement", name, frame, placement),

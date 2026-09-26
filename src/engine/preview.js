@@ -224,6 +224,7 @@ export class Preview {
   // state: { fc, fe, typer, bubbleSide } hérité de la séquence
   // -------------------------------------------------------------------------
   async render(text, mode, state = {}) {
+    this.lastRender = { text, mode, state };
     this.language = state.language ?? "en";
     this.jewelTimer++;
     text = applyLanguageTypography(text, state.language);
@@ -279,7 +280,37 @@ export class Preview {
     return ctx;
   }
 
+  async dialogueImage() {
+    if (!this.lastRender) throw new Error("Aucun dialogue à copier.");
+    const canvas = document.createElement("canvas");
+    const isolated = new Preview(canvas, this.extractedDir, this.fonts, this.spriteFiles, this.spriteMeta);
+    isolated.dialogueOnly = true;
+    isolated.jewelTimer = this.jewelTimer - 1;
+    const { text, mode, state } = this.lastRender;
+    await isolated.render(text, mode, state);
+    const { width, height } = canvas;
+    const pixels = isolated.ctx.getImageData(0, 0, width, height).data;
+    let left = width, top = height, right = -1, bottom = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (!pixels[(y * width + x) * 4 + 3]) continue;
+        left = Math.min(left, x);
+        top = Math.min(top, y);
+        right = Math.max(right, x);
+        bottom = Math.max(bottom, y);
+      }
+    }
+    if (right < left) throw new Error("Ce dialogue ne contient aucune image visible à copier.");
+    const cropped = document.createElement("canvas");
+    cropped.width = right - left + 1;
+    cropped.height = bottom - top + 1;
+    cropped.getContext("2d").drawImage(canvas, left, top, cropped.width, cropped.height,
+      0, 0, cropped.width, cropped.height);
+    return cropped.toDataURL("image/png");
+  }
+
   checkerBg(ctx, c1, c2) {
+    if (this.dialogueOnly) return;
     ctx.fillStyle = c1;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.fillStyle = c2;
@@ -289,6 +320,7 @@ export class Preview {
   }
 
   async drawSceneBackground(ctx, scene, dark) {
+    if (this.dialogueOnly) return false;
     const img = await this.sceneImage(scene?.image);
     if (!img) return false;
     if (dark) {
@@ -318,6 +350,7 @@ export class Preview {
         const n = Number(color.slice(8));
         color = rainbowHex((((n * 20 + this.jewelTimer * 3) % 255) + 255) % 255);
       }
+      const glyphScale = scale * (op.textscale ?? 1);
       const x = ox + op.x * scale;
       const y = oy + op.y * scale;
       if (op.special === 2) {
@@ -325,16 +358,16 @@ export class Preview {
         // cardinales puis quatre diagonales avec une alpha plus faible.
         const pulse = Math.sin(this.jewelTimer / 14);
         const baseAlpha = ctx.globalAlpha;
-        font.drawChar(ctx, op.ch, x, y, color, scale);
+        font.drawChar(ctx, op.ch, x, y, color, glyphScale);
         ctx.globalAlpha = baseAlpha * (0.3 + pulse * 0.1);
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
-          font.drawChar(ctx, op.ch, x + dx * scale, y + dy * scale, color, scale);
+          font.drawChar(ctx, op.ch, x + dx * scale, y + dy * scale, color, glyphScale);
         ctx.globalAlpha = baseAlpha * (0.08 + pulse * 0.04);
         for (const [dx, dy] of [[1, 1], [-1, -1], [-1, 1], [1, -1]])
-          font.drawChar(ctx, op.ch, x + dx * scale, y + dy * scale, color, scale);
+          font.drawChar(ctx, op.ch, x + dx * scale, y + dy * scale, color, glyphScale);
         ctx.globalAlpha = baseAlpha;
       } else {
-        font.drawChar(ctx, op.ch, x, y, color, scale);
+        font.drawChar(ctx, op.ch, x, y, color, glyphScale);
       }
     }
   }
@@ -486,10 +519,12 @@ export class Preview {
   // boîte scr_darkbox_black(0,240,640,480) et writer à (30,270).
   async renderShop(text, state = {}) {
     const fmt = formatText(text, {
+      language: state.language,
       charline: state.shopCharline ?? 33,
       initialFc: 0,
     });
     const lay = layoutText(fmt.text, {
+      language: state.language,
       typer: state.typer ?? 6,
       dark: true,
       writingx: 30,
@@ -497,26 +532,28 @@ export class Preview {
       initialFc: 0,
     });
     const ctx = this.clear(640, 480);
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, 640, 480);
-    // Le décor est une couche optionnelle : la géométrie du mode shop ne
-    // dépend jamais de la présence d'un vendeur particulier.
-    if (state.scene === "shop-seam") {
-      await this.drawGameSprite(ctx, "bg_seam_shop_ch2", 0, 0, 0, 2);
-      const seamSprites = [
-        "spr_seam_talk",
-        "spr_seam_oh",
-        "spr_seam_laugh",
-        "spr_seam_impatient",
-      ];
-      await this.drawGameSprite(
-        ctx,
-        seamSprites[lay.fe] ?? "spr_seam_talk",
-        Math.floor(this.jewelTimer / 8) % 2,
-        160,
-        34,
-        2
-      );
+    if (!this.dialogueOnly) {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, 640, 480);
+      // Le décor est une couche optionnelle : la géométrie du mode shop ne
+      // dépend jamais de la présence d'un vendeur particulier.
+      if (state.scene === "shop-seam") {
+        await this.drawGameSprite(ctx, "bg_seam_shop_ch2", 0, 0, 0, 2);
+        const seamSprites = [
+          "spr_seam_talk",
+          "spr_seam_oh",
+          "spr_seam_laugh",
+          "spr_seam_impatient",
+        ];
+        await this.drawGameSprite(
+          ctx,
+          seamSprites[lay.fe] ?? "spr_seam_talk",
+          Math.floor(this.jewelTimer / 8) % 2,
+          160,
+          34,
+          2
+        );
+      }
     }
     await this.drawDarkBox(ctx, 0, 240, 640, 480);
     const miniFaceWarnings = await this.drawMiniFaces(
@@ -651,39 +688,41 @@ export class Preview {
   // mais le panneau de texte ne dépend jamais de cette décoration.
   async renderBattleText(text, state = {}) {
     const ctx = this.clear(640, 480);
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, 640, 480);
-    await this.tileSprite(ctx, "bg_battleback1", -82, -82, 640, 325, 0.5);
-    await this.tileSprite(ctx, "bg_battleback1", -224, -234, 640, 325, 1);
+    if (!this.dialogueOnly) {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, 640, 480);
+      await this.tileSprite(ctx, "bg_battleback1", -82, -82, 640, 325, 0.5);
+      await this.tileSprite(ctx, "bg_battleback1", -224, -234, 640, 325, 1);
 
-    if (state.scene === "trashy-trio") {
-      const debris = [
-        [0, 289, 43, -18], [1, 319, 37, 21], [2, 246, 79, -8],
-        [3, 290, 121, 31], [0, 329, 112, 5], [1, 216, 137, -22],
-        [4, 279, 138, 40], [2, 326, 149, -15], [0, 338, 164, 17],
-        [3, 288, 171, 29], [1, 208, 197, -12], [4, 235, 210, 8],
-        [2, 187, 241, 33], [0, 281, 247, -18], [3, 300, 260, 24],
-      ];
-      for (const [frame, x, y, angle] of debris) {
-        await this.drawGameSprite(ctx, "spr_bullet_trash", frame, x, y, 1, 1, angle, {
-          exact: true,
-          filter: "brightness(50%)",
-        });
+      if (state.scene === "trashy-trio") {
+        const debris = [
+          [0, 289, 43, -18], [1, 319, 37, 21], [2, 246, 79, -8],
+          [3, 290, 121, 31], [0, 329, 112, 5], [1, 216, 137, -22],
+          [4, 279, 138, 40], [2, 326, 149, -15], [0, 338, 164, 17],
+          [3, 288, 171, 29], [1, 208, 197, -12], [4, 235, 210, 8],
+          [2, 187, 241, 33], [0, 281, 247, -18], [3, 300, 260, 24],
+        ];
+        for (const [frame, x, y, angle] of debris) {
+          await this.drawGameSprite(ctx, "spr_bullet_trash", frame, x, y, 1, 1, angle, {
+            exact: true,
+            filter: "brightness(50%)",
+          });
+        }
       }
-    }
 
-    const specificScene = state.scene === "trashy-trio";
-    await this.drawGameSprite(ctx, specificScene ? "spr_krisb_act" : "spr_krisb_idle", specificScene ? 5 : 0, 94, 50, 2);
-    await this.drawGameSprite(ctx, "spr_susieb_idle", 0, 80, 122, 2);
-    await this.drawGameSprite(ctx, specificScene ? "spr_ralsei_act" : "spr_ralsei_idle", 0, 72, 200, 2);
-    if (state.scene === "trashy-trio") {
-      await this.drawTrashyBallperson(ctx, 0);
-      await this.drawGameSprite(ctx, "spr_npc_trashy", 0, 386, 170, 2);
-      await this.drawGameSprite(ctx, "spr_npc_nubert_super_burrow", 0, 546, 202, 2);
-    }
-    await this.drawTensionBar(ctx);
-    await this.drawBattleHud(ctx);
+      const specificScene = state.scene === "trashy-trio";
+      await this.drawGameSprite(ctx, specificScene ? "spr_krisb_act" : "spr_krisb_idle", specificScene ? 5 : 0, 94, 50, 2);
+      await this.drawGameSprite(ctx, "spr_susieb_idle", 0, 80, 122, 2);
+      await this.drawGameSprite(ctx, specificScene ? "spr_ralsei_act" : "spr_ralsei_idle", 0, 72, 200, 2);
+      if (state.scene === "trashy-trio") {
+        await this.drawTrashyBallperson(ctx, 0);
+        await this.drawGameSprite(ctx, "spr_npc_trashy", 0, 386, 170, 2);
+        await this.drawGameSprite(ctx, "spr_npc_nubert_super_burrow", 0, 546, 202, 2);
+      }
+      await this.drawTensionBar(ctx);
+      await this.drawBattleHud(ctx);
 
+    }
     if (state.choiceOptions) {
       const choice = await this.drawClassicChoices(ctx, state.choiceOptions, {
         selected: state.choiceSelected,
@@ -695,8 +734,9 @@ export class Preview {
     }
 
     const initialFc = state.fc || 0;
-    const fmt = formatText(text, { charline: 33, battle: true, initialFc });
+    const fmt = formatText(text, { language: state.language, charline: 33, battle: true, initialFc });
     const lay = layoutText(fmt.text, {
+      language: state.language,
       typer: state.typer ?? 4,
       dark: true,
       fight: true,
@@ -853,75 +893,78 @@ export class Preview {
   // assombri ; les cinq prévenus et le prévenu sélectionné restent en scène.
   async renderTrialCase(text, state = {}) {
     const ctx = this.clear(640, 480);
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, 640, 480);
-    await this.tileSprite(ctx, "bg_battleback1", -82, -82, 640, 325, 0.5);
-    await this.tileSprite(ctx, "bg_battleback1", -224, -234, 640, 325, 1);
+    let selectedDrawn = true;
+    if (!this.dialogueOnly) {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, 640, 480);
+      await this.tileSprite(ctx, "bg_battleback1", -82, -82, 640, 325, 0.5);
+      await this.tileSprite(ctx, "bg_battleback1", -224, -234, 640, 325, 1);
 
-    // Les héros conservent leurs positions de combat. Les pupitres sont créés
-    // à partir de celles-ci par obj_yellow_trial_manager Create_0.
-    await this.drawGameSprite(ctx, "spr_kris_lawyer", 0, 94, 50, 2);
-    await this.drawGameSprite(ctx, "spr_susie_lawyer", 0, 80, 122, 2);
-    await this.drawGameSprite(ctx, "spr_ralsei_lawyer", 0, 72, 200, 2);
-    await this.drawGameSprite(ctx, "spr_trial_podium", 1, 154, 106, 2);
-    await this.drawGameSprite(ctx, "spr_trial_podium", 0, 140, 184, 2);
-    await this.drawGameSprite(ctx, "spr_trial_podium", 1, 132, 272, 2);
+      // Les héros conservent leurs positions de combat. Les pupitres sont créés
+      // à partir de celles-ci par obj_yellow_trial_manager Create_0.
+      await this.drawGameSprite(ctx, "spr_kris_lawyer", 0, 94, 50, 2);
+      await this.drawGameSprite(ctx, "spr_susie_lawyer", 0, 80, 122, 2);
+      await this.drawGameSprite(ctx, "spr_ralsei_lawyer", 0, 72, 200, 2);
+      await this.drawGameSprite(ctx, "spr_trial_podium", 1, 154, 106, 2);
+      await this.drawGameSprite(ctx, "spr_trial_podium", 0, 140, 184, 2);
+      await this.drawGameSprite(ctx, "spr_trial_podium", 1, 132, 272, 2);
 
-    const perps = [
-      { name: "spr_aqua_walk_down", frame: 0, xstart: 220, ystart: 240 },
-      { name: "spr_seth_walk_down", frame: 0, xstart: 300, ystart: 240 },
-      { name: "spr_enemy_green_walk", frame: 0, xstart: 380, ystart: 240 },
-      { name: "spr_yellow_walk_down", frame: 0, xstart: 460, ystart: 240 },
-      { name: "spr_blue_poses", frame: 2, xstart: 540, ystart: 240 },
-    ];
-    const drawPerp = async (perp) => {
-      const meta = this.spriteMeta[perp.name] ?? {};
-      const width = meta.width ?? 0;
-      const height = meta.height ?? 0;
-      const originX = meta.originX ?? 0;
-      const originY = meta.originY ?? 0;
-      const x = perp.xstart - (width - originX);
-      const y = perp.ystart - (height - originY) * 2;
-      return this.drawGameSprite(ctx, perp.name, perp.frame, x, y, 2, 2, 0, { exact: true });
-    };
-    for (const perp of perps) await drawPerp(perp);
+      const perps = [
+        { name: "spr_aqua_walk_down", frame: 0, xstart: 220, ystart: 240 },
+        { name: "spr_seth_walk_down", frame: 0, xstart: 300, ystart: 240 },
+        { name: "spr_enemy_green_walk", frame: 0, xstart: 380, ystart: 240 },
+        { name: "spr_yellow_walk_down", frame: 0, xstart: 460, ystart: 240 },
+        { name: "spr_blue_poses", frame: 2, xstart: 540, ystart: 240 },
+      ];
+      const drawPerp = async (perp) => {
+        const meta = this.spriteMeta[perp.name] ?? {};
+        const width = meta.width ?? 0;
+        const height = meta.height ?? 0;
+        const originX = meta.originX ?? 0;
+        const originY = meta.originY ?? 0;
+        const x = perp.xstart - (width - originX);
+        const y = perp.ystart - (height - originY) * 2;
+        return this.drawGameSprite(ctx, perp.name, perp.frame, x, y, 2, 2, 0, { exact: true });
+      };
+      for (const perp of perps) await drawPerp(perp);
 
-    await this.drawTensionBar(ctx);
-    await this.drawBattleHud(ctx, { kris: 135, susie: 290, ralsei: 144 });
+      await this.drawTensionBar(ctx);
+      await this.drawBattleHud(ctx, { kris: 135, susie: 290, ralsei: 144 });
 
-    // begin_trial() fixe darkness à 0.5. Les éléments de sélection sont ensuite
-    // redessinés à pleine luminosité dans le Draw du manager.
-    ctx.save();
-    ctx.globalAlpha = 0.5;
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, 640, 480);
-    ctx.restore();
+      // begin_trial() fixe darkness à 0.5. Les éléments de sélection sont ensuite
+      // redessinés à pleine luminosité dans le Draw du manager.
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, 640, 480);
+      ctx.restore();
 
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    await this.drawGameSprite(ctx, "spr_trial_spotlight", 0, 220, 240, 2, 2.5, 0, {
-      exact: true,
-      alpha: 0.75,
-    });
-    ctx.restore();
-    const selectedDrawn = await drawPerp(perps[0]);
-    await this.drawGameSprite(ctx, "spr_heart_centered", 0, 220, 280, 1, 1, 0, { exact: true });
-    const arrowOffset = Math.sin(this.jewelTimer * 0.1) * 3;
-    await this.drawGameSprite(ctx, "spr_sneo_bullet_arrow", 0, 240 + arrowOffset, 279, 1, 1, 0, { exact: true });
-    await this.drawGameSprite(ctx, "spr_sneo_bullet_arrow", 0, 200 - arrowOffset, 279, -1, 1, 0, { exact: true });
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      await this.drawGameSprite(ctx, "spr_trial_spotlight", 0, 220, 240, 2, 2.5, 0, {
+        exact: true,
+        alpha: 0.75,
+      });
+      ctx.restore();
+      selectedDrawn = await drawPerp(perps[0]);
+      await this.drawGameSprite(ctx, "spr_heart_centered", 0, 220, 280, 1, 1, 0, { exact: true });
+      const arrowOffset = Math.sin(this.jewelTimer * 0.1) * 3;
+      await this.drawGameSprite(ctx, "spr_sneo_bullet_arrow", 0, 240 + arrowOffset, 279, 1, 1, 0, { exact: true });
+      await this.drawGameSprite(ctx, "spr_sneo_bullet_arrow", 0, 200 - arrowOffset, 279, -1, 1, 0, { exact: true });
 
-    const prompt = applyLanguageTypography(
-      state.trialPrompt ?? "{0} to accuse.",
-      state.language
-    ).replace("{0}", "    ").replace("~1", "    ");
-    const promptFont = this.fonts.main;
-    const promptWidth = this.bitmapTextWidth(promptFont, prompt, 2);
-    const promptX = Math.round(220 - promptWidth / 2);
-    // Branche manette du Draw_0 : l'icône remplace le token d'entrée, puis le
-    // texte conserve quatre espaces pour réserver sa place.
-    await this.drawGameSprite(ctx, "button_xbox_a", 0, 148, 292, 2, 2, 0, { exact: true });
-    promptFont?.drawText(ctx, prompt, promptX, 288, "#FFFFFF", 2, 16);
+      const prompt = applyLanguageTypography(
+        state.trialPrompt ?? "{0} to accuse.",
+        state.language
+      ).replace("{0}", "    ").replace("~1", "    ");
+      const promptFont = this.fonts.main;
+      const promptWidth = this.bitmapTextWidth(promptFont, prompt, 2);
+      const promptX = Math.round(220 - promptWidth / 2);
+      // Branche manette du Draw_0 : l'icône remplace le token d'entrée, puis le
+      // texte conserve quatre espaces pour réserver sa place.
+      await this.drawGameSprite(ctx, "button_xbox_a", 0, 148, 292, 2, 2, 0, { exact: true });
+      promptFont?.drawText(ctx, prompt, promptX, 288, "#FFFFFF", 2, 16);
 
+    }
     this.fonts.main?.drawText(ctx, text, 30, 376, "#FFFFFF", 2, 16);
     ctx.fillStyle = "#9A7ED3";
     for (let a = 0; a < 9; a += 2) ctx.fillRect(378, 376 + a * 10, 4, 10);
@@ -955,6 +998,7 @@ export class Preview {
 
     // formatage (word-wrap)
     const fmt = formatText(text, {
+      language: state.language,
       // obj_writer Other_15 force charline à 23 pour le typer rose, avant
       // que le texte ne puisse atteindre le grand obj_pinkspeaker à droite.
       charline: !fight && typer === 97 ? 23 : 33,
@@ -1009,6 +1053,7 @@ export class Preview {
     const writerY = 20 * f + (-5 + 155 * side) * f;
 
     const lay = layoutText(fmt.text, {
+      language: state.language,
       typer,
       dark,
       fight,
@@ -1074,6 +1119,7 @@ export class Preview {
     const initialFc = isChoice ? 0 : state.fc || 0;
     const typer = state.typer || 6;
     const fmt = formatText(text, {
+      language: state.language,
       charline: (initialFc ? 26 : 33) + 5,
       dialoguer: true,
       initialFc,
@@ -1081,6 +1127,7 @@ export class Preview {
     const writerX = 18;
     const writerY = 10 + 380 * side;
     const lay = layoutText(fmt.text, {
+      language: state.language,
       typer,
       dark: true,
       writingx: writerX,
@@ -1207,8 +1254,9 @@ export class Preview {
     this.checkerBg(ctx, "#000000", "#0d0d16");
 
     const typer = state.typer || 50; // dotumche noir 9/20
-    const fmt = formatText(text, { charline: 33, battle: true, initialFc: 0 });
+    const fmt = formatText(text, { language: state.language, charline: 33, battle: true, initialFc: 0 });
     const lay = layoutText(fmt.text, {
+      language: state.language,
       typer,
       dark: true,
       fight: true,
@@ -1237,7 +1285,7 @@ export class Preview {
     // (scr_enemy_object_init L62, obj_heroparent Create_0).
     const actor = state.bubbleActor;
     let actorWarning = null;
-    if (actor?.sprites?.length) {
+    if (!this.dialogueOnly && actor?.sprites?.length) {
       const actorX = side === 1 ? anchorX + 10 : anchorX - 100;
       const actorY = anchorY - 40;
       let drawn = false;
@@ -1295,8 +1343,9 @@ export class Preview {
   // --- Texte libre (menus, strings)
   async renderPlain(text, state) {
     const typer = state.typer || 5;
-    const fmt = formatText(text, { charline: 999, initialFc: 0 });
+    const fmt = formatText(text, { language: state.language, charline: 999, initialFc: 0 });
     const lay = layoutText(fmt.text, {
+      language: state.language,
       typer,
       writingx: 0,
       writingy: 0,
@@ -1306,11 +1355,13 @@ export class Preview {
     const w = Math.min(1280, Math.max(320, lay.maxX + 16) * scale);
     const h = Math.max(48, (lay.maxY + lay.vspace + 8) * scale);
     const ctx = this.clear(w, h);
-    for (let gy = 0; gy < h; gy += 16)
-      for (let gx = 0; gx < w; gx += 16) {
-        ctx.fillStyle = (gx / 16 + gy / 16) % 2 ? "#26262e" : "#1e1e26";
-        ctx.fillRect(gx, gy, 16, 16);
-      }
+    if (!this.dialogueOnly) {
+      for (let gy = 0; gy < h; gy += 16)
+        for (let gx = 0; gx < w; gx += 16) {
+          ctx.fillStyle = (gx / 16 + gy / 16) % 2 ? "#26262e" : "#1e1e26";
+          ctx.fillRect(gx, gy, 16, 16);
+        }
+    }
     const miniFaceWarnings = await this.drawMiniFaces(
       ctx,
       lay.miniFaces,
@@ -1334,45 +1385,48 @@ export class Preview {
   async renderDevice(text, state = {}) {
     const style = state.deviceStyle ?? {};
     const ctx = this.clear(320, 240);
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, 320, 240);
+    if (!this.dialogueOnly) {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, 320, 240);
 
-    if (style.background === "contact") {
-      // DEVICE_OBACK_4 Draw_0 : quatre IMAGE_DEPTH en miroir autour de (160,120).
-      for (const [xs, ys] of [[2, 2], [-2, 2], [-2, -2], [2, -2]]) {
-        await this.drawGameSprite(ctx, "IMAGE_DEPTH", 0, 160, 120, xs, ys, 0, {
-          exact: true,
-          alpha: 0.34,
-        });
+      if (style.background === "contact") {
+        // DEVICE_OBACK_4 Draw_0 : quatre IMAGE_DEPTH en miroir autour de (160,120).
+        for (const [xs, ys] of [[2, 2], [-2, 2], [-2, -2], [2, -2]]) {
+          await this.drawGameSprite(ctx, "IMAGE_DEPTH", 0, 160, 120, xs, ys, 0, {
+            exact: true,
+            alpha: 0.34,
+          });
+        }
       }
-    }
 
-    if (style.vessel) {
-      const parts = [
-        // Apparence d'exemple : les flags 900…902 dépendent du choix fait en
-        // jeu et ne sont pas stockés dans le fichier de langue.
-        ["IMAGE_GONERHEAD", 0, 1],
-        ["IMAGE_GONERBODY", 34],
-        ["IMAGE_GONERLEGS", 60],
-      ];
-      const steps = Math.max(0, Math.min(3, Number(style.vessel.steps) || 1));
-      for (let i = 0; i < steps; i++) {
-        await this.drawGameSprite(
-          ctx,
-          parts[i][0],
-          parts[i][2] ?? 0,
-          Number(style.vessel.x) || 140,
-          (Number(style.vessel.y) || 90) + parts[i][1],
-          2,
-          2,
-          0,
-          { exact: true }
-        );
+      if (style.vessel) {
+        const parts = [
+          // Apparence d'exemple : les flags 900…902 dépendent du choix fait en
+          // jeu et ne sont pas stockés dans le fichier de langue.
+          ["IMAGE_GONERHEAD", 0, 1],
+          ["IMAGE_GONERBODY", 34],
+          ["IMAGE_GONERLEGS", 60],
+        ];
+        const steps = Math.max(0, Math.min(3, Number(style.vessel.steps) || 1));
+        for (let i = 0; i < steps; i++) {
+          await this.drawGameSprite(
+            ctx,
+            parts[i][0],
+            parts[i][2] ?? 0,
+            Number(style.vessel.x) || 140,
+            (Number(style.vessel.y) || 90) + parts[i][1],
+            2,
+            2,
+            0,
+            { exact: true }
+          );
+        }
       }
-    }
 
-    const fmt = formatText(text, { charline: 33, initialFc: 0 });
+    }
+    const fmt = formatText(text, { language: state.language, charline: 33, initialFc: 0 });
     const lay = layoutText(fmt.text, {
+      language: state.language,
       typer: state.typer ?? 667,
       writingx: Number(style.x) || 0,
       writingy: Number(style.y) || 0,

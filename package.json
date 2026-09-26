@@ -9,7 +9,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test extraction/sprite-overrides.test.mjs extraction/multilang.test.mjs safety.test.js game-setup.test.js updater.test.js runedelta-sync.test.js runedelta-options.test.js runedelta-github.test.js writer.test.js choice-layout.test.js extraction/bubble-actor-detection.test.mjs extraction/chapter-scope.test.mjs extraction/choice-detection.test.mjs extraction/code-overrides.test.mjs extraction/platform-dialogue-detection.test.mjs extraction/shop-dialogue-detection.test.mjs extraction/speaker-detection.test.mjs extraction/trial-case-detection.test.mjs bundled-tools.test.js distribution.test.js",
+    "test": "node --test editor-tools.test.mjs sprite-text.test.js sprite-workflow.test.mjs extraction/refresh-fonts.test.mjs extraction/process-runner.test.mjs extraction/sprite-overrides.test.mjs extraction/multilang.test.mjs safety.test.js game-setup.test.js updater.test.js runedelta-sync.test.js runedelta-publication.test.mjs runedelta-options.test.js runedelta-github.test.js writer.test.js choice-layout.test.js extraction/bubble-actor-detection.test.mjs extraction/chapter-scope.test.mjs extraction/choice-detection.test.mjs extraction/code-overrides.test.mjs extraction/platform-dialogue-detection.test.mjs extraction/shop-dialogue-detection.test.mjs extraction/speaker-detection.test.mjs extraction/trial-case-detection.test.mjs bundled-tools.test.js distribution.test.js",
     "dist": "npm run prepare:tools && electron-builder --config electron-builder.config.cjs --publish never",
     "dist:win": "npm run prepare:tools && electron-builder --config electron-builder.config.cjs --win --x64 --publish never",
     "dist:mac": "npm run prepare:tools && electron-builder --config electron-builder.config.cjs --mac --universal --publish never",
@@ -36,6 +36,7 @@
     "files": [
       "main.js",
       "storage.js",
+      "sprite-text.js",
       "preload.js",
       "runedelta-sync.js",
       "runedelta-github.js",

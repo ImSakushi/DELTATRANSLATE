@@ -1,13 +1,26 @@
-.review-dialog { width: min(1000px, 90vw); max-height: 86vh; padding: 24px; color: #eee; background: #171923; border: 2px solid #8590ac; border-radius: 8px; }
+.review-dialog { width: min(1000px, 90vw); max-height: 86vh; padding: 24px; overflow: hidden; }
+.review-dialog[open] { display: flex; flex-direction: column; }
 .review-dialog::backdrop { background: #000b; }
-.review-dialog h2 { margin: 0 0 16px; }
+.review-dialog h2 { flex-shrink: 0; margin: 0 0 16px; font-size: 24px; }
 .review-dialog h3 { font-size: 13px; overflow-wrap: anywhere; }
-.review-content { max-height: 65vh; overflow: auto; min-height: 0; }
-.review-content section { border-top: 1px solid #555; padding: 12px 0; }
-.review-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.5 monospace; }
+.review-content { max-height: 65vh; overflow: auto; min-height: 0; overflow-wrap: anywhere; }
+.review-content section { border-top: 1px solid var(--border-dim); padding: 12px 0; }
+.review-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.5 var(--mono); }
 .review-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.review-actions { display: flex; gap: 12px; padding-top: 16px; }
+.review-actions { display: flex; flex-wrap: wrap; flex-shrink: 0; gap: 12px; padding-top: 16px; }
 .review-dialog button, .review-dialog select { margin: 4px; padding: 8px; max-width: 100%; overflow-wrap: anywhere; }
 .review-dialog textarea { width: 95%; min-height: 80px; margin: 8px; padding: 8px; }
+.publication-dialog { width: min(600px, 90vw); }
+.publication-dialog button { margin: 0; }
+.publication-dialog label { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.publication-dialog input, .publication-dialog textarea { width: 100%; margin: 0; font: inherit; }
+.publication-dialog textarea { resize: vertical; }
+.publication-dialog p { font-size: 13px; line-height: 1.5; }
 .top-actions { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+.top-actions button { min-height: 30px; height: auto; line-height: 1.2; gap: 6px; flex-shrink: 0; }
+.button-icon { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 #topbar { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .review-dialog { padding: 18px; }
+  .review-columns { grid-template-columns: minmax(0, 1fr); }
+}

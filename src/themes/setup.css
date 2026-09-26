@@ -1,24 +1,24 @@
-#import-modal .setup-box { display: flex; flex-direction: column; overflow: hidden; width: min(720px, 94vw); padding: 28px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+#import-modal .setup-box { display: flex; flex-direction: column; overflow: hidden; width: min(720px, 94vw); padding: 28px; font: 14px/1.5 var(--font-ui); }
 #chapter-setup, #runedelta-section { min-height: 0; overflow-y: auto; padding-right: 8px; }
 .setup-footer { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border-dim, var(--border)); }
 #import-modal .hidden { display: none; }
 .setup-eyebrow { flex-shrink: 0; margin: 0 0 6px; color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: 0.18em; }
-#import-modal h2 { font: 700 28px/1.2 "Segoe UI", system-ui, sans-serif; margin-bottom: 10px; }
+#import-modal h2 { font: 700 28px/1.2 var(--font-ui); margin-bottom: 10px; }
 .setup-intro { margin: 0 0 24px; color: var(--fg-dim); }
 .setup-steps { display: flex; padding: 0; margin: 0 0 24px; list-style: none; gap: 12px; }
 .setup-steps li { flex: 1; display: flex; align-items: center; gap: 8px; padding-bottom: 12px; border-bottom: 2px solid var(--bg3); color: var(--fg-dim); }
-.setup-steps span { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid currentColor; border-radius: 50%; }
+.setup-steps span { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid currentColor; border-radius: 0; }
 .setup-steps [aria-current="step"] { color: var(--accent); border-color: var(--accent); }
 .setup-steps .complete { color: var(--green); }
 .chapter-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 220px; overflow-y: auto; min-height: 0; }
-#import-modal .chapter-option { padding: 12px; text-align: left; white-space: normal; font: inherit; min-width: 0; }
+#import-modal .chapter-option { --dialog-button-padding: 8px 12px 16px; padding: var(--dialog-button-padding); text-align: left; white-space: normal; font: inherit; min-width: 0; }
 .chapter-option strong, .chapter-option small { display: block; }
 .chapter-option small { font-size: 11px; color: var(--fg-dim); overflow-wrap: anywhere; margin-top: 4px; }
 #import-modal .chapter-option[aria-pressed="true"] { border-color: var(--accent); background: var(--bg3); box-shadow: inset 3px 0 var(--accent); }
 #import-modal .modal-actions { flex-wrap: wrap; }
-#import-modal button:focus-visible, #import-modal summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#import-modal button:focus-visible, #import-modal summary:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
 #import-modal button:disabled { opacity: 0.5; cursor: default; }
-#import-modal .setup-primary-actions .primary { padding: 12px 20px; font: 600 14px "Segoe UI", system-ui, sans-serif; }
+#import-modal .setup-primary-actions .primary { padding: var(--dialog-button-padding); font: 600 14px/1.2 var(--font-ui); }
 .setup-selected { border-left: 3px solid var(--accent); background: var(--bg3); padding: 10px 14px; margin: 16px 0; }
 .setup-selected strong, .setup-selected span { display: block; }
 .setup-selected span { color: var(--fg-dim); overflow-wrap: anywhere; font: 11px/1.6 var(--mono); }
@@ -29,8 +29,26 @@
 #runedelta-github-setup input { width: 100%; box-sizing: border-box; }
 #runedelta-login-log { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 #runedelta-status { white-space: pre-line; overflow-wrap: anywhere; }
+.branch-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 20px 0 10px; }
+#import-modal .branch-heading h3 { margin: 0; }
+#runedelta-branch-list { display: grid; gap: 10px; min-width: 0; min-height: 0; max-height: 360px; overflow-y: auto; margin: 0; padding: 3px; border: 0; }
+.branch-card { display: flex; align-items: flex-start; gap: 12px; padding: 14px; background: var(--bg2); border: 2px solid var(--border-dim, var(--border)); cursor: pointer; }
+.branch-card:hover { border-color: var(--fg-dim); }
+.branch-card:has(input:checked) { border-color: var(--accent); background: var(--bg3); }
+.branch-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.branch-card input { flex: 0 0 auto; margin: 4px 0 0; accent-color: var(--accent); }
+.branch-content { display: grid; gap: 5px; min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.branch-card-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.branch-name { color: var(--fg); font-size: 17px; }
+.branch-badge { padding: 1px 6px; border: 1px solid var(--fg-dim); color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
+.branch-badge.active { color: var(--green); border-color: var(--green); }
+.branch-author { color: var(--fg); font-size: 14px; }
+.branch-date, .branch-commit { color: var(--fg-dim); font-size: 13px; }
+.branch-subject { color: var(--accent); font-size: 15px; line-height: 1.4; }
+#runedelta-branch-list:disabled { opacity: 0.6; }
+#runedelta-branch-list:disabled .branch-card { cursor: default; }
 #import-modal .dropzone { min-height: 78px; border-color: var(--border-dim, var(--border)); }
-#import-modal .dropzone strong { font: 600 12px "Segoe UI", system-ui, sans-serif; }
+#import-modal .dropzone strong { font: 600 12px var(--font-ui); }
 .setup-error { color: var(--red); border: 1px solid currentColor; padding: 12px; margin: 14px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .setup-success { padding: 16px; border: 1px solid var(--green); margin: 16px 0; }
 #import-modal .setup-success h3 { color: var(--green); }
@@ -40,3 +58,18 @@
 @keyframes setup-activity { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .setup-activity { animation: none; } }
 @media (max-width: 560px) { .chapter-options { grid-template-columns: 1fr; } #import-modal .setup-box { padding: 18px; } .setup-steps { gap: 6px; font-size: 12px; } }
+
+#runedelta-device-code-panel {
+  padding: 16px;
+  margin: 12px 0;
+  border: 2px solid var(--border);
+  border-radius: 0;
+  text-align: center;
+}
+#runedelta-device-code {
+  display: block;
+  font: 700 32px var(--mono);
+  letter-spacing: .12em;
+  margin: 12px 0;
+  user-select: text;
+}

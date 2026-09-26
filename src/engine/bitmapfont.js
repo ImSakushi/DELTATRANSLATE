@@ -21,6 +21,7 @@ export class BitmapFont {
       });
     }
     this._tintCache = new Map();
+    this.missingGlyphs = new Set();
   }
 
   // Canvas de la texture teintée (les glyphes du jeu sont blancs)
@@ -47,7 +48,8 @@ export class BitmapFont {
 
   drawChar(ctx, ch, x, y, color, scale = 1) {
     const g = this.glyphs.get(ch.codePointAt(0));
-    if (!g || g.w === 0) return;
+    if (!g) { if (ch.trim()) this.missingGlyphs.add(ch); return; }
+    if (g.w === 0) return;
     const src = this.tinted(color);
     ctx.drawImage(
       src,
@@ -89,15 +91,28 @@ export class BitmapFont {
 export async function loadFonts(extractedDir, fontCsvs, language = "fr") {
   const wanted = ["main", "mainbig", "dotumche", "comicsans", "small", "tinynoelle", "8bit"];
   const fonts = {};
+  Object.defineProperty(fonts, "loadWarnings", { value: [] });
+  const revision = Date.now();
   await Promise.all(
     wanted.map(async (short) => {
-      const translated = "fnt_" + short + "_" + language;
+      // scr_84_init_localization : les polices japonaises utilisent le préfixe ja_.
+      const translated = language === "ja" ? "fnt_ja_" + short : "fnt_" + short + "_" + language;
+      if (language === "ja" && !fontCsvs[translated]) {
+        fonts.loadWarnings.push(`Police japonaise ${translated} absente. Utilise « Actualiser les polices ».`);
+        return;
+      }
       const full = fontCsvs[translated] ? translated : "fnt_" + short;
       const csv = fontCsvs[full];
       if (!csv) return;
       const img = new Image();
-      img.src = "file:///" + (extractedDir + "/fonts/" + full + ".png").replace(/\\/g, "/");
-      await img.decode().catch(() => {});
+      const filePath = (extractedDir + "/fonts/" + full + ".png").replace(/\\/g, "/");
+      img.src = "file://" + (filePath.startsWith("/") ? "" : "/") +
+        filePath.split("/").map(part => encodeURIComponent(part).replace(/%3A/gi, ":")).join("/") + `?v=${revision}`;
+      try { await img.decode(); }
+      catch {
+        fonts.loadWarnings.push(`Police ${full} illisible. Utilise « Actualiser les polices ».`);
+        return;
+      }
       fonts[short] = new BitmapFont(short, img, csv);
     })
   );

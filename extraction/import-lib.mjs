@@ -475,7 +475,7 @@ function decodeEmotion(raw) {
 // état dans ses sprites d'acteur : spr_ralsei_* sans chapeau, spr_ralsei[drlu]
 // avec chapeau. On utilise le dernier indice explicite avant le dialogue.
 function findRalseiFaceVariant(lines, lineIdx) {
-  for (let i = lineIdx; i >= Math.max(0, lineIdx - 80); i--) {
+  for (const i of dialogueScan(lines, lineIdx, 80)) {
     const flag = lines[i].match(
       /(?:scr_flag_set\(\s*1311\s*,|global\.flag\[1311\]\s*=)\s*([01])/
     );
@@ -491,7 +491,7 @@ function findRalseiFaceVariant(lines, lineIdx) {
 function findFaceVariant(lines, lineIdx, fc) {
   if (fc === 2) return findRalseiFaceVariant(lines, lineIdx);
   if (fc !== 3) return null;
-  for (let i = lineIdx; i >= 0; i--) {
+  for (const i of dialogueScan(lines, lineIdx, lineIdx)) {
     const m = lines[i].match(
       /c_var_instance\(\s*id\s*,\s*["']face_extended["']\s*,\s*([01])\s*\)/
     );
@@ -566,10 +566,43 @@ function findSmallFace(lines, lineIdx, id) {
 // Cherche le visage actif pour la ligne `lineIdx` (0-based) en remontant.
 // Le visage persiste de message en message jusqu'à changement explicite,
 // d'où une fenêtre de scan large. Le plus proche match gagne.
+const dialogueScopeCache = new WeakMap();
+
+function dialogueScopeRanges(lines, lineIdx) {
+  if (!dialogueScopeCache.has(lines)) {
+    // scr_text case 345 est appelé après global.fc = 0 (obj_npc_room
+    // Other_10), pas après le case Burgerpants précédent dans le fichier.
+    const source = lines.join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g,
+      value => value.replace(/[^\n]/g, " "));
+    const scopes = [{ open: 0, branch: null }];
+    const bounds = source.split("\n").map((line, index) => {
+      for (const token of line.matchAll(/\bcase\b[^:]*:|\bdefault\s*:|[{}]/g)) {
+        if (token[0] === "{") scopes.push({ open: index, branch: null });
+        else if (token[0] === "}") { if (scopes.length > 1) scopes.pop(); }
+        else scopes.at(-1).branch = index;
+      }
+      return scopes.filter(scope => scope.branch != null).map(scope => [scope.open + 1, scope.branch]);
+    });
+    dialogueScopeCache.set(lines, bounds);
+  }
+  return dialogueScopeCache.get(lines)[lineIdx] ?? [];
+}
+
+export function dialogueScopeStart(lines, lineIdx) {
+  return dialogueScopeRanges(lines, lineIdx).at(-1)?.[1] ?? 0;
+}
+
+function* dialogueScan(lines, lineIdx, distance = 120) {
+  const ranges = dialogueScopeRanges(lines, lineIdx);
+  for (let i = lineIdx; i >= Math.max(0, lineIdx - distance); i--) {
+    if (ranges.some(([start, end]) => i >= start && i < end)) continue;
+    yield i;
+  }
+}
+
 export function findFace(lines, lineIdx) {
-  const from = Math.max(0, lineIdx - 120);
   let pendingFe = null; // dernier global.fe rencontré en remontant
-  for (let i = lineIdx; i >= from; i--) {
+  for (const i of dialogueScan(lines, lineIdx)) {
     const l = lines[i];
 
     // scr_cutscene_commands, commande "fe" : c_fefc(fe, fc) remplace les
@@ -658,8 +691,7 @@ export function findFace(lines, lineIdx) {
 // le speaker persiste jusqu'à la prochaine commande de dialogue. Une commande
 // « sans nom » constitue donc une frontière et doit arrêter la remontée.
 export function findSpeaker(lines, lineIdx) {
-  const from = Math.max(0, lineIdx - 120);
-  for (let i = lineIdx; i >= from; i--) {
+  for (const i of dialogueScan(lines, lineIdx)) {
     const line = lines[i];
     const calls = [];
     const speakerCallRe =
@@ -702,8 +734,7 @@ export function findSpeaker(lines, lineIdx) {
 // visiblement le rendu. Les commandes de cutscene injectent leur \T hors de la
 // chaîne localisée ; sans cette métadonnée la preview retomberait sur du blanc.
 function findTyper(lines, lineIdx, ownerTyper = null) {
-  const from = Math.max(0, lineIdx - 120);
-  for (let i = lineIdx; i >= from; i--) {
+  for (const i of dialogueScan(lines, lineIdx)) {
     const line = lines[i];
     const speakers = [
       ...line.matchAll(

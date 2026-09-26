@@ -3,10 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <title>DELTATRANSLATE</title>
-  <link id="theme-css" rel="stylesheet" href="themes/deltarune.css" />
+  <link rel="stylesheet" href="themes/deltarune.css" />
   <link rel="stylesheet" href="themes/sprites.css" />
   <link rel="stylesheet" href="themes/setup.css" />
   <link rel="stylesheet" href="themes/review.css" />
+  <link rel="stylesheet" href="themes/typography.css" />
+  <link rel="stylesheet" href="themes/code.css" />
+  <link rel="stylesheet" href="themes/runedelta.css" />
+  <link rel="stylesheet" href="themes/dialogs.css" />
 </head>
 <body>
   <div id="window-titlebar">
@@ -25,16 +29,15 @@
     <div class="top-actions">
       <button id="btn-update" class="hidden" type="button" disabled>↻ Mises à jour</button>
       <button id="btn-runedelta" class="hidden" type="button" data-tooltip="Configurer le projet Runedelta et sa publication facultative">⇅ Runedelta</button>
-      <button id="btn-theme" class="theme-toggle" type="button" data-tooltip="Passer au design classique" aria-label="Passer au design classique">
-        <span class="theme-icon theme-icon-classic" aria-hidden="true">▣</span>
-        <span class="theme-icon theme-icon-dr" aria-hidden="true">♥</span>
-      </button>
       <button id="btn-import" data-tooltip="Choisir ou préparer un chapitre de DELTARUNE">📂 Chapitre</button>
       <button id="btn-code" data-tooltip="Lire le GML de la scène sélectionnée et modifier ponctuellement le code">⌘ Code GML</button>
       <label class="chk backup-toggle" data-tooltip="Activer les backups avant les sauvegardes et pendant les modifications non sauvegardées (désactivés par défaut)">
         <input type="checkbox" id="chk-backups" /> Backups
       </label>
-      <button id="btn-backups" data-tooltip="Comparer et restaurer les versions précédentes">🗁 Historique</button>
+      <label class="chk japanese-toggle" data-tooltip="Afficher le dialogue japonais en plus de l’anglais dans l’éditeur">
+        <input type="checkbox" id="chk-japanese-mode" aria-controls="jp-reference" /> Mode japonais
+      </label>
+      <button id="btn-backups" data-tooltip="Comparer et restaurer les versions précédentes"><svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3 5v5h5M3.5 9a7 7 0 1 1 1 6M10 6v5l3 2" /></svg>Historique</button>
       <button id="btn-reload" data-tooltip="Recharger le fichier du jeu (écrase les modifs non sauvées)">⟳ Recharger</button>
       <button id="btn-save" data-tooltip="Toutes les modifications sont sauvegardées" disabled>✓ Sauvegardé</button>
       <button id="btn-publish" class="hidden" data-tooltip="Publier les traductions sauvegardées sur GitHub">↑ Publier</button>
@@ -154,19 +157,23 @@
       </details>
       </div>
       <section id="runedelta-section" class="hidden">
-        <h3>Projet Runedelta</h3>
-        <label class="chk"><input type="checkbox" id="chk-runedelta-publish" /> Autoriser la publication sur GitHub</label>
-        <p class="modal-hint">Désactivée par défaut. Tu peux utiliser le catalogue Runedelta et sauvegarder localement sans publier. Même activée, la publication nécessite un clic sur Publier. Pour masquer Runedelta, décoche son mode dans Chapitre → Fonctions facultatives.</p>
         <div id="runedelta-status" class="setup-status">Vérification de Git…</div>
         <label class="runedelta-remote" for="runedelta-remote">
           Dépôt GitHub
           <input id="runedelta-remote" type="url" value="https://github.com/Traducteurs-Aurifiques/Runedelta.git" spellcheck="false" />
         </label>
-        <label class="runedelta-remote" for="runedelta-branch">Branche de travail
-          <select id="runedelta-branch"><option value="">Branche par défaut du dépôt</option></select>
-        </label>
-        <button id="btn-runedelta-branches" type="button">Charger les branches du dépôt</button>
-        <p id="runedelta-branch-status" class="modal-hint" role="status">Choisis une branche existante avant de connecter le chapitre. Les brouillons de chaque branche sont conservés lorsque tu en changes.</p>
+        <div class="branch-heading">
+          <h3 id="runedelta-branches-title">Branche de travail</h3>
+          <button id="btn-runedelta-branches" type="button">Actualiser</button>
+        </div>
+        <select id="runedelta-branch" hidden aria-label="Branche de travail"><option value="">Branche par défaut du dépôt</option></select>
+        <fieldset id="runedelta-branch-list" aria-labelledby="runedelta-branches-title" aria-describedby="runedelta-branch-status"></fieldset>
+        <p id="runedelta-branch-status" class="modal-hint" role="status">Chargement des branches…</p>
+        <p class="modal-hint">Sélectionne une branche, puis confirme son ouverture. Les brouillons de chaque branche sont conservés.</p>
+        <details class="setup-help">
+          <summary>Options de publication et de copie dans le jeu</summary>
+        <label class="chk"><input type="checkbox" id="chk-runedelta-publish" /> Autoriser la publication sur GitHub</label>
+        <p class="modal-hint">Activée à la première activation de Runedelta. Tu peux la désactiver et sauvegarder localement sans publier. La publication nécessite toujours un clic sur Publier.</p>
         <label class="chk"><input type="checkbox" id="chk-runedelta-game-copy" /> Copier aussi les traductions dans le jeu (lang/lang_fr.json)</label>
         <p class="modal-hint">
           L’éditeur travaille directement sur <code>strings/strings_chapitre_N.json</code> dans le clone Git.
@@ -174,7 +181,8 @@
           La copie dans le jeu est désactivée par défaut. Si tu l’actives, chaque sauvegarde ou synchronisation
           met aussi à jour <code>lang/lang_fr.json</code>, avec une sauvegarde de son contenu précédent.
         </p>
-        <details class="setup-help" id="runedelta-github-setup" open>
+        </details>
+        <details class="setup-help" id="runedelta-github-setup">
           <summary>Configurer l’accès GitHub et l’auteur des traductions</summary>
           <p>RUNEDELTA est privé : accepte d’abord l’invitation de l’équipe avec ton compte GitHub.</p>
           <p id="runedelta-tools-note">Git et GitHub CLI sont inclus dans l’édition Avec-Git.</p>
@@ -187,6 +195,11 @@
             <button id="btn-runedelta-check" type="button">Vérifier l’accès</button>
           </div>
           <p id="runedelta-access-status" role="status">L’accès en lecture suffit pour installer et récupérer. La publication exige aussi les droits d’écriture.</p>
+          <div id="runedelta-device-code-panel" class="hidden" role="status">
+            <p>Code à saisir sur GitHub</p>
+            <strong id="runedelta-device-code"></strong>
+            <button id="btn-runedelta-copy-code" type="button">Copier le code</button>
+          </div>
           <pre id="runedelta-login-log" aria-live="polite"></pre>
           <label>Nom de l’auteur <input id="runedelta-author-name" type="text" autocomplete="name" /></label>
           <label>E-mail Git <input id="runedelta-author-email" type="email" autocomplete="email" /></label>
@@ -198,7 +211,8 @@
           <button id="btn-connect-runedelta" class="primary" type="button">Ouvrir le catalogue Git</button>
           <button id="btn-receive-runedelta" type="button">↓ Récupérer</button>
           <button id="btn-publish-runedelta" class="hidden" type="button">↑ Publier</button>
-          <button id="btn-open-runedelta" type="button">🗁 Dépôt local</button>
+          <button id="btn-runedelta-journal" type="button">Journal des publications</button>
+          <button id="btn-open-runedelta" type="button"><svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M2 5h6l2 2h8v10H2Z" /></svg>Dépôt local</button>
           <button id="btn-disconnect-runedelta" type="button">Déconnecter</button>
         </div>
       </section>
@@ -244,7 +258,10 @@
         </aside>
         <section class="code-editor-pane">
           <div id="code-readonly" class="code-source" tabindex="0"></div>
-          <textarea id="code-input" class="code-source hidden" spellcheck="false" aria-label="Éditeur de code GML"></textarea>
+          <div id="code-editing" class="hidden">
+            <pre id="code-highlight" class="code-source" aria-hidden="true"></pre>
+            <textarea id="code-input" class="code-source" spellcheck="false" wrap="off" aria-label="Éditeur de code GML"></textarea>
+          </div>
         </section>
       </div>
 
@@ -262,19 +279,25 @@
   </div>
 
   <!-- ==================== Éditeur de sprites ==================== -->
-  <section id="sprites-view" class="hidden" aria-label="Éditeur de sprites">
+  <section id="sprites-view" class="hidden" aria-label="Sprites">
     <aside id="sprite-sidebar">
       <div class="sprite-sidebar-head">
-        <label for="sprite-search">Sprites du chapitre</label>
-        <input id="sprite-search" type="text" placeholder="Rechercher un sprite…" autocomplete="off" />
+        <div class="sprite-progress" data-tooltip="Sprites contenant du texte (d'après la version japonaise du jeu) qui ont déjà une version traduite">
+          <div class="sprite-progress-label">
+            <span>Sprites à texte</span>
+            <strong id="sprite-progress-count">0 / 0</strong>
+          </div>
+          <div class="sprite-progress-bar"><div id="sprite-progress-fill"></div></div>
+        </div>
+        <input id="sprite-search" type="text" placeholder="Rechercher un sprite (sign, logo, bt…)" autocomplete="off" spellcheck="false" />
         <div id="sprite-filters" role="group" aria-label="Filtres des sprites">
-          <button class="sprite-filter active" type="button" data-filter="all">Tous</button>
-          <button class="sprite-filter" type="button" data-filter="translated">Traduits</button>
-          <button class="sprite-filter" type="button" data-filter="todo">À faire</button>
-          <button class="sprite-filter" type="button" data-filter="imported">Importés</button>
+          <button class="sprite-filter" type="button" data-filter="text" data-tooltip="Sprites que le jeu remplace dans sa version japonaise : ils contiennent du texte">Avec texte <span data-count="text">0</span></button>
+          <button class="sprite-filter" type="button" data-filter="todo" data-tooltip="Sprites à texte sans version traduite">À traduire <span data-count="todo">0</span></button>
+          <button class="sprite-filter" type="button" data-filter="modified" data-tooltip="Sprites dont tu as importé au moins une frame">Modifiés <span data-count="modified">0</span></button>
+          <button class="sprite-filter" type="button" data-filter="all" data-tooltip="Tous les sprites du chapitre, décors et personnages compris">Tous <span data-count="all">0</span></button>
         </div>
       </div>
-      <div id="sprite-list" tabindex="0">
+      <div id="sprite-list" tabindex="0" role="listbox" aria-label="Sprites du chapitre">
         <div id="sprite-list-spacer"></div>
         <div id="sprite-list-items"></div>
       </div>
@@ -282,94 +305,103 @@
     </aside>
 
     <main id="sprite-editor">
-      <header id="sprite-editor-head">
-        <div>
-          <div class="sprite-eyebrow">SPRITE SÉLECTIONNÉ</div>
-          <h1 id="sprite-name">—</h1>
-          <div id="sprite-meta">Sélectionne un sprite dans la liste.</div>
+      <div id="sprite-editor-scroll">
+        <header id="sprite-editor-head">
+          <div class="sprite-title">
+            <h1 id="sprite-name">—</h1>
+            <div id="sprite-meta">Sélectionne un sprite dans la liste.</div>
+          </div>
+          <div id="sprite-badges"></div>
+        </header>
+        <p id="sprite-text-hint" class="sprite-callout hidden"></p>
+        <div id="sprite-runedelta-hint" class="sprite-callout runedelta hidden">
+          <span id="sprite-runedelta-text"></span>
+          <button id="sprite-runedelta-adopt" class="hidden" type="button" data-tooltip="Copier dans tes imports les frames déjà publiées sur ta branche, pour les retoucher ou les appliquer au jeu">↓ Reprendre</button>
         </div>
-        <div id="sprite-badges"></div>
-      </header>
 
-      <div id="sprite-frame-bar">
-        <button id="sprite-prev-frame" type="button" aria-label="Frame précédente">←</button>
-        <span id="sprite-frame-label">Frame 1 / 1</span>
-        <button id="sprite-next-frame" type="button" aria-label="Frame suivante">→</button>
-        <span class="sprite-frame-tip">Une frame importée remplace uniquement cette image.</span>
-      </div>
+        <ol id="sprite-steps" aria-label="Étapes pour traduire la frame">
+          <li data-step="export"><button type="button" id="sprite-step-export"><span class="sprite-step-num">1</span><span class="sprite-step-copy"><strong>Exporter</strong><small>l'original en PNG</small></span></button></li>
+          <li data-step="import"><button type="button" id="sprite-step-import"><span class="sprite-step-num">2</span><span class="sprite-step-copy"><strong>Importer</strong><small>ton PNG retouché</small></span></button></li>
+          <li data-step="place"><button type="button" id="sprite-step-place"><span class="sprite-step-num">3</span><span class="sprite-step-copy"><strong>Ajuster</strong><small>la position</small></span></button></li>
+          <li data-step="apply"><button type="button" id="sprite-step-apply"><span class="sprite-step-num">4</span><span class="sprite-step-copy"><strong>Appliquer</strong><small>au jeu</small></span></button></li>
+        </ol>
 
-      <div id="sprite-compare">
-        <article class="sprite-preview-card">
-          <header>
-            <div>
-              <span class="sprite-preview-kicker">SOURCE</span>
-              <strong>Original</strong>
+        <div id="sprite-frames">
+          <button id="sprite-prev-frame" type="button" aria-label="Frame précédente" data-tooltip="Frame précédente (←)">←</button>
+          <span id="sprite-frame-label">Frame 1 / 1</span>
+          <button id="sprite-next-frame" type="button" aria-label="Frame suivante" data-tooltip="Frame suivante (→)">→</button>
+          <div id="sprite-frame-strip" role="listbox" aria-label="Frames du sprite"></div>
+        </div>
+
+        <div id="sprite-compare">
+          <article class="sprite-preview-card">
+            <header>
+              <span class="sprite-card-title">Original</span>
+              <span id="sprite-original-name" class="sprite-file-name">—</span>
+            </header>
+            <div class="sprite-canvas" id="sprite-original-canvas">
+              <div class="sprite-loading">Sélectionne un sprite</div>
+              <img id="sprite-original-image" alt="Aperçu du sprite original" class="hidden" />
             </div>
-            <span id="sprite-original-name" class="sprite-file-name">—</span>
-          </header>
-          <div class="sprite-canvas" id="sprite-original-canvas">
-            <div class="sprite-loading">Sélectionne un sprite</div>
-            <img id="sprite-original-image" alt="Aperçu du sprite original" class="hidden" />
-          </div>
-        </article>
+            <footer>
+              <button id="sprite-export-frame" type="button" data-tooltip="Enregistrer cette frame en PNG pour la retoucher">↓ Exporter la frame</button>
+              <button id="sprite-export-all" type="button" data-tooltip="Enregistrer toutes les frames dans un dossier (nom_du_sprite_N.png). Les fichiers déjà présents ne sont jamais écrasés.">↓ Toutes les frames</button>
+            </footer>
+          </article>
 
-        <article class="sprite-preview-card translated-card">
-          <header>
-            <div>
-              <span class="sprite-preview-kicker">JEU EN FRANÇAIS</span>
-              <strong>Traduit</strong>
+          <article class="sprite-preview-card translated-card" id="sprite-dropzone">
+            <header>
+              <span class="sprite-card-title" id="sprite-translated-title">Traduction</span>
+              <span id="sprite-translated-name" class="sprite-file-name">—</span>
+            </header>
+            <div class="sprite-canvas" id="sprite-translated-canvas">
+              <div class="sprite-loading">Aucune image chargée</div>
+              <img id="sprite-translated-image" alt="Aperçu du sprite traduit" class="hidden" />
+              <div class="sprite-drop-hint" aria-hidden="true"><strong>Dépose ton PNG ici</strong><span>Dimensions libres · aucun redimensionnement</span></div>
             </div>
-            <span id="sprite-translated-name" class="sprite-file-name">—</span>
-          </header>
-          <div class="sprite-canvas" id="sprite-translated-canvas">
-            <div class="sprite-loading">Aucune image chargée</div>
-            <img id="sprite-translated-image" alt="Aperçu du sprite traduit" class="hidden" />
-          </div>
-        </article>
-      </div>
+            <footer>
+              <button id="sprite-import-button" class="primary" type="button" data-tooltip="Choisir un ou plusieurs PNG. Un fichier nommé nom_du_sprite_N.png va directement dans la frame N.">↑ Importer un PNG…</button>
+              <button id="sprite-reset-frame" type="button" disabled data-tooltip="Retirer ton PNG et sa position pour cette frame">↶ Retirer l'import</button>
+            </footer>
+          </article>
+        </div>
+        <input id="sprite-file-input" type="file" accept="image/png,.png" multiple hidden />
 
-      <section id="sprite-placement-panel" aria-label="Aperçu et positionnement de la texture">
-        <h2>Aperçu et positionnement</h2>
-        <div class="sprite-placement-toolbar">
-          <label>Zoom <select id="sprite-zoom"><option value="0.03125">3,125 %</option><option value="0.0625">6,25 %</option><option value="0.125">12,5 %</option><option value="0.25">25 %</option><option value="0.5">50 %</option><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></label>
-          <button id="sprite-fit" type="button">Centrer l’aperçu</button>
-          <label><input id="sprite-overlay" type="checkbox" checked /> Superposer l’original</label>
-          <label><input id="sprite-grid" type="checkbox" /> Grille de pixels</label>
-          <label>Fond <select id="sprite-background"><option value="checker">Damier</option><option value="black">Noir</option><option value="white">Blanc</option></select></label>
-        </div>
-        <canvas id="sprite-placement-canvas" width="1000" height="400" tabindex="0" aria-label="Déplacer la texture à la souris ou avec les flèches du clavier"></canvas>
-        <div class="sprite-placement-toolbar">
-          <label>Décalage X <input id="sprite-offset-x" type="number" step="1" min="-8192" max="8192" value="0" disabled /> px</label>
-          <label>Décalage Y <input id="sprite-offset-y" type="number" step="1" min="-8192" max="8192" value="0" disabled /> px</label>
-          <button id="sprite-offset-reset" type="button" disabled>Position d’origine</button>
-          <button id="sprite-save-placement" type="button" disabled>Enregistrer la position</button>
-          <span id="sprite-placement-status" role="status"></span>
-        </div>
-        <p>Glisse la texture ou utilise les flèches : 1 px, Maj : 10 px. Molette ou clic du milieu : déplacer la vue. La croix marque l’origine du sprite ; le cadre bleu indique ses dimensions originales. Aperçu du sprite, sans le décor ni les effets de la scène.</p>
-      </section>
-
-      <section id="sprite-import-panel">
-        <div class="sprite-import-copy">
-          <span class="sprite-import-icon" aria-hidden="true">＋</span>
-          <div>
-            <h2 id="sprite-import-title">Importer la traduction de cette frame</h2>
-            <p id="sprite-import-hint">PNG de dimensions libres, sans réduction ni découpe.</p>
-          </div>
-        </div>
-        <div id="sprite-dropzone" role="button" tabindex="0">
-          <strong>Dépose un PNG ici</strong>
-          <span>ou clique pour choisir un fichier</span>
-        </div>
-        <input id="sprite-file-input" type="file" accept="image/png,.png" hidden />
-        <div class="sprite-actions">
-          <button id="sprite-reset-frame" type="button" disabled>↶ Annuler l'import de la frame</button>
-          <button id="sprite-export-frame" type="button">↓ Exporter l'original</button>
-          <button id="sprite-open-folder" type="button">▤ Ouvrir le dossier local</button>
-          <button id="sprite-apply" class="primary" type="button" disabled>▶ Appliquer les sprites au jeu</button>
-        </div>
         <div id="sprite-message" role="status" aria-live="polite"></div>
+
+        <details id="sprite-placement-panel">
+          <summary><span>Ajuster la position</span><span id="sprite-placement-status" role="status"></span></summary>
+          <div class="sprite-placement-toolbar">
+            <label>Zoom <select id="sprite-zoom"><option value="0.03125">3,125 %</option><option value="0.0625">6,25 %</option><option value="0.125">12,5 %</option><option value="0.25">25 %</option><option value="0.5">50 %</option><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></label>
+            <button id="sprite-fit" type="button">Centrer</button>
+            <label class="chk"><input id="sprite-overlay" type="checkbox" checked /> Superposer l’original</label>
+            <label class="chk"><input id="sprite-grid" type="checkbox" /> Grille de pixels</label>
+            <label>Fond <select id="sprite-background"><option value="checker">Damier</option><option value="black">Noir</option><option value="white">Blanc</option></select></label>
+          </div>
+          <canvas id="sprite-placement-canvas" width="1000" height="400" tabindex="0" aria-label="Déplacer la texture à la souris ou avec les flèches du clavier"></canvas>
+          <div class="sprite-placement-toolbar">
+            <label>X <input id="sprite-offset-x" type="number" step="1" min="-8192" max="8192" value="0" disabled /> px</label>
+            <label>Y <input id="sprite-offset-y" type="number" step="1" min="-8192" max="8192" value="0" disabled /> px</label>
+            <button id="sprite-offset-reset" type="button" disabled>Position d’origine</button>
+            <button id="sprite-save-placement" class="primary" type="button" disabled>Enregistrer la position</button>
+          </div>
+          <p class="sprite-legend">
+            <span><i class="lg-origin"></i> Origine du sprite</span>
+            <span><i class="lg-frame"></i> Cadre de l’original</span>
+            <span>Glisser : déplacer · Flèches : 1 px, Maj : 10 px · Molette ou clic du milieu : vue</span>
+          </p>
+        </details>
+      </div>
+
+      <footer id="sprite-apply-bar">
+        <div id="sprite-apply-summary">
+          <strong id="sprite-pending-count">Aucun sprite modifié</strong>
+          <span id="sprite-apply-detail">Importe un PNG pour commencer.</span>
+        </div>
+        <button id="sprite-open-folder" type="button" data-tooltip="Ouvrir le dossier où DELTATRANSLATE range tes PNG importés">▤ Dossier des imports</button>
+        <button id="sprite-apply" class="primary" type="button" disabled data-tooltip="Recompiler le data.win avec tous les sprites importés (le data.win d’origine est conservé)">▶ Appliquer au jeu</button>
         <pre id="sprite-progress" class="hidden"></pre>
-      </section>
+      </footer>
     </main>
   </section>
 
@@ -398,6 +430,17 @@
           <option value="all">Tous les personnages</option>
         </select>
       </div>
+      <div id="publication-filter-row" class="hidden">
+        <label for="sel-publication-filter">Runedelta</label>
+        <select id="sel-publication-filter">
+          <option value="all">Toutes</option>
+          <option value="local">● Non publiées</option>
+          <option value="pushed">↑ Sur ma branche</option>
+          <option value="published">✓ Dans main</option>
+          <option value="incoming">⇣ À récupérer</option>
+        </select>
+        <button id="btn-publication-journal" type="button" data-tooltip="Voir les publications de Runedelta : PR fusionnées dans main et commits de ta branche en attente">Journal</button>
+      </div>
       <div id="dialogue-search-bar" class="hidden" role="search">
         <input id="search" type="text" placeholder="Texte EN/FR ou identifiant…" autocomplete="off" aria-label="Rechercher un dialogue" />
         <button id="btn-close-search" type="button" aria-label="Fermer la recherche" data-tooltip="Fermer la recherche (Échap)">×</button>
@@ -415,6 +458,7 @@
         <div id="key-name">—</div>
         <div id="key-meta"></div>
         <div id="key-author" class="hidden"></div>
+        <div id="key-publication" class="hidden"></div>
         <button id="btn-validate" type="button" data-tooltip="Marquer cette ligne comme volontairement identique à l'anglais, puis passer à la suivante (Ctrl+D)">
           <span id="validate-label">✓ OK tel quel</span>
           <kbd>Ctrl+D</kbd>
@@ -426,6 +470,11 @@
       <section class="text-block">
         <label>🇬🇧 Anglais (original)</label>
         <div id="en-display" class="tagged-text"></div>
+      </section>
+
+      <section id="jp-reference" class="text-block hidden" aria-labelledby="jp-reference-label">
+        <label id="jp-reference-label">🇯🇵 Japonais (original)</label>
+        <div id="jp-display" class="tagged-text" lang="ja"></div>
       </section>
 
       <section class="text-block grow">
@@ -449,6 +498,7 @@
           <button id="btn-insert-face" data-tooltip="Insérer \Fx\Ex au curseur">Insérer</button>
         </div>
         <div class="tag-group">
+          <button class="ins" data-ins="\" data-tooltip="Insérer un antislash">\</button>
           <label>Couleur</label>
           <span id="color-swatches"></span>
         </div>
@@ -491,6 +541,8 @@
         </select>
         <button id="btn-side" data-tooltip="Côté de la bulle">↔</button>
         <label class="chk"><input type="checkbox" id="chk-en-preview" /> EN</label>
+        <label class="chk" data-tooltip="Afficher le texte japonais original"><input type="checkbox" id="chk-jp-preview" /> JP</label>
+        <button id="btn-refresh-fonts" type="button" aria-label="Actualiser les polices" data-tooltip="Actualiser les polices depuis le data.win">↻</button>
       </div>
       <div id="preview-face-controls">
         <label>Visage :</label>
@@ -504,6 +556,10 @@
       </div>
       <div id="canvas-wrap">
         <canvas id="preview-canvas" width="640" height="480"></canvas>
+      </div>
+      <div id="preview-copy-controls">
+        <button id="btn-copy-dialogue" type="button" data-tooltip="Copier le dialogue en PNG, sans le décor et avec un fond transparent">Copier l’image</button>
+        <span id="preview-copy-status" role="status"></span>
       </div>
       <div id="preview-warnings"></div>
       <div id="preview-info"></div>

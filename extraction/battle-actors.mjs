@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runToolSync } from "./process-runner.mjs";
 
 export const BATTLE_ACTORS_VERSION = 1;
 
@@ -91,7 +91,7 @@ export function ensureBattleActorSprites({
   log(`  extraction de ${sprites.length} sprites d'acteurs de combat…`);
   const csxPath = path.join(os.tmpdir(), `deltatranslate_actors_${Date.now()}.csx`);
   fs.writeFileSync(csxPath, makeBattleActorsCsx(outDir, sprites), "utf8");
-  const result = spawnSync(cli, ["load", dataWin, "-s", csxPath], {
+  const result = runToolSync(cli, ["load", dataWin, "-s", csxPath], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });

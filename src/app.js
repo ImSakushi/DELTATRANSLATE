@@ -1,3 +1,4 @@
+import { colorInsertion, githubDeviceCode, previewFaceText } from "./editor-tools.mjs";
 import { loadFonts } from "./engine/bitmapfont.js";
 import { Preview } from "./engine/preview.js";
 import { C_TAG, FC_NAMES, F_TAG, encodeFe } from "./engine/typers.js";
@@ -5,8 +6,11 @@ import { extractTags, substituteArgs } from "./engine/writer.js";
 import { SpriteEditor } from "./sprites.js";
 import { prepareChapter } from "./setup-flow.mjs";
 import { mergeSavedEdits, catalogKeys } from "./editor-state.mjs";
-import { resolveConflicts, showHistory } from "./review-tools.mjs";
+import { requestPublicationMessage, resolveConflicts, showHistory } from "./review-tools.mjs";
 import { prepareUpdateInstall, runUpdateAction, updateAction } from "./update-flow.mjs";
+import { renderBranchPicker } from "./branch-picker.mjs";
+import { highlightGml } from "./gml-syntax.mjs";
+import { PUBLICATION_STATES, describePublication, effectiveState, showPublicationJournal, summarizePublication } from "./runedelta-publication.mjs";
 
 // ---------------------------------------------------------------------------
 // État global
@@ -17,7 +21,10 @@ let migrationReview = new Set();
 let japanese = {}; // lang_ja.json du chapitre, utilisé comme référence de balises
 let reference = {}; // id -> {en, call, channel, file, line, speaker, face, substitutions, smallFace, speakerOverlay}
 let runedeltaAttributions = {}; // id -> dernier auteur Git de la ligne Runedelta
-let prefs = {}; // { modeOverrides, bubbleSides, platformSides, validated, faceOverrides, theme, backupsEnabled, listSort, speakerFilter }
+let runedeltaPublication = null; // état de chaque ligne vis-à-vis de la branche et de main (runedeltaPublication côté main.js)
+let publicationRequest = null;
+const PUBLICATION_REFRESH_MS = 5 * 60_000;
+let prefs = {}; // { modeOverrides, bubbleSides, platformSides, validated, faceOverrides, backupsEnabled, listSort, speakerFilter }
 let prefsSavePromise = Promise.resolve(true);
 let prefsSaveFailed = false;
 function savePreferences() {
@@ -45,6 +52,7 @@ let closePromptOpen = false;
 let preview = null;
 let targetFonts = {};
 let englishFonts = {};
+let japaneseFonts = {};
 let sequences = new Map(); // key -> [keys de la même séquence]
 const editHistories = new Map(); // historique indépendant pour chaque clé
 let pendingEdit = null;
@@ -313,6 +321,7 @@ async function init() {
       faceOverrides: {},
       sceneOverrides: {},
       backupsEnabled: false,
+      japaneseMode: false,
     },
     data.prefs
   );
@@ -322,15 +331,23 @@ async function init() {
   if (!prefs.sceneOverrides) prefs.sceneOverrides = {};
   prefs.listSort = LIST_SORTS.has(prefs.listSort) ? prefs.listSort : "source";
   prefs.speakerFilter = typeof prefs.speakerFilter === "string" ? prefs.speakerFilter : "all";
+  prefs.publicationFilter = Object.hasOwn(PUBLICATION_STATES, prefs.publicationFilter) ? prefs.publicationFilter : "all";
   $("sel-list-sort").value = prefs.listSort;
+  $("sel-publication-filter").value = prefs.publicationFilter;
   const backupsToggle = $("chk-backups");
   backupsToggle.checked = prefs.backupsEnabled === true;
   backupsToggle.addEventListener("change", () => {
     prefs.backupsEnabled = backupsToggle.checked;
     savePreferences();
   });
-  applyTheme(prefs.theme === "classic" ? "classic" : "deltarune");
-  $("btn-theme").onclick = toggleTheme;
+  const japaneseToggle = $("chk-japanese-mode");
+  japaneseToggle.checked = prefs.japaneseMode === true;
+  japaneseToggle.addEventListener("change", () => {
+    prefs.japaneseMode = japaneseToggle.checked;
+    renderJapaneseReference();
+    savePreferences();
+  });
+  renderJapaneseReference();
   if (!data.ready) {
     openImportModal(true);
     return;
@@ -356,9 +373,10 @@ async function init() {
   }
   spriteEditor.init(data.spriteCatalog);
 
-  [targetFonts, englishFonts] = await Promise.all([
+  [targetFonts, englishFonts, japaneseFonts] = await Promise.all([
     loadFonts(data.extractedDir, parseFontCsvs(data.fonts), appConfig.targetLanguage ?? "fr"),
     loadFonts(data.extractedDir, parseFontCsvs(data.fonts), "en"),
+    loadFonts(data.extractedDir, parseFontCsvs(data.fonts), "ja"),
   ]);
   preview = new Preview(
     $("preview-canvas"),
@@ -395,31 +413,13 @@ async function init() {
     urlKey && entriesByKey.has(urlKey) ? urlKey : firstTodo ? firstTodo.key : entries[0]?.key
   );
   scrollToSelected();
+  renderPublicationControls();
+  refreshPublication(true);
 }
 
 function parseFontCsvs(fonts) {
   // load-data renvoie { fnt_main: csvText, ... }
   return fonts;
-}
-
-// Deux designs : "deltarune" (défaut) et "classic" (ancien look).
-// Chaque design est une feuille de style complète dans src/themes/.
-function applyTheme(theme) {
-  const isClassic = theme === "classic";
-  const name = isClassic ? "classic" : "deltarune";
-  document.documentElement.dataset.theme = name;
-  $("theme-css").setAttribute("href", `themes/${name}.css`);
-  window.api.setTitleBarTheme(name);
-  const button = $("btn-theme");
-  const label = isClassic ? "Passer au design DELTARUNE" : "Passer au design classique";
-  button.dataset.tooltip = label;
-  button.setAttribute("aria-label", label);
-}
-
-function toggleTheme() {
-  prefs.theme = document.documentElement.dataset.theme === "classic" ? "deltarune" : "classic";
-  applyTheme(prefs.theme);
-  savePreferences();
 }
 
 // Version « lisible » d'un texte pour la recherche : tags retirés, de sorte
@@ -513,13 +513,16 @@ function buildSequences() {
     list.sort((a, b) => a.line - b.line);
     let seq = [];
     let prevLine = null;
+    let prevScope = null;
     for (const e of list) {
-      if (prevLine !== null && e.line - prevLine > 6) {
+      const scope = reference[e.key]?.dialogueScope ?? 0;
+      if (prevLine !== null && (e.line - prevLine > 6 || scope !== prevScope)) {
         for (const s of seq) sequences.set(s.key, seq);
         seq = [];
       }
       seq.push(e);
       prevLine = e.line;
+      prevScope = scope;
     }
     for (const s of seq) sequences.set(s.key, seq);
   }
@@ -622,6 +625,65 @@ function attributionTooltip(attribution) {
   return details.join("\n");
 }
 
+function runedeltaTracking() {
+  return appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled === true;
+}
+
+function linePublication(e) {
+  return runedeltaTracking() && runedeltaPublication?.ok ? describePublication(runedeltaPublication, e.key, unsavedKeys.has(e.key)) : null;
+}
+
+function renderPublicationControls() {
+  const tracking = runedeltaTracking();
+  $("publication-filter-row").classList.toggle("hidden", !tracking);
+  const select = $("sel-publication-filter");
+  const counts = { local: 0, pushed: 0, published: 0, incoming: 0 };
+  if (tracking && runedeltaPublication?.ok) {
+    for (const e of entries) {
+      const state = effectiveState(runedeltaPublication, e.key, unsavedKeys.has(e.key));
+      if (state) counts[state]++;
+    }
+  }
+  for (const option of select.options) {
+    const base = option.dataset.label ?? (option.dataset.label = option.textContent);
+    option.textContent = option.value !== "all" && runedeltaPublication?.ok ? `${base} (${counts[option.value]})` : base;
+  }
+  select.dataset.tooltip = runedeltaPublication?.ok
+    ? `${summarizePublication(runedeltaPublication, unsavedKeys.size)}\nVérifié à ${new Date(runedeltaPublication.checkedAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`
+    : runedeltaPublication?.error ?? "Suivi de publication en cours de chargement…";
+  if (selectedKey) renderKeyPublication(entriesByKey.get(selectedKey));
+}
+
+// Une seule requête à la fois : main.js refuse un fetch pendant une publication, et inversement.
+function refreshPublication(fetch = false) {
+  if (!runedeltaTracking()) {
+    runedeltaPublication = null;
+    if (appReady) renderPublicationControls();
+    return Promise.resolve(null);
+  }
+  if (publicationRequest) return publicationRequest;
+  publicationRequest = window.api.getRunedeltaPublication(fetch)
+    .then(result => {
+      if (result?.busy) return runedeltaPublication;
+      runedeltaPublication = result;
+      if (!result?.ok) console.warn(`Suivi de publication Runedelta indisponible : ${result?.error}`);
+      renderPublicationControls();
+      if (prefs.publicationFilter !== "all") applyFilter();
+      else renderListRaf();
+      return result;
+    })
+    .catch(error => { console.warn("Suivi de publication Runedelta indisponible :", error); return null; })
+    .finally(() => { publicationRequest = null; });
+  return publicationRequest;
+}
+
+function openPublicationJournal() {
+  showPublicationJournal({
+    load: async fetch => (await refreshPublication(fetch)) ?? runedeltaPublication,
+    openPullRequest: number => window.api.openRunedeltaPullRequest(number),
+  });
+}
+
 function compareEntries(a, b) {
   let groupComparison = 0;
   if (prefs.listSort === "speaker") {
@@ -650,6 +712,10 @@ function applyFilter({ restoreSelected = false } = {}) {
       prefs.speakerFilter !== "all" &&
       speakerIdentity(e).key !== prefs.speakerFilter
     ) return false;
+    if (
+      prefs.publicationFilter !== "all" && runedeltaTracking() && runedeltaPublication?.ok &&
+      effectiveState(runedeltaPublication, e.key, unsavedKeys.has(e.key)) !== prefs.publicationFilter
+    ) return false;
     if (q && !e.searchable.includes(q)) return false;
     return true;
   });
@@ -663,6 +729,9 @@ function applyFilter({ restoreSelected = false } = {}) {
         : "";
   if (prefs.listSort === "speaker" && prefs.speakerFilter !== "all") {
     sortSuffix += ` · ${speakerLabel(prefs.speakerFilter)} uniquement`;
+  }
+  if (prefs.publicationFilter !== "all" && runedeltaTracking() && runedeltaPublication?.ok) {
+    sortSuffix += ` · ${PUBLICATION_STATES[prefs.publicationFilter].label.toLowerCase()}`;
   }
   $("list-status").textContent = `${filtered.length} lignes affichées${sortSuffix}`;
   renderList();
@@ -697,9 +766,13 @@ function renderList() {
     const dot = e.noref ? "noref" : e.todo ? "todo" : "ok";
     const sortLabel = activeSortLabel(e);
     const attribution = translatedAttribution(e);
+    const publication = linePublication(e);
     const listMeta =
-      sortLabel || attribution
+      sortLabel || attribution || publication
         ? `<span class="li-meta">` +
+          (publication
+            ? `<span class="li-publication publication-${publication.state}" data-tooltip="${escapeHtml(publication.tooltip)}">${PUBLICATION_STATES[publication.state].symbol}</span>`
+            : "") +
           (sortLabel ? `<span class="li-sort-label">${escapeHtml(sortLabel)}</span>` : "") +
           (attribution
             ? `<span class="li-author" data-tooltip="${escapeHtml(attributionTooltip(attribution))}">✎ ${escapeHtml(attributionNames(attribution).join(", "))}</span>`
@@ -742,6 +815,14 @@ function renderKeyMeta(e) {
 // ---------------------------------------------------------------------------
 // Sélection et éditeur
 // ---------------------------------------------------------------------------
+function renderJapaneseReference() {
+  $("jp-reference").classList.toggle("hidden", prefs.japaneseMode !== true);
+  const text = japanese[selectedKey];
+  const display = $("jp-display");
+  if (typeof text === "string") display.innerHTML = highlight(text);
+  else display.textContent = selectedKey ? "Texte japonais indisponible pour ce dialogue." : "Sélectionne un dialogue.";
+}
+
 function selectKey(key) {
   if (!key) return;
   selectedKey = key;
@@ -750,7 +831,9 @@ function selectKey(key) {
   $("key-name").textContent = shortKey(key);
   renderKeyMeta(e);
   renderKeyAttribution(e);
+  renderKeyPublication(e);
   $("en-display").innerHTML = e.en != null ? highlight(e.en) : "<i>—</i>";
+  renderJapaneseReference();
   $("fr-input").value = e.fr;
   refreshHighlight();
   renderSequenceBar(e);
@@ -770,6 +853,15 @@ function renderKeyAttribution(e) {
     ? `✎ Traduit par ${attributionNames(attribution).join(", ")}`
     : "";
   author.dataset.tooltip = attribution ? attributionTooltip(attribution) : "";
+}
+
+function renderKeyPublication(e) {
+  const publication = e ? linePublication(e) : null;
+  const element = $("key-publication");
+  element.classList.toggle("hidden", !publication);
+  element.className = publication ? `publication-${publication.state}` : "hidden";
+  element.textContent = publication?.text ?? "";
+  element.dataset.tooltip = publication?.tooltip ?? "";
 }
 
 function updateValidateButton() {
@@ -937,12 +1029,40 @@ let previewTimer = null;
 let previewQueue = Promise.resolve();
 let previewGeneration = 0;
 function schedulePreview() {
+  $("preview-copy-status").textContent = "";
   const generation = ++previewGeneration;
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => {
     previewQueue = previewQueue.then(() => generation === previewGeneration ? runPreview() : undefined)
       .catch(error => { $("preview-info").textContent = `Aperçu impossible : ${error.message}`; });
   }, 120);
+}
+
+async function copyPreviewDialogue() {
+  const button = $("btn-copy-dialogue");
+  const status = $("preview-copy-status");
+  if (!preview || !selectedKey) {
+    status.textContent = "Sélectionne un dialogue à copier.";
+    return;
+  }
+  button.disabled = true;
+  status.textContent = "Copie en cours…";
+  clearTimeout(previewTimer);
+  ++previewGeneration;
+  const operation = previewQueue.then(async () => {
+    await runPreview();
+    return preview.dialogueImage();
+  });
+  previewQueue = operation.catch(() => {});
+  try {
+    const image = await operation;
+    await window.api.copyDialogueImage(image);
+    status.textContent = "Image copiée !";
+  } catch (error) {
+    status.textContent = `Copie impossible : ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // Compatibilité avec une référence générée par une ancienne version : les
@@ -1131,8 +1251,18 @@ async function runPreview({ key = selectedKey, target = preview, quality = false
   if (!target || !key) return;
   const e = entriesByKey.get(key);
   const showEn = quality ? false : $("chk-en-preview").checked;
-  if (target === preview) target.fonts = showEn ? englishFonts : targetFonts;
-  const sourceText = showEn ? (e.en ?? "") : quality ? e.fr : $("fr-input").value;
+  const showJp = !quality && $("chk-jp-preview").checked;
+  const languageWarnings = [];
+  const referenceText = (textKey, fallback = "") => {
+    if (showJp) {
+      if (typeof japanese[textKey] === "string") return japanese[textKey];
+      languageWarnings.push(`Texte japonais indisponible pour ${textKey}.`);
+      return "";
+    }
+    return showEn ? reference[textKey]?.en ?? fallback : lang[textKey] ?? reference[textKey]?.en ?? fallback;
+  };
+  if (target === preview) target.fonts = showJp ? japaneseFonts : showEn ? englishFonts : targetFonts;
+  const sourceText = showJp ? referenceText(key) : showEn ? (e.en ?? "") : quality ? e.fr : $("fr-input").value;
   const substitution = substituteArgs(
     sourceText,
     reference[key]?.substitutions,
@@ -1141,7 +1271,7 @@ async function runPreview({ key = selectedKey, target = preview, quality = false
   const mode = quality ? prefs.modeOverrides[key] ?? autoMode(e) : effectiveMode();
   const state = inheritedState(key);
   const choiceWarnings = [];
-  state.language = showEn ? "en" : appConfig.targetLanguage ?? "fr";
+  state.language = showJp ? "ja" : showEn ? "en" : appConfig.targetLanguage ?? "fr";
   state.sceneContext = selectedSceneContext(key, mode);
   state.platformSide =
     prefs.platformSides[key] ??
@@ -1150,9 +1280,7 @@ async function runPreview({ key = selectedKey, target = preview, quality = false
     0;
   state.trialCase = reference[key]?.trialCase ?? 0;
   const trialPromptKey = "obj_yellow_trial_manager_slash_Draw_0_gml_33_0";
-  state.trialPrompt = showEn
-    ? reference[trialPromptKey]?.en
-    : lang[trialPromptKey] ?? reference[trialPromptKey]?.en;
+  state.trialPrompt = mode === "trial" ? referenceText(trialPromptKey) : undefined;
   const sourceFile = reference[key]?.file ?? e.file ?? "";
   if (/obj_shop1(?:_|$)/i.test(sourceFile)) state.scene = "shop-seam";
   if (/obj_trashy_trio(?:_|$)/i.test(sourceFile)) state.scene = "trashy-trio";
@@ -1170,9 +1298,7 @@ async function runPreview({ key = selectedKey, target = preview, quality = false
     state.choiceOptions = choice.options.map((option) => {
       const optionRef = option.key ? reference[option.key] : null;
       const optionSource = option.key
-        ? showEn
-          ? optionRef?.en ?? option.text ?? ""
-          : lang[option.key] ?? optionRef?.en ?? option.text ?? ""
+        ? referenceText(option.key, option.text ?? "")
         : option.text ?? "";
       const resolved = substituteArgs(
         optionSource,
@@ -1202,11 +1328,7 @@ async function runPreview({ key = selectedKey, target = preview, quality = false
   if (smallFace?.dialogueKey) {
     const dialogueKey = smallFace.dialogueKey;
     const dialogueRef = dialogueKey ? reference[dialogueKey] : null;
-    const dialogueSource = showEn
-      ? dialogueRef?.en ?? ""
-      : dialogueKey && lang[dialogueKey] != null
-        ? lang[dialogueKey]
-        : dialogueRef?.en ?? "";
+    const dialogueSource = referenceText(dialogueKey);
     const dialogueSubstitution = substituteArgs(
       dialogueSource,
       dialogueRef?.substitutions,
@@ -1231,9 +1353,14 @@ async function runPreview({ key = selectedKey, target = preview, quality = false
   if (fo) {
     state.fc = fo.fc;
     state.fe = fo.fe;
+    if (state.smallFace) state.smallFace.dialogueText = previewFaceText(state.smallFace.dialogueText, fo);
   }
 
-  const res = await target.render(substitution.text, mode, state);
+  for (const font of Object.values(target.fonts)) font.missingGlyphs?.clear();
+  const res = await target.render(previewFaceText(substitution.text, fo), mode, state);
+  const glyphWarnings = Object.values(target.fonts)
+    .filter(font => font.missingGlyphs?.size)
+    .map(font => `Caractères absents de la police ${font.name} : « ${[...font.missingGlyphs].join(" ")} ». Actualise les polices si ces caractères s’affichent dans le jeu.`);
 
   const substitutionWarnings = [
     ...substitution.sampled.map(
@@ -1243,7 +1370,7 @@ async function runPreview({ key = selectedKey, target = preview, quality = false
       (id) => `~${id} : valeur dynamique inconnue hors du jeu`
     ),
   ];
-  res.warnings = [...substitutionWarnings, ...choiceWarnings, ...(res.warnings ?? [])];
+  res.warnings = [...languageWarnings, ...(target.fonts.loadWarnings ?? []), ...glyphWarnings, ...substitutionWarnings, ...choiceWarnings, ...(res.warnings ?? [])];
   if (quality) return res;
   if (key !== selectedKey) return;
   const warnEl = $("preview-warnings");
@@ -1330,10 +1457,9 @@ function buildFaceSelectors() {
   auto.textContent = "Auto (détecté)";
   selPrev.appendChild(auto);
   for (const [fc, name] of Object.entries(FC_NAMES)) {
-    if (fc === "0") continue;
     const opt = document.createElement("option");
     opt.value = fc;
-    opt.textContent = name;
+    opt.textContent = fc === "0" ? "Aucun" : name;
     selPrev.appendChild(opt);
   }
 }
@@ -1349,7 +1475,12 @@ function buildColorSwatches() {
       ? "linear-gradient(45deg,red,orange,yellow,green,blue,violet)"
       : color;
     s.dataset.tooltip = `\\c${ch}`;
-    s.onclick = () => insertAtCursor(`\\c${ch}`);
+    s.onclick = () => {
+      const ta = $("fr-input");
+      const insertion = colorInsertion(ta.value, ta.selectionStart, ta.selectionEnd, ch);
+      insertAtCursor(insertion.text);
+      ta.setSelectionRange(insertion.start, insertion.end);
+    };
     wrap.appendChild(s);
   }
 }
@@ -1680,6 +1811,7 @@ function renderCodeSource(targetLine = codeState.targetLine) {
   const container = $("code-readonly");
   const fragment = document.createDocumentFragment();
   const lines = codeState.content.split("\n");
+  const highlighted = highlightGml(codeState.content).split("\n");
   lines.forEach((line, index) => {
     const number = index + 1;
     const row = document.createElement("div");
@@ -1690,7 +1822,7 @@ function renderCodeSource(targetLine = codeState.targetLine) {
     gutter.textContent = String(number);
     const source = document.createElement("span");
     source.className = "code-line-text";
-    source.textContent = line || " ";
+    source.innerHTML = highlighted[index] || " ";
     const key = [...line.matchAll(/"([^"\\]*)"/g)].map((match) => match[1]).find((value) => entriesByKey.has(value));
     if (key) {
       row.title = "Double-clique pour ouvrir ce texte dans l’éditeur de traduction.";
@@ -1705,6 +1837,20 @@ function renderCodeSource(targetLine = codeState.targetLine) {
   });
 }
 
+function syncCodeHighlightScroll() {
+  const input = $("code-input");
+  const highlight = $("code-highlight");
+  highlight.style.width = `${input.clientWidth}px`;
+  highlight.style.height = `${input.clientHeight}px`;
+  highlight.scrollTop = input.scrollTop;
+  highlight.scrollLeft = input.scrollLeft;
+}
+
+function renderCodeHighlight() {
+  $("code-highlight").innerHTML = highlightGml($("code-input").value) + "\n ";
+  syncCodeHighlightScroll();
+}
+
 function jumpToCodeLine(line) {
   const wanted = Math.max(1, Number(line) || 1);
   codeState.targetLine = wanted;
@@ -1717,7 +1863,8 @@ function jumpToCodeLine(line) {
   const offset = lines.slice(0, wanted - 1).reduce((total, value) => total + value.length + 1, 0);
   input.focus();
   input.setSelectionRange(offset, Math.min(input.value.length, offset + (lines[wanted - 1]?.length ?? 0)));
-  input.scrollTop = Math.max(0, (wanted - 4) * 18.6);
+  input.scrollTop = Math.max(0, (wanted - 4) * parseFloat(getComputedStyle(input).lineHeight));
+  syncCodeHighlightScroll();
 }
 
 function codeFamily(file) {
@@ -1824,7 +1971,7 @@ async function loadCodeFile(file, targetLine = null) {
   });
   $("code-file-name").textContent = `${result.file}.gml${result.modified ? " · override local" : " · original extrait"}`;
   $("code-file-query").value = result.file;
-  $("code-input").classList.add("hidden");
+  $("code-editing").classList.add("hidden");
   $("code-readonly").classList.remove("hidden");
   renderCodeSource();
   renderRelatedCodeEntries();
@@ -1865,14 +2012,15 @@ function toggleCodeEditing() {
   if (codeState.editing) {
     codeState.content = $("code-input").value;
     codeState.editing = false;
-    $("code-input").classList.add("hidden");
+    $("code-editing").classList.add("hidden");
     $("code-readonly").classList.remove("hidden");
     renderCodeSource();
   } else {
     codeState.editing = true;
     $("code-input").value = codeState.content;
     $("code-readonly").classList.add("hidden");
-    $("code-input").classList.remove("hidden");
+    $("code-editing").classList.remove("hidden");
+    renderCodeHighlight();
     jumpToCodeLine(codeState.targetLine || 1);
   }
   updateCodeButtons();
@@ -1914,7 +2062,7 @@ async function resetCodeOverride() {
     editing: false,
   });
   $("code-file-name").textContent = `${codeState.file}.gml · original extrait`;
-  $("code-input").classList.add("hidden");
+  $("code-editing").classList.add("hidden");
   $("code-readonly").classList.remove("hidden");
   renderCodeSource();
   updateCodeButtons();
@@ -1944,7 +2092,8 @@ function findInCode(direction) {
     input.focus();
     input.setSelectionRange(index, index + query.length);
     const line = text.slice(0, index).split("\n").length;
-    input.scrollTop = Math.max(0, (line - 4) * 18.6);
+    input.scrollTop = Math.max(0, (line - 4) * parseFloat(getComputedStyle(input).lineHeight));
+    syncCodeHighlightScroll();
   } else {
     jumpToCodeLine(text.slice(0, index).split("\n").length);
   }
@@ -2007,8 +2156,11 @@ function bindCodeModal() {
   $("code-input").addEventListener("input", () => {
     codeState.dirty = $("code-input").value !== codeState.saved;
     codeState.findIndex = -1;
+    renderCodeHighlight();
     updateCodeButtons();
   });
+  $("code-input").addEventListener("scroll", syncCodeHighlightScroll);
+  new ResizeObserver(syncCodeHighlightScroll).observe($("code-input"));
   $("code-modal").addEventListener("mousedown", (event) => {
     if (event.target === $("code-modal")) closeCodeModal();
   });
@@ -2050,8 +2202,10 @@ function onEdit(historyEntry = null) {
     pendingEdit = null;
     e.fr = v;
     lang[selectedKey] = v;
+    const wasUnsaved = unsavedKeys.has(selectedKey);
     if (v === savedTranslations.get(selectedKey)) unsavedKeys.delete(selectedKey);
     else unsavedKeys.add(selectedKey);
+    if (wasUnsaved !== unsavedKeys.has(selectedKey)) renderKeyPublication(e);
     e.todo = computeTodo(e);
     e.searchable = buildSearchable(e);
     setDirty(unsavedKeys.size > 0);
@@ -2127,7 +2281,10 @@ function save({ allowPublish = false } = {}) {
           `✔ Sauvegardé localement à ${new Date(r.savedAt).toLocaleTimeString()}` +
           (r.backupCreated ? " (backup créé)" : "");
       }
-      if (appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled) await refreshRunedeltaStatus();
+      if (appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled) {
+        await refreshRunedeltaStatus();
+        refreshPublication();
+      }
       if (r.gameCopyError) alert(r.gameCopyError);
       updateProgress();
       renderList();
@@ -2185,6 +2342,12 @@ setTimeout(() => {
   backupIfModified();
   setInterval(backupIfModified, BACKUP_CHECK_MS);
 }, BACKUP_CHECK_MS);
+
+// main avance au rythme des PR fusionnées par l'équipe : on le relit régulièrement et au retour dans l'app.
+setInterval(() => { if (appReady && !runedeltaBusy) refreshPublication(true); }, PUBLICATION_REFRESH_MS);
+window.addEventListener("focus", () => {
+  if (appReady && !runedeltaBusy && Date.now() - (runedeltaPublication?.checkedAt ?? 0) > PUBLICATION_REFRESH_MS / 2) refreshPublication(true);
+});
 
 async function handleCloseRequest() {
   if (closePromptOpen) return;
@@ -2282,7 +2445,6 @@ function toggleDialogueSearch() {
 // ---------------------------------------------------------------------------
 function bindEvents() {
   setupTagWheel();
-  $("btn-theme").onclick = toggleTheme;
   $("list-container").addEventListener("scroll", renderListRaf, { passive: true });
   $("search").addEventListener(
     "input",
@@ -2297,6 +2459,13 @@ function bindEvents() {
     $("list-container").scrollTop = 0;
     applyFilter();
   });
+  $("sel-publication-filter").addEventListener("change", () => {
+    prefs.publicationFilter = $("sel-publication-filter").value;
+    savePreferences();
+    $("list-container").scrollTop = 0;
+    applyFilter();
+  });
+  $("btn-publication-journal").addEventListener("click", openPublicationJournal);
   $("sel-speaker-filter").addEventListener("change", () => {
     prefs.speakerFilter = $("sel-speaker-filter").value;
     savePreferences();
@@ -2382,7 +2551,13 @@ function bindEvents() {
     savePreferences();
     schedulePreview();
   };
-  $("chk-en-preview").addEventListener("change", schedulePreview);
+  for (const [selected, other] of [["chk-en-preview", "chk-jp-preview"], ["chk-jp-preview", "chk-en-preview"]]) {
+    $(selected).addEventListener("change", () => {
+      if ($(selected).checked) $(other).checked = false;
+      schedulePreview();
+    });
+  }
+  $("btn-copy-dialogue").addEventListener("click", copyPreviewDialogue);
   $("btn-validate").onclick = toggleValidated;
   $("sel-preview-face").addEventListener("change", applyFaceOverride);
   $("inp-preview-fe").addEventListener("input", debounce(applyFaceOverride, 150));
@@ -2555,9 +2730,10 @@ function renderRunedeltaStatus(status = {}, sync = null) {
         : "Vérifier et publier les traductions ; Récupérer permet de vérifier sans publier";
     }
     label.className = "setup-status ready";
+    const tracked = runedeltaPublication?.ok ? `\nSuivi de main : ${summarizePublication(runedeltaPublication, unsavedKeys.size)}` : "";
     label.textContent =
       `✓ Runedelta connecté — chapitre ${status.chapter ?? sync?.chapter ?? "?"}, branche ${status.branch ?? sync?.branch ?? "?"}` +
-      publicationState + (status.targetPath ? `\nFichier édité : ${status.targetPath}` : "");
+      publicationState + tracked + (status.targetPath ? `\nFichier édité : ${status.targetPath}` : "");
   } else if (status.configured && status.connected) {
     label.className = "setup-status";
     label.textContent = `Dépôt connecté — le chapitre ${status.chapter ?? "courant"} doit encore être installé.`;
@@ -2578,9 +2754,11 @@ function renderRunedeltaStatus(status = {}, sync = null) {
   connectButton.classList.toggle("hidden", enabled && !changingBranch);
   connectButton.textContent = changingBranch ? "Changer de branche" : "Ouvrir le catalogue Git";
   $("runedelta-branch").disabled = !modeEnabled || runedeltaBusy;
+  $("runedelta-branch-list").disabled = !modeEnabled || runedeltaBusy;
   $("btn-runedelta-branches").disabled = !modeEnabled || runedeltaBusy;
   connectButton.disabled = !modeEnabled || !status.available || !appConfig.dataWinPath || runedeltaBusy || (appConfig.targetLanguage ?? "fr") !== "fr";
   $("btn-open-runedelta").disabled = !modeEnabled || !status.connected || runedeltaBusy;
+  $("btn-runedelta-journal").classList.toggle("hidden", !enabled);
   $("btn-disconnect-runedelta").disabled = !modeEnabled || !(status.configured || enabled) || runedeltaBusy;
 }
 
@@ -2609,7 +2787,9 @@ async function loadRunedeltaBranches() {
   runedeltaBusy = true;
   renderRunedeltaStatus({ available: true });
   const status = $("runedelta-branch-status");
-  status.textContent = "Chargement des branches…";
+  status.textContent = "Chargement des branches et de leurs derniers commits…";
+  $("runedelta-branch-list").replaceChildren();
+  $("runedelta-branch-list").setAttribute("aria-busy", "true");
   try {
     const result = await window.api.listRunedeltaBranches(remote);
     if (!result.ok) throw new Error(result.error);
@@ -2621,10 +2801,21 @@ async function loadRunedeltaBranches() {
       option.textContent = branch === result.defaultBranch ? `${branch} (par défaut)` : branch;
       select.appendChild(option);
     }
-    select.value = result.branches.includes(selected) ? selected : result.defaultBranch || result.branches[0] || "";
-    status.textContent = result.branches.length ? "Choisis la branche puis clique sur Connecter et installer ou Changer de branche. Publier enverra uniquement vers cette branche." : "Aucune branche disponible.";
+    select.value = result.branches.includes(selected) ? selected
+      : result.branches.includes(result.defaultBranch) ? result.defaultBranch : result.branches[0] || "";
+    renderBranchPicker($("runedelta-branch-list"), result, select.value, appConfig.runedelta?.enabled ? appConfig.runedelta?.branch : null, name => {
+      select.value = name;
+      refreshRunedeltaStatus();
+    });
+    status.textContent = result.detailsError || (result.branches.length
+      ? `${result.branches.length} branche${result.branches.length > 1 ? "s" : ""} · Informations du dépôt actualisées à ${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}.`
+      : "Aucune branche disponible.");
   } catch (error) { status.textContent = error.message; }
-  finally { runedeltaBusy = false; await refreshRunedeltaStatus(); }
+  finally {
+    $("runedelta-branch-list").setAttribute("aria-busy", "false");
+    runedeltaBusy = false;
+    await refreshRunedeltaStatus();
+  }
 }
 
 async function connectRunedelta() {
@@ -2674,16 +2865,18 @@ async function publishRunedeltaNow(receiveOnly = false) {
   renderRunedeltaStatus({ available: true, enabled: true });
   let result = null;
   try {
+    const commitMessage = receiveOnly ? null : await requestPublicationMessage();
+    if (!receiveOnly && !commitMessage) return;
     if (dirty && !(await save({ allowPublish: true }))) return;
     const snapshot = { ...lang };
     const resolutions = {};
     const synchronize = receiveOnly ? window.api.receiveRunedelta : window.api.syncRunedelta;
-    result = await synchronize(snapshot, null, languageRevision);
+    result = await synchronize(snapshot, null, languageRevision, commitMessage);
     while (!result.ok && result.conflict) {
       const resolution = await resolveConflicts(result);
       if (!resolution) return;
       resolutions[result.phase] = resolution;
-      result = await synchronize(snapshot, resolutions, languageRevision);
+      result = await synchronize(snapshot, resolutions, languageRevision, commitMessage);
     }
     if (!result.ok) {
       alert(`${receiveOnly ? "Récupération" : "Publication"} Runedelta impossible.\n\n${result.error}`);
@@ -2691,6 +2884,8 @@ async function publishRunedeltaNow(receiveOnly = false) {
     }
     lang = mergeSavedEdits(lang, snapshot, result.language);
     languageRevision = result.revision;
+    refreshPublication();
+    void spriteEditor.refreshCatalog();
     if (result.reference) reference = result.reference;
     runedeltaAttributions = result.attributions ?? runedeltaAttributions;
     const active = selectedKey;
@@ -2726,8 +2921,19 @@ async function configureRunedeltaGithub(login = false) {
   const status = $("runedelta-access-status");
   const log = $("runedelta-login-log");
   log.textContent = "";
+  const codePanel = $("runedelta-device-code-panel");
+  codePanel.classList.add("hidden");
+  $("runedelta-device-code").textContent = "";
   status.textContent = login ? "Termine la connexion dans ton navigateur avec le code affiché ci-dessous (trois minutes maximum)." : "Vérification de l’accès Git…";
-  const unsubscribe = login ? window.api.onRunedeltaLoginProgress(text => { log.textContent += text; }) : null;
+  const unsubscribe = login ? window.api.onRunedeltaLoginProgress(text => {
+    log.textContent += text;
+    const code = githubDeviceCode(log.textContent);
+    if (code) {
+      $("runedelta-device-code").textContent = code;
+      codePanel.classList.remove("hidden");
+      $("runedelta-github-setup").open = true;
+    }
+  }) : null;
   try {
     if (login) {
       const connected = await window.api.loginRunedeltaGithub();
@@ -2747,6 +2953,7 @@ async function configureRunedeltaGithub(login = false) {
   } catch (error) { status.textContent = error.message; }
   finally {
     unsubscribe?.();
+    codePanel.classList.add("hidden");
     runedeltaBusy = false;
     await refreshRunedeltaStatus();
   }
@@ -2900,7 +3107,7 @@ function openImportModal(required = false, runedelta = false) {
     branchSelect.value = currentBranch ?? "";
     $("runedelta-author-name").value = appConfig.runedelta?.identity?.name ?? "";
     $("runedelta-author-email").value = appConfig.runedelta?.identity?.email ?? "";
-    refreshRunedeltaStatus();
+    loadRunedeltaBranches();
   }
   else {
     refreshUtmtStatus().catch((error) => showSetupError(error.message));
@@ -2911,11 +3118,13 @@ function openImportModal(required = false, runedelta = false) {
 function bindImportModal() {
   if (importModalBound) return;
   importModalBound = true;
-  const saveRunedeltaOptions = async () => {
+  const saveRunedeltaOptions = async (event) => {
     if (runedeltaBusy) return;
     const options = {
       modeEnabled: $("chk-runedelta-mode").checked,
-      publishEnabled: $("chk-runedelta-publish").checked,
+      publishEnabled: event?.target.id === "chk-runedelta-mode"
+        ? (appConfig.runedelta?.publishEnabled ?? true)
+        : $("chk-runedelta-publish").checked,
       copyToGame: $("chk-runedelta-game-copy").checked,
     };
     runedeltaBusy = true;
@@ -2930,6 +3139,7 @@ function bindImportModal() {
       if (appReady) {
         renderListRaf();
         if (selectedKey) renderKeyAttribution(entriesByKey.get(selectedKey));
+        refreshPublication(true);
       }
     } catch (error) {
       alert(`Modification des options Runedelta impossible.\n\n${error.message}`);
@@ -2945,8 +3155,18 @@ function bindImportModal() {
   $("btn-runedelta").onclick = () => {
     openImportModal(false, true);
   };
+  $("btn-runedelta-copy-code").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("runedelta-device-code").textContent);
+      $("runedelta-access-status").textContent = "Code copié. Colle-le sur la page GitHub ouverte dans ton navigateur.";
+    } catch { $("runedelta-access-status").textContent = "Sélectionne le code affiché pour le copier manuellement."; }
+  };
   $("btn-connect-runedelta").onclick = connectRunedelta;
   $("btn-runedelta-branches").onclick = loadRunedeltaBranches;
+  $("runedelta-remote").onchange = () => {
+    $("runedelta-branch").replaceChildren();
+    loadRunedeltaBranches();
+  };
   $("runedelta-branch").onchange = () => refreshRunedeltaStatus();
   $("btn-publish").onclick = () => publishRunedeltaNow();
   $("btn-publish-runedelta").onclick = () => publishRunedeltaNow();
@@ -2964,6 +3184,7 @@ function bindImportModal() {
     } catch (error) { $("runedelta-access-status").textContent = error.message; }
   };
   $("btn-open-runedelta").onclick = () => window.api.openRunedelta();
+  $("btn-runedelta-journal").onclick = openPublicationJournal;
   $("btn-disconnect-runedelta").onclick = async () => {
     if (runedeltaBusy) return;
     if (
@@ -3214,3 +3435,27 @@ init().catch(error => {
   openImportModal(true);
   showSetupError(`Impossible de charger le projet : ${error.message}`);
 });
+
+$("btn-refresh-fonts").onclick = async () => {
+  const button = $("btn-refresh-fonts");
+  if (importing || runedeltaBusy || codeApplyRunning || savePromise) return;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.setAttribute("aria-label", "Actualisation des polices en cours");
+  try {
+    const result = await window.api.refreshPreviewFonts();
+    if (!result.ok) throw new Error(result.error);
+    const loaded = await Promise.all([
+      loadFonts(result.extractedDir, result.fonts, result.language),
+      loadFonts(result.extractedDir, result.fonts, "en"),
+      loadFonts(result.extractedDir, result.fonts, "ja"),
+    ]);
+    [targetFonts, englishFonts, japaneseFonts] = loaded;
+    schedulePreview();
+  } catch (error) { alert(`Actualisation des polices impossible.\n\n${error.message}`); }
+  finally {
+    button.disabled = false;
+    button.setAttribute("aria-busy", "false");
+    button.setAttribute("aria-label", "Actualiser les polices");
+  }
+};

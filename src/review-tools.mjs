@@ -1,11 +1,11 @@
-function element(tag, text, parent) {
+export function element(tag, text, parent) {
   const node = document.createElement(tag);
   if (text != null) node.textContent = text;
   parent?.appendChild(node);
   return node;
 }
 
-function modal(title) {
+export function modal(title) {
   const previous = document.activeElement;
   const dialog = element("dialog");
   dialog.className = "review-dialog";
@@ -46,24 +46,55 @@ function pagedResults(parent, render) {
   return { update(next) { items = next; refresh(); } };
 }
 
-export async function resolveConflicts(result) {
-  const { dialog, content, footer, close } = modal("Résoudre les conflits de traduction");
+export async function requestPublicationMessage() {
+  const { dialog, content, footer, close } = modal("Publier sur Runedelta");
+  dialog.classList.add("publication-dialog");
   close.textContent = "Annuler";
-  element("p", "Choisis une version pour chaque ligne, ou saisis une traduction. Aucune publication n’a lieu avant validation.", content);
+  element("p", "Tu peux nommer ce commit et décrire tes changements. Chaque champ laissé vide sera rempli automatiquement.", content);
+  const titleLabel = element("label", "Nom du commit (facultatif)", content);
+  const title = element("input", null, titleLabel);
+  title.type = "text";
+  title.placeholder = "Ex. : Corrections des dialogues de Susie";
+  element("p", "Le nom sera précédé du préfixe de traduction du chapitre, par exemple trad(ch5):.", content);
+  const descriptionLabel = element("label", "Description (facultative)", content);
+  const description = element("textarea", null, descriptionLabel);
+  description.rows = 5;
+  description.placeholder = "Détails des changements…";
+  element("p", "Les commits déjà créés en attente d’envoi conservent leur message.", content);
+  const publish = element("button", "Publier", footer);
+  publish.className = "primary";
+  title.focus();
+  return new Promise(resolve => {
+    let answer = null;
+    publish.onclick = () => {
+      answer = { title: title.value.trim(), description: description.value.trim() };
+      dialog.close();
+    };
+    dialog.addEventListener("close", () => resolve(answer), { once: true });
+  });
+}
+
+export async function resolveConflicts(result) {
+  const fromMain = result.phase === "main";
+  const { dialog, content, footer, close } = modal(fromMain ? "Conflits avec les traductions publiées dans main" : "Résoudre les conflits de traduction");
+  close.textContent = "Annuler";
+  element("p", fromMain
+    ? "Ces lignes ont été modifiées sur ta branche et, différemment, dans une PR déjà fusionnée dans main. Choisis une version pour chaque ligne, ou saisis une traduction. Aucune publication n’a lieu avant validation."
+    : "Choisis une version pour chaque ligne, ou saisis une traduction. Aucune publication n’a lieu avant validation.", content);
   const selections = new Map();
   for (const item of result.conflictDetails ?? []) {
     const row = element("section", null, content);
     element("h3", item.key, row);
     const columns = element("div", null, row);
     columns.className = "review-columns";
-    for (const [label, value] of [["Base commune", item.base], ["Local", item.local], ["Distant", item.remote]]) {
+    for (const [label, value] of [["Base commune", item.base], [fromMain ? "Ta branche" : "Local", item.local], [fromMain ? "Publié dans main" : "Distant", item.remote]]) {
       const column = element("div", null, columns);
       element("b", label, column);
       element("pre", value ?? "Clé supprimée", column);
     }
     const select = element("select", null, row);
     select.setAttribute("aria-label", `Résolution de ${item.key}`);
-    for (const [value, label] of [["", "Choisir…"], ["local", "Version locale"], ["remote", "Version distante"], ["custom", "Modifier la traduction"]]) {
+    for (const [value, label] of [["", "Choisir…"], ["local", fromMain ? "Version de ta branche" : "Version locale"], ["remote", fromMain ? "Version de main" : "Version distante"], ["custom", "Modifier la traduction"]]) {
       const option = element("option", label, select); option.value = value;
     }
     const input = element("textarea", null, row);

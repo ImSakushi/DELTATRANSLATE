@@ -1,0 +1,35 @@
+.code-editor-pane {
+  --font-ui: "Menlo", "Consolas", "Liberation Mono", monospace;
+  --mono: var(--font-ui);
+}
+
+#code-readonly, #code-highlight, #code-input {
+  font: 14px/1.6 var(--mono);
+}
+
+.gml-keyword, .gml-directive { color: #cfadff; }
+.gml-function { color: #80d4ff; }
+.gml-string { color: #a6df9b; }
+.gml-number { color: #ffbd86; }
+.gml-constant { color: #ffcce5; }
+.gml-operator { color: #e5cf8e; }
+.gml-comment { color: #929cab; }
+
+#code-editing { position: relative; width: 100%; height: 100%; overflow: hidden; }
+#code-highlight, #code-input {
+  position: absolute;
+  inset: 0;
+  padding: 8px 12px;
+  letter-spacing: normal;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 4;
+}
+#code-highlight { pointer-events: none; overflow: hidden; }
+#code-input { background: transparent; color: transparent; caret-color: var(--fg); }
+#code-input::selection { background: var(--selection); color: transparent; }
+@media (forced-colors: active) {
+  #code-highlight { visibility: hidden; }
+  #code-input { color: CanvasText; caret-color: CanvasText; }
+  #code-input::selection { color: HighlightText; background: Highlight; }
+}

@@ -470,6 +470,36 @@ test("une identité générique bloque la publication mais pas la récupération
   assert.equal(runGit(f.managed, "log", "-1", "--format=%an <%ae>").trim(), "Alice <123+alice@users.noreply.github.com>");
 });
 
+test("les fiches récupèrent les derniers commits distants sans modifier le catalogue ouvert", async t => {
+  const f = await syncFixture(t);
+  const { listRunedeltaBranches } = require("./runedelta-sync.js");
+  runGit(f.seed, "switch", "-c", "equipe/accents");
+  runGit(f.seed, "config", "user.name", "Élodie");
+  runGit(f.seed, "config", "user.email", "123+elodie@users.noreply.github.com");
+  writeLanguage(path.join(f.seed, f.relative(5)), language({ key_2: "Réplique corrigée" }));
+  runGit(f.seed, "add", ".");
+  runGit(f.seed, "commit", "-m", "test: contribution distante");
+  runGit(f.seed, "push", "origin", "equipe/accents");
+  const expectedCommit = runGit(f.seed, "rev-parse", "HEAD").trim();
+  const expectedTime = Number(runGit(f.seed, "log", "-1", "--format=%ct").trim()) * 1000;
+  const beforeHead = runGit(f.managed, "rev-parse", "HEAD");
+  writeLanguage(f.target(5), language({ key_1: "Brouillon précieux" }));
+  const beforeStatus = runGit(f.managed, "status", "--porcelain");
+  const result = await listRunedeltaBranches(f.remote, { details: true });
+  assert.equal(result.detailsError, undefined);
+  assert.deepEqual(result.branches, ["equipe/accents", "main"]);
+  assert.equal(result.defaultBranch, "main");
+  assert.deepEqual(result.branchDetails.find(branch => branch.name === "equipe/accents"), {
+    name: "equipe/accents", commit: expectedCommit, author: "Élodie", authorName: "elodie",
+    timestamp: expectedTime, subject: "test: contribution distante",
+  });
+  assert.equal(result.branchDetails.find(branch => branch.name === "main").authorName, "Équipe test");
+  assert.equal(runGit(f.managed, "rev-parse", "HEAD"), beforeHead);
+  assert.equal(runGit(f.managed, "branch", "--show-current").trim(), "main");
+  assert.equal(runGit(f.managed, "status", "--porcelain"), beforeStatus);
+  assert.equal(f.read(5).key_1, "Brouillon précieux");
+});
+
 test("choisir une branche conserve les brouillons de chaque branche et publie uniquement sur celle choisie", async t => {
   const f = await syncFixture(t);
   const { listRunedeltaBranches } = require("./runedelta-sync.js");
@@ -790,4 +820,154 @@ test('la référence locale reste utilisée hors du mode catalogue Git et sans V
   const chapter5 = await openGitCatalogue(f, 5);
   runGit(chapter5.directory, 'update-ref', '-d', 'refs/remotes/origin/main');
   await assert.rejects(loadRunedeltaReference(chapter5.config, reference), /référence anglaise.*indisponible/);
+});
+
+test('les champs facultatifs remplacent indépendamment le message automatique', () => {
+  const before = language(), after = language({ key_1: 'Bonjour' });
+  const automatic = buildTranslationCommitMessage(5, before, after);
+  for (const custom of [null, {}, { title: '  ', description: '\n ' }]) {
+    assert.deepEqual(buildTranslationCommitMessage(5, before, after, {}, custom), automatic);
+  }
+  const titleOnly = buildTranslationCommitMessage(5, before, after, {}, { title: ' Répliques\r\ncorrigées ' });
+  assert.equal(titleOnly.subject, 'trad(ch5): Répliques corrigées');
+  assert.equal(titleOnly.body, automatic.body);
+  const descriptionOnly = buildTranslationCommitMessage(5, before, after, {}, { description: ' Accents\n\nPonctuation ' });
+  assert.equal(descriptionOnly.subject, automatic.subject);
+  assert.equal(descriptionOnly.body, 'Accents\n\nPonctuation');
+});
+
+test('publie le nom et la description dans Git et conserve le message lors d’un nouvel envoi', async t => {
+  const f = await syncFixture(t), s = await openGitCatalogue(f);
+  writeLanguage(s.target, { ...s.read(), key_1: 'Bonjour' });
+  const result = await synchronizeRunedelta({ ...s, push: true,
+    commitMessage: { title: 'Répliques de Susie', description: 'Accents corrigés.\n\nPonctuation harmonisée.' } });
+  assert.equal(result.pushed, true);
+  assert.equal(runGit(f.remote, 'log', '-1', '--pretty=%B').trim(),
+    'trad(ch5): Répliques de Susie\n\nAccents corrigés.\n\nPonctuation harmonisée.');
+  const head = runGit(f.remote, 'rev-parse', 'main');
+  await synchronizeRunedelta({ ...s, push: true, commitMessage: { title: 'Autre nom' } });
+  assert.equal(runGit(f.remote, 'rev-parse', 'main'), head);
+});
+
+test('classe chaque ligne selon ta branche et main, et lit les PR fusionnées', () => {
+  const { classifyPublication, parsePullRequest } = require('./runedelta-sync.js');
+  assert.deepEqual(parsePullRequest('Merge pull request #83 from Traducteurs-Aurifiques/EvilChap5-2'), { pr: 83, from: 'EvilChap5-2' });
+  assert.equal(parsePullRequest('trad(ch5): traduire 4 dialogues'), null);
+  const original = { a: 'A', b: 'B', c: 'C', d: 'D', e: 'E', f: 'F' };
+  const mainBase = { ...original, e: 'E publié' };
+  const main = { ...mainBase, c: 'C main', f: 'F main' };
+  const pushed = { ...mainBase, b: 'B branche', f: 'F branche' };
+  const local = { ...pushed, d: 'D local' };
+  const { keys, counts } = classifyPublication({ local, main, mainBase, pushed, original });
+  assert.equal(keys.a, undefined);
+  assert.equal(keys.b.state, 'pushed');
+  assert.equal(keys.c.state, 'incoming');
+  assert.equal(keys.d.state, 'local');
+  assert.equal(keys.e.state, 'published');
+  assert.deepEqual(keys.f, { state: 'pushed', mainChanged: true });
+  assert.deepEqual(counts, { published: 1, pushed: 2, local: 1, incoming: 1 });
+});
+
+test('les PR fusionnées dans main arrivent sur la branche de travail et leur publication est datée', async t => {
+  const { runedeltaPublication } = require('./runedelta-sync.js');
+  const f = await syncFixture(t);
+  runGit(f.seed, 'switch', '-c', 'Alex'); runGit(f.seed, 'push', '-u', 'origin', 'Alex');
+  const s = await openGitCatalogue(f, 5, 'Alex');
+  writeLanguage(s.target, { ...s.read(), key_2: 'Sur ma branche' });
+  await synchronizeRunedelta({ ...s, push: true });
+  writeLanguage(s.target, { ...s.read(), key_1: 'Brouillon local' });
+
+  runGit(f.seed, 'switch', 'main'); runGit(f.seed, 'pull', '--ff-only');
+  runGit(f.seed, 'switch', '-c', 'Autre');
+  writeLanguage(path.join(f.seed, f.relative(5)), { ...f.published(5), key_3: 'Traduction fusionnée' });
+  runGit(f.seed, 'commit', '-am', 'trad(ch5): traduire 1 dialogue');
+  runGit(f.seed, 'switch', 'main');
+  runGit(f.seed, 'merge', '--no-ff', '-m', 'Merge pull request #7 from Equipe/Autre', 'Autre'); runGit(f.seed, 'push');
+
+  const before = await runedeltaPublication(s.config, s.directory, { fetch: true });
+  assert.equal(before.ok, true);
+  assert.equal(before.keys.key_1.state, 'local');
+  assert.equal(before.keys.key_2.state, 'pushed');
+  assert.equal(before.keys.key_3.state, 'incoming');
+  assert.equal(before.keys.key_3.event.pr, 7);
+  assert.deepEqual(before.waiting.map(event => event.lines), [1]);
+  assert.equal(before.releases[0].from, 'Autre');
+
+  const received = await synchronizeRunedelta({ ...s, receiveOnly: true });
+  assert.equal(received.ok, true);
+  assert.equal(s.read().key_3, 'Traduction fusionnée');
+  assert.equal(s.read().key_1, 'Brouillon local');
+
+  const published = await synchronizeRunedelta({ ...s, push: true });
+  assert.equal(published.pushed, true);
+  runGit(f.remote, 'merge-base', '--is-ancestor', 'main', 'Alex');
+  assert.match(runGit(s.directory, 'log', '--format=%s', '-3'), /Merge branch 'main' into Alex/);
+  const after = await runedeltaPublication(s.config, s.directory);
+  assert.equal(after.keys.key_3.state, 'published');
+  assert.equal(after.keys.key_3.event.pr, 7);
+  assert.equal(after.keys.key_1.state, 'pushed');
+  assert.equal(after.counts.incoming, 0);
+  assert.equal(after.unpushedCommits, 0);
+});
+
+test('une ligne modifiée à la fois sur la branche et dans main demande une résolution explicite', async t => {
+  const f = await syncFixture(t);
+  runGit(f.seed, 'switch', '-c', 'Alex'); runGit(f.seed, 'push', '-u', 'origin', 'Alex');
+  const s = await openGitCatalogue(f, 5, 'Alex');
+  writeLanguage(s.target, { ...s.read(), key_4: 'Version de la branche' });
+  await synchronizeRunedelta({ ...s, push: true });
+  runGit(f.seed, 'switch', 'main');
+  f.contribute(5, { key_4: 'Version de main' });
+  const branchHead = runGit(f.remote, 'rev-parse', 'Alex');
+  const first = await synchronizeRunedelta({ ...s, push: true });
+  assert.equal(first.conflict, true);
+  assert.equal(first.phase, 'main');
+  assert.equal(runGit(f.remote, 'rev-parse', 'Alex'), branchHead);
+  assert.equal(s.read().key_4, 'Version de la branche');
+  const resolved = await synchronizeRunedelta({ ...s, push: true, conflictResolution: {
+    main: { key_4: { choice: 'remote', expected: first.conflictDetails[0] } },
+  } });
+  assert.equal(resolved.pushed, true);
+  assert.equal(s.read().key_4, 'Version de main');
+  assert.equal(JSON.parse(runGit(f.remote, 'show', `Alex:${f.relative(5)}`)).key_4, 'Version de main');
+});
+
+test('les sprites importés partent sur la branche seulement à la publication, au format du dépôt', async t => {
+  const { branchSpritesSync, gitBlobHash, parseSpriteTree } = require('./runedelta-sync.js');
+  const f = await syncFixture(t);
+  runGit(f.seed, 'switch', '-c', 'Alex');
+  fs.mkdirSync(path.join(f.seed, 'sprites', 'spr_multi'), { recursive: true });
+  fs.writeFileSync(path.join(f.seed, 'sprites', 'spr_multi', 'spr_multi_1.png'), 'ancienne frame 1');
+  runGit(f.seed, 'add', '.'); runGit(f.seed, 'commit', '-m', 'sprites'); runGit(f.seed, 'push', '-u', 'origin', 'Alex');
+  const s = await openGitCatalogue(f, 5, 'Alex');
+  assert.deepEqual([...branchSpritesSync(s.directory).sprites.get('spr_multi').keys()], [1]);
+
+  const imports = path.join(f.root, 'imports');
+  fs.mkdirSync(imports);
+  const png = (name, content) => { const file = path.join(imports, name); fs.writeFileSync(file, content); return file; };
+  const sprites = [
+    { name: 'spr_single', frame: 0, frames: 1, file: png('single.png', 'logo traduit') },
+    { name: 'spr_multi', frame: 0, frames: 3, file: png('multi0.png', 'frame 0') },
+    { name: 'spr_multi', frame: 1, frames: 3, file: png('multi1.png', 'frame 1 corrigée') },
+  ];
+  const received = await synchronizeRunedelta({ ...s, receiveOnly: true, sprites });
+  assert.equal(received.ok, true);
+  assert.equal(branchSpritesSync(s.directory).sprites.has('spr_single'), false);
+
+  const published = await synchronizeRunedelta({ ...s, push: true, sprites });
+  assert.equal(published.pushed, true);
+  assert.equal(published.spritesPublished, 3);
+  assert.equal(runGit(f.remote, 'show', 'Alex:sprites/spr_single.png'), 'logo traduit');
+  assert.equal(runGit(f.remote, 'show', 'Alex:sprites/spr_multi/spr_multi_0.png'), 'frame 0');
+  assert.equal(runGit(f.remote, 'show', 'Alex:sprites/spr_multi/spr_multi_1.png'), 'frame 1 corrigée');
+  assert.match(runGit(s.directory, 'log', '-1', '--format=%s%n%b'), /sprites\/spr_single\.png/);
+  const tree = branchSpritesSync(s.directory).sprites;
+  assert.equal(tree.get('spr_single').get(0).blob, gitBlobHash(Buffer.from('logo traduit')));
+  assert.equal(runGit(s.directory, 'status', '--porcelain'), '');
+
+  const head = runGit(f.remote, 'rev-parse', 'Alex');
+  const again = await synchronizeRunedelta({ ...s, push: true, sprites });
+  assert.equal(again.spritesPublished, 0);
+  assert.equal(runGit(f.remote, 'rev-parse', 'Alex'), head);
+  assert.equal(parseSpriteTree('100644 blob ' + 'a'.repeat(40) + '\tsprites/WARNING NE PAS TRADspr_x.png\0').size, 0);
 });

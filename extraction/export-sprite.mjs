@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runToolSync } from "./process-runner.mjs";
 
 function arg(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -75,7 +75,7 @@ ScriptMessage($"SPRITE_EXPORT_DONE {exported}");
 );
 
 try {
-  const result = spawnSync(cli, ["load", dataWin, "-s", scriptPath], {
+  const result = runToolSync(cli, ["load", dataWin, "-s", scriptPath], {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });

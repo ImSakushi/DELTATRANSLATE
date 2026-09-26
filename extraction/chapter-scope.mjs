@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { runToolSync } from "./process-runner.mjs";
 import {
   buildReferenceFromLangJson,
   makeCodeOnlyCsx,
@@ -71,7 +71,7 @@ function extractBaselineCode(dataWinPath, cli, cacheDir, force, log) {
   fs.mkdirSync(cacheDir, { recursive: true });
   const csxPath = path.join(os.tmpdir(), `deltatranslate_baseline_${Date.now()}.csx`);
   fs.writeFileSync(csxPath, makeCodeOnlyCsx(cacheDir), "utf8");
-  const result = spawnSync(cli, ["load", dataWinPath, "-s", csxPath], {
+  const result = runToolSync(cli, ["load", dataWinPath, "-s", csxPath], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });

@@ -205,7 +205,7 @@ kbd { font-family: var(--mono); }
 }
 #btn-runedelta.sync-ready { border-color: var(--green); color: var(--green); }
 #btn-runedelta.sync-warning { border-color: #e8ad68; color: #e8ad68; }
-.top-actions .backup-toggle {
+.top-actions .backup-toggle, .top-actions .japanese-toggle {
   white-space: nowrap;
   cursor: pointer;
 }
@@ -232,25 +232,6 @@ button.action-loading::before {
 #btn-save.action-loading:disabled { color: var(--yellow); border-color: var(--yellow); }
 #btn-publish.action-loading:disabled { color: var(--green); opacity: 1; }
 #btn-save:disabled:hover { border-color: var(--border-dim); }
-.theme-toggle {
-  position: relative;
-  width: 34px;
-  min-width: 34px;
-  height: 30px;
-  padding: 0;
-  overflow: hidden;
-}
-.theme-icon {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  transition: transform 180ms ease, opacity 180ms ease;
-}
-/* Icône du switch de design : en thème DELTARUNE on montre l'icône
-   « classique » (cible du switch), le cœur reste caché. */
-.theme-icon-dr { transform: translateY(24px); opacity: 0; color: var(--heart); }
 
 /* ---------- layout ---------- */
 #layout {
@@ -438,6 +419,15 @@ button.action-loading::before {
   min-height: 44px;
 }
 #en-display { user-select: text; }
+#jp-reference { flex-shrink: 0; }
+#jp-display {
+  user-select: text;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  font-family: var(--mono), "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+}
 
 #editor-wrap { position: relative; flex: 1; min-height: 120px; }
 #fr-highlight {
@@ -601,6 +591,31 @@ button.action-loading::before {
   overflow-y: auto;
 }
 #preview-controls { display: flex; gap: 8px; align-items: center; }
+#preview-controls #sel-mode { min-width: 0; flex: 0 1 auto; }
+#preview-controls .chk { flex-shrink: 0; }
+#preview-copy-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#preview-copy-status { color: var(--fg-dim); font-size: 12px; overflow-wrap: anywhere; }
+#btn-refresh-fonts {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 18px;
+  line-height: 1;
+  box-shadow: none;
+}
+#btn-refresh-fonts:hover:not(:disabled),
+#btn-refresh-fonts:focus-visible {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--bg2);
+}
+#btn-refresh-fonts:disabled { opacity: .45; }
+
 #preview-face-controls {
   display: flex;
   gap: 6px;

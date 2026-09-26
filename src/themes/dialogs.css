@@ -1,0 +1,60 @@
+.modal, dialog {
+  --bg: #000;
+  --bg2: #000;
+  --bg3: #000;
+  --fg: #fff;
+  --border: #fff;
+  --accent: #ffe93c;
+  --yellow: #ffe93c;
+}
+
+.modal-box, dialog {
+  color: var(--fg);
+  background: var(--bg);
+  border: 3px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.modal h2, dialog h2 {
+  color: var(--yellow);
+  font-weight: normal;
+  letter-spacing: 1px;
+}
+
+.modal button, .modal button.primary, dialog button, dialog button.primary {
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 0;
+}
+
+.modal button:not(:disabled):hover, dialog button:not(:disabled):hover {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+
+:is(.modal, dialog) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea):not(.code-source) {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 8px 10px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 0;
+  font-family: var(--font-ui);
+}
+
+:is(.modal, dialog) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea):not(.code-source):focus {
+  outline: none;
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+:is(.modal, dialog) :is(button, select, summary, input[type="checkbox"], input[type="radio"], input[type="range"]):focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 3px;
+}
+
+:is(.modal, dialog) button:disabled { opacity: 0.5; cursor: default; }
+:is(.modal, dialog) input::placeholder, :is(.modal, dialog) textarea::placeholder { color: var(--fg-dim); }
