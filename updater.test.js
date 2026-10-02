@@ -39,7 +39,7 @@ test("la notification utilise le résumé sans modifier les notes de la release"
   f.updater.emit("update-available", info);
   await waitForEvents();
   const detail = f.prompts[0].detail;
-  assert.match(detail, /sprites/);
+  assert.ok(detail.includes(notes.match(/^- (.+)$/m)[1].replace(/\*\*|`/g, "")));
   assert.doesNotMatch(detail, /Windows Setup|macOS DMG|Plateforme|https:\/\/|##|\*\*/);
   assert.ok(detail.length < 1000);
   assert.equal(info.releaseNotes, notes);
