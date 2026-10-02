@@ -9,6 +9,8 @@ const DEFAULT_RUNEDDELTA_REMOTE = "https://github.com/Traducteurs-Aurifiques/Run
 const MAIN_BRANCH = "main";
 const GIT_TIMEOUT_MS = 120_000;
 const MISSING = Symbol("missing");
+const BRANCHES_TEMP_PREFIX = "deltatranslate-branches-";
+const STALE_BRANCHES_TEMP_MS = 60 * 60_000;
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
@@ -556,6 +558,27 @@ async function validateBranch(branch) {
   if (result.code !== 0) throw new Error("Nom de branche invalide.");
 }
 
+// Windows peut garder les fichiers Git verrouillés après la fin du processus.
+async function removeTemporaryDirectory(directory) {
+  await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+}
+
+// Rattrape les dossiers qu'un verrou Windows a empêché de supprimer lors d'un chargement précédent.
+// Le délai laisse intacts les dossiers d'un chargement encore en cours.
+async function removeStaleBranchDirectories(root, now = Date.now()) {
+  let entries;
+  try { entries = await fs.promises.readdir(root, { withFileTypes: true }); } catch { return; }
+  await Promise.all(entries
+    .filter(entry => entry.isDirectory() && entry.name.startsWith(BRANCHES_TEMP_PREFIX))
+    .map(async entry => {
+      const directory = path.join(root, entry.name);
+      try {
+        if (now - (await fs.promises.stat(directory)).mtimeMs < STALE_BRANCHES_TEMP_MS) return;
+        await removeTemporaryDirectory(directory);
+      } catch {}
+    }));
+}
+
 async function listRunedeltaBranches(remoteUrl = DEFAULT_RUNEDDELTA_REMOTE, { details = false } = {}) {
   const remote = validateRemoteUrl(remoteUrl);
   const output = (await git(["ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*"], undefined, { timeoutMs: 30_000 })).stdout;
@@ -565,8 +588,11 @@ async function listRunedeltaBranches(remoteUrl = DEFAULT_RUNEDDELTA_REMOTE, { de
   if (!details || !branches.length) return result;
 
   // Le dépôt temporaire évite de toucher aux branches et aux brouillons du catalogue ouvert.
-  const directory = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "deltatranslate-branches-"));
+  const temporaryRoot = require("node:os").tmpdir();
+  await removeStaleBranchDirectories(temporaryRoot);
+  let directory;
   try {
+    directory = fs.mkdtempSync(path.join(temporaryRoot, BRANCHES_TEMP_PREFIX));
     await git(["init", "--bare", directory]);
     await git(["fetch", "--depth=1", "--filter=tree:0", "--no-tags", "--", remote, "+refs/heads/*:refs/heads/*"], directory, { timeoutMs: 45_000 });
     const records = (await git(["for-each-ref", "--format=%(refname:strip=2)%00%(objectname)%00%(authorname)%00%(authoremail)%00%(committerdate:unix)%00%(subject)", "refs/heads/"], directory)).stdout;
@@ -579,7 +605,13 @@ async function listRunedeltaBranches(remoteUrl = DEFAULT_RUNEDDELTA_REMOTE, { de
   } catch (error) {
     result.detailsError = `Les branches sont disponibles, mais leurs derniers commits n’ont pas pu être chargés : ${error.message}`;
   } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
+    if (directory) {
+      try {
+        await removeTemporaryDirectory(directory);
+      } catch (error) {
+        console.warn(`Le dossier temporaire des branches n’a pas pu être supprimé : ${error.message}`);
+      }
+    }
   }
   return result;
 }
@@ -1333,6 +1365,7 @@ module.exports = {
   copyRunedeltaToGame,
   workingLanguagePath,
   listRunedeltaBranches,
+  removeStaleBranchDirectories,
   projectBinding,
   isRunedeltaProjectConnected,
   buildTranslationCommitMessage,

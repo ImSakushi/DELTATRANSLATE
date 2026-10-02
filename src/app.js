@@ -625,8 +625,14 @@ function attributionTooltip(attribution) {
   return details.join("\n");
 }
 
-function runedeltaTracking() {
+function runedeltaConfigured() {
   return appConfig.runedelta?.modeEnabled === true && appConfig.runedelta?.enabled === true;
+}
+
+// runedelta.enabled est global : seul main.js sait si le chapitre ouvert est réellement relié (isRunedeltaProjectConnected).
+let publicationDisabled = false;
+function runedeltaTracking() {
+  return runedeltaConfigured() && !publicationDisabled;
 }
 
 function linePublication(e) {
@@ -656,7 +662,7 @@ function renderPublicationControls() {
 
 // Une seule requête à la fois : main.js refuse un fetch pendant une publication, et inversement.
 function refreshPublication(fetch = false) {
-  if (!runedeltaTracking()) {
+  if (!runedeltaConfigured()) {
     runedeltaPublication = null;
     if (appReady) renderPublicationControls();
     return Promise.resolve(null);
@@ -665,8 +671,9 @@ function refreshPublication(fetch = false) {
   publicationRequest = window.api.getRunedeltaPublication(fetch)
     .then(result => {
       if (result?.busy) return runedeltaPublication;
-      runedeltaPublication = result;
-      if (!result?.ok) console.warn(`Suivi de publication Runedelta indisponible : ${result?.error}`);
+      publicationDisabled = result?.disabled === true;
+      runedeltaPublication = publicationDisabled ? null : result;
+      if (!result?.ok && !publicationDisabled) console.warn(`Suivi de publication Runedelta indisponible : ${result?.error}`);
       renderPublicationControls();
       if (prefs.publicationFilter !== "all") applyFilter();
       else renderListRaf();

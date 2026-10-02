@@ -500,6 +500,70 @@ test("les fiches récupèrent les derniers commits distants sans modifier le cat
   assert.equal(f.read(5).key_1, "Brouillon précieux");
 });
 
+test("un refus de nettoyage du dossier temporaire conserve les branches et leurs derniers commits", async t => {
+  const f = await syncFixture(t);
+  const { listRunedeltaBranches } = require("./runedelta-sync.js");
+  const remove = fs.promises.rm.bind(fs.promises);
+  let temporary;
+  t.after(async () => {
+    if (temporary) await remove(temporary, { recursive: true, force: true });
+  });
+  t.mock.method(fs.promises, "rm", async directory => {
+    temporary = directory;
+    throw Object.assign(new Error(`EPERM, Permission denied: ${directory}`), { code: "EPERM" });
+  });
+  const warning = t.mock.method(console, "warn", () => {});
+
+  const result = await listRunedeltaBranches(f.remote, { details: true });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.branches, ["main"]);
+  assert.equal(result.defaultBranch, "main");
+  assert.equal(result.detailsError, undefined);
+  assert.equal(result.branchDetails[0].commit, runGit(f.remote, "rev-parse", "main").trim());
+  assert.equal(warning.mock.callCount(), 1);
+  assert.match(warning.mock.calls[0].arguments[0], /EPERM/);
+});
+
+test("un dossier temporaire inaccessible conserve la liste des branches sans leurs détails", async t => {
+  const f = await syncFixture(t);
+  const { listRunedeltaBranches } = require("./runedelta-sync.js");
+  t.mock.method(fs, "mkdtempSync", () => {
+    throw Object.assign(new Error("EPERM, Permission denied"), { code: "EPERM" });
+  });
+
+  const result = await listRunedeltaBranches(f.remote, { details: true });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.branches, ["main"]);
+  assert.equal(result.defaultBranch, "main");
+  assert.match(result.detailsError, /EPERM/);
+  assert.equal(result.branchDetails, undefined);
+});
+
+test("les dossiers temporaires de branches abandonnés sont supprimés sans toucher aux récents ni aux autres", async t => {
+  const { removeStaleBranchDirectories } = require("./runedelta-sync.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dt-branches-cleanup-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stale = path.join(root, "deltatranslate-branches-ancien");
+  const recent = path.join(root, "deltatranslate-branches-recent");
+  const other = path.join(root, "autre-dossier");
+  for (const directory of [stale, recent, other]) fs.mkdirSync(path.join(directory, "objects", "pack"), { recursive: true });
+  const pack = path.join(stale, "objects", "pack", "pack-1.pack");
+  fs.writeFileSync(pack, "pack");
+  fs.chmodSync(pack, 0o444);
+  const now = Date.now();
+  const old = new Date(now - 2 * 60 * 60_000);
+  fs.utimesSync(stale, old, old);
+  fs.utimesSync(other, old, old);
+
+  await removeStaleBranchDirectories(root, now);
+
+  assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.existsSync(recent), true);
+  assert.equal(fs.existsSync(other), true);
+});
+
 test("choisir une branche conserve les brouillons de chaque branche et publie uniquement sur celle choisie", async t => {
   const f = await syncFixture(t);
   const { listRunedeltaBranches } = require("./runedelta-sync.js");
